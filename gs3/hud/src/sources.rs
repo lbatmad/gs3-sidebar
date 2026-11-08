@@ -509,7 +509,9 @@ mod tests {
     #[test]
     fn tree_scan_lists_dirs_first_and_only_opens_requested_dirs() {
         let dir=std::env::temp_dir().join(format!("gs3-tree-{}",std::process::id())); let _=fs::remove_dir_all(&dir);
-        for d in ["src/inner","z/node_modules/pkg",".git","target/release"] {fs::create_dir_all(dir.join(d)).unwrap();}
+        for d in ["src/inner","z/node_modules/pkg","target/release"] {fs::create_dir_all(dir.join(d)).unwrap();}
+        // A real repository boundary keeps this fixture isolated even when TMPDIR sits inside another repo.
+        assert!(Command::new("git").arg("init").arg("-q").arg(&dir).status().unwrap().success());
         for f in ["b.txt","A.md","src/m.rs","src/inner/deep.rs","z/y.rs","target/release/bin"] {fs::write(dir.join(f),"x").unwrap();}
         std::os::unix::fs::symlink(dir.join("src"),dir.join("link")).unwrap();
         let t=tree(&dir,vec!["src".into(),"src/inner".into()]);

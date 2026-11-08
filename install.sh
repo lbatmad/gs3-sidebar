@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gs3-sidebar installer (Linux). Runs the scripts in scripts/ in order:
+# gs3-sidebar installer (Linux and macOS). Runs the scripts in scripts/ in order:
 #   check-deps.sh -> build-hud.sh -> install-launcher.sh -> install-extensions.sh -> doctor.sh
 #
 # Usage: ./install.sh [options]
@@ -12,7 +12,7 @@
 #   -y, --yes            do not ask for confirmation
 #   -h, --help
 set -euo pipefail
-S="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/scripts" && pwd)"
+S="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/scripts" && pwd)"
 . "$S/lib.sh"
 
 BINARY=""; WITH_EXT=1; YES=0; pass=()
@@ -28,7 +28,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ "$(uname -s)" = Linux ] || die "this installer targets Linux. For Windows see docs/windows.md"
+case "$(uname -s)" in
+  Linux|Darwin) ;;
+  *) die "this installer targets Linux or macOS. For Windows see docs/windows.md" ;;
+esac
 
 printf '%sgs3-sidebar%s will install:\n' "$B" "$N"
 printf '  %s/bin/gs3, %s/bin/gs3-hud\n  %s\n' "$PREFIX" "$PREFIX" "$CONFIG_DIR"

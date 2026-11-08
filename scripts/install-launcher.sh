@@ -2,7 +2,7 @@
 # Installs the `gs3` launcher to $PREFIX/bin and creates the config directory.
 # Usage: scripts/install-launcher.sh [--prefix <dir>] [--config-dir <dir>] [--dry-run]
 set -euo pipefail
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lib.sh"
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib.sh"
 
 while [ $# -gt 0 ]; do
   parse_common_flag "$@" && rc=0 || rc=$?

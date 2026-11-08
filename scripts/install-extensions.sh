@@ -3,7 +3,7 @@
 # An existing, different extension is moved to <name>.bak.<timestamp> first; nothing is deleted.
 # Usage: scripts/install-extensions.sh [--agent-dir <dir>] [--dry-run]
 set -euo pipefail
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lib.sh"
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib.sh"
 
 while [ $# -gt 0 ]; do
   parse_common_flag "$@" && rc=0 || rc=$?

@@ -2,7 +2,7 @@
 # Checks an existing installation. Exit 0 = healthy, 1 = something is wrong.
 # Usage: scripts/doctor.sh [--prefix <dir>] [--agent-dir <dir>] [--config-dir <dir>]
 set -uo pipefail
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lib.sh"
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib.sh"
 while [ $# -gt 0 ]; do
   parse_common_flag "$@" && rc=0 || rc=$?
   [ "$rc" = 0 ] && die "unknown option: $1"; shift "$rc"

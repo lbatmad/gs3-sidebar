@@ -1,11 +1,11 @@
 # gs3 — Gentle Shell + telemetry sidecar
 
-One command opens Gentle Shell (the isolated `gs2` install) in a large herdr pane
+One command opens Gentle Shell (macOS: `gentle-shell`; Linux: the isolated `gs2` install) in a large herdr pane
 and a small read-only telemetry pane (`gs3-hud`) bound to that exact Pi session.
 
 ```
 ┌──────────────────────────── herdr workspace ───────────────────────────┐
-│ gs2 (gentle-shell2)                          ~75%  │ gs3-hud      ~25% │
+│ gs (macOS) / gs2 (Linux)                     ~75%  │ gs3-hud      ~25% │
 │                                                    │ ⌁ - - ⌁ banner    │
 │                                                    │ MAIN GIT PROF MEM │
 │                                                    │ TREE CONFIG tabs  │
@@ -19,7 +19,7 @@ gs3            # inside herdr: split current pane; outside: new herdr workspace 
 gs3 --help
 ```
 
-Arguments after `gs3` are passed to `gentle-shell2`.
+Arguments after `gs3` are passed to the selected Gentle Shell launcher. On macOS this is `gentle-shell` (the supervisor that runs Pi), never bare `pi`; on Linux the existing `gentle-shell2`/`pi` fallback is preserved.
 
 | Situation | Behavior |
 | --- | --- |
@@ -31,6 +31,7 @@ Arguments after `gs3` are passed to `gentle-shell2`.
 | Sidecar not built | gs2 runs alone with a warning. |
 
 Environment overrides: `GS3_SHELL` (big-pane command), `GS3_HUD` (sidecar binary),
+`GS3_HERDR` (explicit herdr executable; useful under a restricted PATH),
 `GS3_RATIO` (default `0.75`), `GS3_NO_ATTACH=1` (outside herdr: create, do not attach).
 
 ## Build

@@ -1,6 +1,6 @@
-# Instalación (Linux)
+# Instalación (Linux y macOS)
 
-> Probado en **Pop!_OS con COSMIC**, Wayland, terminal Ghostty. Otras distribuciones de Linux deberían funcionar si cumplen los requisitos, pero no se probaron.
+> Linux: probado en Pop!_OS con COSMIC. macOS ARM64: el launcher y el instalador se probaron en seco; la verificación del HUD y las integraciones está documentada por separado.
 
 ## Camino rápido
 
@@ -19,8 +19,8 @@ Luego abrí una terminal **dentro de herdr** y ejecutá `gs3`. En Pi, `/reload` 
 | [herdr](https://herdr.dev) | El multiplexor donde vive la barra | Sí |
 | `jq` | El lanzador lee el JSON de herdr | Sí |
 | `cargo` (Rust) | Compilar `gs3-hud` (no hace falta si pasás `--binary`) | Sí, salvo `--binary` |
-| Compilador C (`build-essential`) | SQLite viene incluido y se compila | Con `cargo` |
-| Pi / Gentle Shell | El agente que se monitorea | Para ver datos |
+| Compilador C (`build-essential` en Linux; Xcode Command Line Tools en macOS) | SQLite viene incluido y se compila | Con `cargo` |
+| Gentle Shell (`gentle-shell`) | En macOS es el agente del panel principal; usa Pi internamente | Sí en macOS |
 | `flatpak` + Flameshot | Botón de captura (solo Flatpak `org.flameshot.Flameshot`) | No |
 | Vesktop ≥ 1.6.9 | Botones de voz (Discord oficial no está soportado) | No |
 | `gh` | Pestaña GIT: pull requests | No |
@@ -54,13 +54,13 @@ Si ya tenías una extensión con el mismo nombre y distinta, **no se borra**: se
 | `--no-extensions` | Instala solo la barra |
 | `-y`, `--yes` | No pide confirmación |
 
-Si `~/.local/bin` no está en tu `PATH`, el instalador te lo avisa. Agregalo con `export PATH="$HOME/.local/bin:$PATH"`.
+Si `~/.local/bin` no está en tu `PATH`, el instalador te lo avisa. Agregalo con `export PATH="$HOME/.local/bin:$PATH"`. En una sesión con `PATH` restringido, indicá las rutas del launcher de gs y de herdr con `GS3_SHELL=/ruta/gentle-shell` y `GS3_HERDR=/ruta/herdr`; no apuntes `GS3_SHELL` a `pi`, porque omitiría el supervisor de gs. La compilación en Apple Silicon busca Homebrew en `/opt/homebrew/bin`.
 
 ## Primer uso
 
 1. Abrí herdr y una terminal dentro de él.
-2. Ejecutá `gs3`. El panel se divide: Pi a la izquierda, la barra a la derecha.
-3. Escribí algo a Pi: la barra pasa de `idle` a `working` y empieza a mostrar tokens y costo.
+2. Ejecutá `gs3`. En macOS, el panel se divide: gs (con Pi por debajo) a la izquierda y la barra a la derecha.
+3. Escribí algo en gs: la barra pasa de `idle` a `working` y empieza a mostrar tokens y costo.
 
 Fuera de herdr, `gs3` crea un espacio de trabajo nuevo y se conecta a él.
 
@@ -87,7 +87,7 @@ Para que `doctor.sh` renderice la barra contra un panel real, ejecutalo dentro d
 | Síntoma | Causa probable | Solución |
 | --- | --- | --- |
 | `gs3: herdr not found` | herdr no está en el `PATH` | Instalalo desde herdr.dev |
-| `gs3: no shell to run` | No hay `gentle-shell2` ni `pi` | Instalá Pi o definí `GS3_SHELL=<comando>` |
+| `gs3: no agent shell found` | No se encuentra el launcher de gs (macOS) ni el agente habitual (Linux) | Definí `GS3_SHELL=/ruta/gentle-shell` en macOS |
 | Pi corre sin barra, con aviso | `gs3-hud` no está instalado | `scripts/build-hud.sh` |
 | La barra dice `conectado` pero sin datos | Pi no está en el panel enlazado | Lanzalo con `gs3`, no a mano |
 | `/model-picker` no existe | Extensiones sin cargar | `/reload` en Pi |

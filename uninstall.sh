@@ -3,7 +3,7 @@
 # Usage: ./uninstall.sh [--prefix <dir>] [--agent-dir <dir>] [--config-dir <dir>] [--purge-config] [--dry-run]
 #   --purge-config   also delete the HUD settings directory (kept by default)
 set -euo pipefail
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/scripts/lib.sh"
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/scripts/lib.sh"
 
 PURGE=0
 while [ $# -gt 0 ]; do

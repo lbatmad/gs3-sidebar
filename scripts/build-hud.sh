@@ -2,7 +2,7 @@
 # Compiles gs3-hud and installs it to $PREFIX/bin. Use --binary <file> to skip compiling.
 # Usage: scripts/build-hud.sh [--binary <prebuilt>] [--prefix <dir>] [--dry-run]
 set -euo pipefail
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lib.sh"
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lib.sh"
 
 BINARY=""
 while [ $# -gt 0 ]; do

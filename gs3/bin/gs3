@@ -6,19 +6,24 @@
 # Outside herdr: creates a herdr workspace for $PWD, runs gs3 inside it, attaches.
 #
 # Overrides (mainly for testing):
-#   GS3_SHELL  command for the big pane   (default: gentle-shell2 if installed, else pi)
+#   GS3_SHELL  command for the big pane   (macOS: gentle-shell; Linux: gentle-shell2, then pi)
+#   GS3_HERDR  path to herdr (default: PATH, then ~/.local/bin/herdr)
 #   GS3_HUD    path to the gs3-hud binary (default: <repo>/target/release/gs3-hud)
 #   GS3_RATIO  split ratio for the big pane (default: 0.75)
 #   GS3_CONFIG sidecar settings file, the only file it writes (default: ~/.config/gs3/gs3-hud.json)
 #   GS3_NO_ATTACH=1  outside herdr: create the workspace but do not attach
 set -u
 
-SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+SELF="$(realpath "${BASH_SOURCE[0]}")"
 REPO="$(cd "$(dirname "$SELF")/../.." && pwd)"
-SHELL_CMD="${GS3_SHELL:-$(command -v gentle-shell2 || command -v pi || true)}"
+if [ "$(uname -s)" = Darwin ]; then
+  SHELL_CMD="${GS3_SHELL:-$(command -v gentle-shell || { [ -x "$HOME/.local/bin/gentle-shell" ] && printf '%s' "$HOME/.local/bin/gentle-shell"; })}"
+else
+  SHELL_CMD="${GS3_SHELL:-$(command -v gentle-shell2 || command -v pi || true)}"
+fi
 RATIO="${GS3_RATIO:-0.75}"
 CONFIG="${GS3_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/gs3/gs3-hud.json}"
-HERDR="$(command -v herdr || true)"
+HERDR="${GS3_HERDR:-$(command -v herdr || { [ -x "$HOME/.local/bin/herdr" ] && printf '%s' "$HOME/.local/bin/herdr"; })}"
 
 die() { printf 'gs3: %s\n' "$*" >&2; exit 1; }
 
@@ -29,11 +34,11 @@ case "${1:-}" in
 esac
 
 [ -n "$HERDR" ] || die "herdr not found in PATH"
-[ -n "$SHELL_CMD" ] || die "no shell to run: install pi or set GS3_SHELL"
+[ -n "$SHELL_CMD" ] || die "no agent shell found: install gentle-shell or set GS3_SHELL"
 
 find_hud() {
   local c
-  for c in "${GS3_HUD:-}" "$REPO/target/release/gs3-hud" "$(command -v gs3-hud 2>/dev/null)"; do
+  for c in "${GS3_HUD:-}" "$(dirname "$SELF")/gs3-hud" "$REPO/target/release/gs3-hud" "$(command -v gs3-hud 2>/dev/null)"; do
     [ -n "$c" ] && [ -x "$c" ] && { printf '%s' "$c"; return 0; }
   done
   return 1
@@ -69,7 +74,11 @@ inside_herdr() {
 outside_herdr() {
   command -v jq >/dev/null || die "jq not found in PATH"
   if ! "$HERDR" status server >/dev/null 2>&1; then
-    (setsid "$HERDR" server >/dev/null 2>&1 &)
+    if [ "$(uname -s)" = Darwin ]; then
+      (nohup "$HERDR" server </dev/null >/dev/null 2>&1 &)
+    else
+      (setsid "$HERDR" server >/dev/null 2>&1 &)
+    fi
     local i
     for i in $(seq 50); do "$HERDR" status server >/dev/null 2>&1 && break; sleep 0.1; done
     "$HERDR" status server >/dev/null 2>&1 || die "herdr server did not start"
@@ -82,7 +91,7 @@ outside_herdr() {
   root="$(printf '%s' "$ws" | jq -r '.result.root_pane.pane_id // empty')"
   [ -n "$root" ] || die "workspace create returned no root pane"
   local env_prefix=""
-  [ -n "${GS3_SHELL:-}" ] && env_prefix+="GS3_SHELL=$(printf '%q' "$GS3_SHELL") "
+  env_prefix+="GS3_SHELL=$(printf '%q' "$SHELL_CMD") GS3_HERDR=$(printf '%q' "$HERDR") "
   [ -n "${GS3_HUD:-}" ] && env_prefix+="GS3_HUD=$(printf '%q' "$GS3_HUD") "
   [ -n "${GS3_RATIO:-}" ] && env_prefix+="GS3_RATIO=$(printf '%q' "$GS3_RATIO") "
   [ -n "${GS3_CONFIG:-}" ] && env_prefix+="GS3_CONFIG=$(printf '%q' "$GS3_CONFIG") "

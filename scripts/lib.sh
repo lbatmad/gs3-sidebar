@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Shared helpers for the gs3-sidebar installer scripts. Source it; do not run it.
 
-ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+ROOT="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
+# Homebrew is not always present in an agent's restricted PATH on Apple Silicon.
+if [ "$(uname -s)" = Darwin ]; then
+  [ ! -d /opt/homebrew/bin ] || PATH="/opt/homebrew/bin:$PATH"
+  [ ! -d "$HOME/.local/bin" ] || PATH="$HOME/.local/bin:$PATH"
+  export PATH
+fi
 
 # Defaults, all overridable by flags or the environment.
 PREFIX="${GS3_PREFIX:-$HOME/.local}"                        # binaries go to $PREFIX/bin
