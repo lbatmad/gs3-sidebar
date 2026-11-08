@@ -11,8 +11,9 @@ S5. "Discord oficial de macOS"
 
 ## Tasks
 T1 [S1,S3] inline — port launcher and installer for macOS; commit: 2925284 (launcher RED→GREEN, dry-run, Linux differential).
-T2 [S1,S2,S5] inline — port HUD platform integrations for official macOS Discord voice and capture; commit: pending.
-T3 [S1-S3] inline — focused regression tests and user documentation; commit: pending.
+T2 [S1,S2,S5] inline — port HUD platform integrations for official macOS Discord voice and capture; commit: 50b0749 (49 tests, peer live read-only, release build).
+T3 [S1-S3] inline — focused regression tests and user documentation; commit: 2925284 and 50b0749 (tests/docs alongside behavior).
+T4 [S1-S3,S5] blocked — independently verify security-sensitive integration, confirm herdr connection and interactive behavior; commit: pending. Requires host permission settings and native assessment able to declare unrelated untracked files.
 
 ## Log
 L1. "me interesa hacer que funcione en mac, para uso personal, lo de CI no me interesa"
@@ -29,3 +30,4 @@ L11. Evidence: Discord.app is running at /Applications/Discord.app. Its RPC sock
 L12. Evidence: baseline HUD Rust suite compiled; 48/48 tests passed after isolating the tree test as a real Git repo and using a short relative TMPDIR inside target/. Earlier runs failed from an external TMPDIR's ancestor repository and macOS SUN_LEN. No global gs3 install.
 L13. Evidence: official Discord RPC at macOS user temp dir accepted user-authorized consent, authenticated, and returned read-only mute/deaf booleans. Token stored at /Users/albertobellido/.config/gs3/discord-token.json with mode 0600; no voice changes were sent. Discord Helper (Renderer) owns the socket. T1 committed as 2925284; no global gs3 install.
 L14. Evidence: Mac voice/capture RED observed, targeted GREEN; 49/49 unit tests pass (one optional live Discord test ignored in suite and run separately successfully). Release build and --help passed. Native herdr status query was denied by host permission configuration despite user approval; no real pane, screenshot interaction, or mute/deafen action was run.
+L15. Evidence: native read-only assessment of committed voice work unit 50b0749 returned unassessable because unrelated pre-existing .agents/ is untracked and needs an explicit declaration; native review candidate unavailable. Risk item 2 requires an independent verifier, but the configured verification subagent failed earlier and was not retried. RDD remains on; no review acknowledgement or delivery was claimed.
