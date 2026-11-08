@@ -21,8 +21,9 @@ Luego abrí una terminal **dentro de herdr** y ejecutá `gs3`. En Pi, `/reload` 
 | `cargo` (Rust) | Compilar `gs3-hud` (no hace falta si pasás `--binary`) | Sí, salvo `--binary` |
 | Compilador C (`build-essential` en Linux; Xcode Command Line Tools en macOS) | SQLite viene incluido y se compila | Con `cargo` |
 | Gentle Shell (`gentle-shell`) | En macOS es el agente del panel principal; usa Pi internamente | Sí en macOS |
-| `flatpak` + Flameshot | Botón de captura (solo Flatpak `org.flameshot.Flameshot`) | No |
-| Vesktop ≥ 1.6.9 | Botones de voz (Discord oficial no está soportado) | No |
+| `flatpak` + Flameshot | Botón de captura en Linux | No |
+| Vesktop ≥ 1.6.9 (Linux) / Discord oficial (macOS) | Botones de voz; requieren consentimiento RPC | No |
+| `/usr/sbin/screencapture` (macOS) | Selector de captura nativo, copia al portapapeles | No |
 | `gh` | Pestaña GIT: pull requests | No |
 | `node` | Solo para correr los tests de las extensiones | No |
 

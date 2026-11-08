@@ -10,7 +10,7 @@ S4. "instalalo"
 S5. "Discord oficial de macOS"
 
 ## Tasks
-T1 [S1,S3] inline — port launcher and installer for macOS; commit: pending.
+T1 [S1,S3] inline — port launcher and installer for macOS; commit: 2925284 (launcher RED→GREEN, dry-run, Linux differential).
 T2 [S1,S2,S5] inline — port HUD platform integrations for official macOS Discord voice and capture; commit: pending.
 T3 [S1-S3] inline — focused regression tests and user documentation; commit: pending.
 
@@ -27,3 +27,5 @@ L9. Evidence: Darwin arm64; herdr 0.9.3 at /Users/albertobellido/.local/bin/herd
 L10. "Discord oficial de macOS"
 L11. Evidence: Discord.app is running at /Applications/Discord.app. Its RPC socket is under the macOS per-user temporary directory rather than /tmp. A read-only handshake returned READY; unauthenticated GET_VOICE_SETTINGS returned ERROR. User authorized a voice-consent probe; outcome pending. Vesktop absent from authorized locations.
 L12. Evidence: baseline HUD Rust suite compiled; 48/48 tests passed after isolating the tree test as a real Git repo and using a short relative TMPDIR inside target/. Earlier runs failed from an external TMPDIR's ancestor repository and macOS SUN_LEN. No global gs3 install.
+L13. Evidence: official Discord RPC at macOS user temp dir accepted user-authorized consent, authenticated, and returned read-only mute/deaf booleans. Token stored at /Users/albertobellido/.config/gs3/discord-token.json with mode 0600; no voice changes were sent. Discord Helper (Renderer) owns the socket. T1 committed as 2925284; no global gs3 install.
+L14. Evidence: Mac voice/capture RED observed, targeted GREEN; 49/49 unit tests pass (one optional live Discord test ignored in suite and run separately successfully). Release build and --help passed. Native herdr status query was denied by host permission configuration despite user approval; no real pane, screenshot interaction, or mute/deafen action was run.

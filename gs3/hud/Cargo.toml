@@ -7,6 +7,7 @@ edition = "2021"
 anyhow = "1"
 crossterm = "0.28"
 dirs = "6"
+libc = "0.2"
 notify = "8"
 ratatui = "0.29"
 rusqlite = { version = "0.32", features = ["bundled"] }

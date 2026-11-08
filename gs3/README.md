@@ -46,14 +46,14 @@ cd gs3/hud && CARGO_TARGET_DIR=../../target cargo build --release
 | Data | Trigger |
 | --- | --- |
 | Agent status, session file | herdr socket `events.subscribe` (`pane.updated`, `pane.closed`, `pane.agent_status_changed`) |
-| Tokens, cache, context, cost | inotify on the Pi session JSONL; only appended bytes are read |
-| Git branch/dirty/ahead/commits | inotify on `.git/HEAD`, `.git/index`, `.git/refs` (debounced) and agent turn end |
+| Tokens, cache, context, cost | OS file watcher on the Pi session JSONL; only appended bytes are read |
+| Git branch/dirty/ahead/commits | OS file watcher on `.git/HEAD`, `.git/index`, `.git/refs` (debounced) and agent turn end |
 | Engram observations | start and agent turn end (read-only SQLite) |
 | Tool-call counts | same JSONL tail as tokens |
 | MCP servers, PROF roster | session change, turn end and `r` (`mcp.json` names only; `settings.json` default model/thinking, `agents/*.md` frontmatter) |
 | Stack versions | once at start |
 | Model picker (MAIN model/effort rows, `sin modelo`, or Status `▸`) | explicit click → focus bound gs2 pane + fixed F9; off-render worker, triggers within 1 s ignored, failures silent; requires model-picker extension in gs2 |
-| Vesktop voice buttons (MAIN) | local RPC subscription `VOICE_SETTINGS_UPDATE` (pushed); reconnect every 2 s while no client runs; 🎙/🎧 clicks send `SET_VOICE_SETTINGS`, ⚙ runs `vesktop` to open or focus its window; the flame icon runs `flameshot gui` |
+| Discord voice buttons (MAIN) | local RPC subscription `VOICE_SETTINGS_UPDATE` (pushed); reconnect every 2 s while no client runs; 🎙/🎧 clicks send `SET_VOICE_SETTINGS`, ⚙ opens Vesktop on Linux or Discord on macOS; the flame runs Flameshot on Linux or the native macOS selector to clipboard |
 | Project tree (TREE tab) | only while the tab is shown: entering it, folder toggle, Git change, turn end, `r` |
 | Pull requests (`gh`) | start, HEAD change, turn end, key `r`, idle backoff 2 → 5 → 15 min |
 

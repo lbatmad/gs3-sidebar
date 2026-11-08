@@ -210,6 +210,7 @@ dependencies = [
  "anyhow",
  "crossterm",
  "dirs",
+ "libc",
  "notify",
  "ratatui",
  "rusqlite",

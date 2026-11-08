@@ -43,22 +43,22 @@ Arriba de la tarjeta *Status* hay una fila de iconos. Cada icono (más una colum
 
 | Icono | Acción | Colores |
 | --- | --- | --- |
-| Micrófono | Silencia / activa tu micrófono en Vesktop | rojo = silenciado · verde = activo · blanco = Vesktop no está corriendo |
+| Micrófono | Silencia / activa el micrófono del cliente de Discord | rojo = silenciado · verde = activo · blanco = cliente desconectado |
 | Auriculares | Ensordece / activa el audio | igual |
-| Engranaje | Abre o enfoca Vesktop | — |
-| Llama (a la derecha) | Abre el selector de área de Flameshot | — |
+| Engranaje | Abre o enfoca el cliente | — |
+| Llama (a la derecha) | Abre el selector de área de la plataforma | — |
 
-### Voz (Vesktop)
+### Voz (Discord)
 
-- Requiere **Vesktop ≥ 1.6.9** con su RPC local. **Discord oficial no está soportado.**
-- El primer clic pide **tu consentimiento una vez** dentro de Vesktop. El token se guarda en `~/.config/gs3/discord-token.json` con permisos `0600`.
+- Linux: requiere **Vesktop ≥ 1.6.9** con RPC local; Discord oficial no está soportado allí. macOS: usa **Discord oficial** y su socket RPC en el directorio temporal del usuario, verificando el UID y el ejecutable del proceso conectado antes de intercambiar datos.
+- El primer clic pide consentimiento para `rpc`, `rpc.voice.read` y `rpc.voice.write`. El código de autorización se intercambia con `https://streamkit.discord.com/overlay/token` y el token queda en `~/.config/gs3/discord-token.json` con permisos `0600`. Sin consentimiento no se modifica la voz.
 - Se actualiza por suscripción (el cambio llega solo); mientras no haya cliente, reintenta cada 2 s.
-- Para revocarlo: `rm ~/.config/gs3/discord-token.json`.
-- Los iconos de la captura muestran el micrófono en rojo porque así estaba Vesktop en ese momento; los estados verde y blanco no tienen captura propia.
+- Para revocar el token local: eliminá `~/.config/gs3/discord-token.json` desde tu terminal.
+- Los iconos de la captura muestran el micrófono en rojo porque así estaba el cliente en ese momento; los estados verde y blanco no tienen captura propia.
 
-### Captura (Flameshot)
+### Captura
 
-- El clic ejecuta `flatpak run org.flameshot.Flameshot gui`. **Solo se soporta la versión Flatpak.** Con otra instalación, hay que cambiar `flameshot_command()` en `gs3/hud/src/sources/screenshot.rs`.
+- Linux: `flatpak run org.flameshot.Flameshot gui` (Flameshot Flatpak). macOS: `/usr/sbin/screencapture -i -c` abre la selección interactiva y copia la captura al portapapeles; macOS puede solicitar permiso de grabación de pantalla.
 - Los clics se agrupan y deben distar al menos 1 s entre sí, para no abrir dos selectores.
 - La barra no lee el resultado de la captura.
 

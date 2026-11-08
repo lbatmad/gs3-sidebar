@@ -30,13 +30,13 @@
 
 > [!IMPORTANT]
 > **Dónde se hizo y qué está probado**
-> - Se desarrolló y se probó **solo en Linux: Pop!_OS con el escritorio COSMIC**, en un entorno de desarrollo personal.
-> - Se creó y optimizó **primero para herdr** y se implementó **sobre Pi** (Gentle Shell). Ese es el único camino verificado.
+> - Se desarrolló primero en **Linux: Pop!_OS con COSMIC**. En macOS ARM64 se comprobaron la compilación, las pruebas y la conexión de lectura al RPC de Discord; la instalación global, la captura interactiva y el cambio real de mute/deafen todavía no se comprobaron.
+> - Usa **herdr** y, en macOS, ejecuta **Gentle Shell (gs)**, que usa Pi por debajo. No se verificó el uso con otros multiplexores o agentes.
 > - **Windows y OpenCode no están probados.** Las guías [`docs/windows.md`](docs/windows.md) y [`docs/opencode.md`](docs/opencode.md) explican cómo adaptarlo y qué habría que cambiar; son un punto de partida, no una promesa.
 
 ## Camino rápido
 
-Necesitás [herdr](https://herdr.dev), `jq`, Rust (`cargo`) y Pi / Gentle Shell.
+Necesitás [herdr](https://herdr.dev), `jq`, Rust (`cargo`) y Gentle Shell. En macOS, gs es la aplicación del panel principal; Pi corre por debajo.
 
 ```sh
 git clone https://github.com/RamonsDka/gs3-sidebar.git
@@ -71,8 +71,8 @@ Es de solo lectura, con **cuatro excepciones acotadas y explícitas**, todas por
 | --- | --- |
 | Botón del modelo | Enfoca *solo* el panel de Pi enlazado y envía `F9` (abre el selector de modelos). |
 | Su propia configuración | Guarda `{name, hidden, collapsed}` en `~/.config/gs3/gs3-hud.json` (el único archivo que escribe). |
-| Voz de Discord (Vesktop) | Silencia / ensordece por el RPC local. El token queda en `~/.config/gs3/discord-token.json` con permisos `0600`. |
-| Botón de captura | Abre el selector de área de Flameshot. |
+| Voz de Discord (Vesktop en Linux, Discord oficial en macOS) | Silencia / ensordece por el RPC local. El token queda en `~/.config/gs3/discord-token.json` con permisos `0600`. |
+| Botón de captura | Abre Flameshot en Linux o el selector nativo de macOS (copia al portapapeles). |
 
 ## Las seis pestañas
 
@@ -113,7 +113,7 @@ Son extensiones de Pi que viven en [`extensions/`](extensions/) y el instalador 
 | **message-frames** | Recuadros de color para cada tipo de mensaje | `/message-frames on\|off\|status` |
 | **herdr-workspace-title** | Pone título solo al espacio de herdr según tu primer pedido | Automático |
 
-Y tres integraciones que **no** son extensiones: los botones de **voz** (mic / auriculares / engranaje de Vesktop) y de **captura** (Flameshot) pertenecen a la barra, y el estado del agente lo instala el propio herdr con `herdr integration install pi`.
+Y tres integraciones que **no** son extensiones: los botones de **voz** (Vesktop en Linux, Discord oficial en macOS) y de **captura** (Flameshot en Linux, selector nativo en macOS) pertenecen a la barra, y el estado del agente lo instala el propio herdr con `herdr integration install pi`.
 
 ![Recuadros de colores y botón copiar](docs/assets/chat-frames-copy.png)
 

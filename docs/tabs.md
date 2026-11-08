@@ -10,7 +10,7 @@ Todas las capturas son de una sesión de demostración. Con menos de 44 columnas
 
 | Parte | Qué muestra |
 | --- | --- |
-| **Fila de iconos** | Micrófono, auriculares y engranaje de Vesktop, y la llama de Flameshot a la derecha. Ver [configuración](configuration.md#botones-de-la-pestaña-main). |
+| **Fila de iconos** | Micrófono, auriculares y engranaje del cliente de Discord (Vesktop en Linux, Discord oficial en macOS), y el botón de captura a la derecha. Ver [configuración](configuration.md#botones-de-la-pestaña-main). |
 | **⌁ Status** | `Project` y `Branch` (con `±N` cambios). Debajo, el modelo en mayúsculas espaciadas y su esfuerzo (`◆ MEDIUM ◆`): **es un botón** que abre el selector de modelos. Más abajo, el estado del agente (`idle` / `working` / `blocked`), el panel de herdr y `conectado`. |
 | **⌁ Context** | Tokens usados sobre el límite del modelo, medidor, `▲ in` / `▼ out` y `Cost`. Si no se conoce el límite muestra `/ — tokens` y `sin límite`. |
 | **⌁ Todos** | Las tareas de la sesión: `✓` hecha, `◉` en curso, `○` pendiente. Vacío: `sin tareas en esta sesión`. |
