@@ -13,7 +13,9 @@
 | `HERDR_BIN_PATH` | Binario de herdr (lo usa `herdr-workspace-title`) | `herdr` del `PATH` |
 | `PI_CODING_AGENT_DIR` | Carpeta del agente de Pi | `~/.pi/agent` |
 
-Cualquier argumento después de `gs3` se pasa al agente: `gs3 --help` muestra la ayuda del lanzador.
+Los argumentos después de `gs3` se conservan al pasarlos al agente; `gs3 --help` muestra la ayuda del lanzador. El launcher antepone `--extension <puente> --gs3-herdr-pane <panel> --gs3-herdr-socket <ruta absoluta>` para asociar la sesión sin depender del entorno de Pi. Los dos flags `--gs3-herdr-*` están reservados: no los pases manualmente antes de `--`. Después de `--`, se conservan como texto del prompt.
+
+El puente solo actúa en modo TUI, publica la ruta de sesión (no su contenido) y requiere un socket local propiedad del usuario, no un enlace simbólico. Sin sesión persistida no publica nada. Si herdr ya recibe las variables completas de su integración oficial, el puente no compite con ella. Los errores de conexión o de API generan un aviso y no bloquean Pi indefinidamente.
 
 ## La barra, a mano
 

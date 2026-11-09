@@ -4,6 +4,7 @@
 # Inside herdr : splits the current pane (gs2 left ~75%, sidecar right ~25%),
 #                keeps focus on gs2, closes the sidecar when gs2 exits.
 # Outside herdr: creates a herdr workspace for $PWD, runs gs3 inside it, attaches.
+# Telemetry: explicitly loads its session bridge; --gs3-herdr-* flags are reserved.
 #
 # Overrides (mainly for testing):
 #   GS3_SHELL  command for the big pane   (macOS: gentle-shell; Linux: gentle-shell2, then pi)
@@ -29,12 +30,20 @@ die() { printf 'gs3: %s\n' "$*" >&2; exit 1; }
 
 case "${1:-}" in
   -h|--help)
-    sed -n '2,14p' "$SELF" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$SELF" | sed 's/^# \{0,1\}//'
     exit 0 ;;
 esac
 
 [ -n "$HERDR" ] || die "herdr not found in PATH"
 [ -n "$SHELL_CMD" ] || die "no agent shell found: install gentle-shell or set GS3_SHELL"
+# Reject caller-supplied binding flags before any pane/workspace side effects.
+for arg in "$@"; do
+  [ "$arg" = -- ] && break
+  case "$arg" in
+    --gs3-herdr-pane|--gs3-herdr-pane=*|--gs3-herdr-socket|--gs3-herdr-socket=*)
+      die "${arg%%=*} is reserved for the gs3 session bridge" ;;
+  esac
+done
 
 find_hud() {
   local c
@@ -47,7 +56,14 @@ find_hud() {
 quote_args() { local out="" a; for a in "$@"; do out+=" $(printf '%q' "$a")"; done; printf '%s' "$out"; }
 
 inside_herdr() {
-  local me="${HERDR_PANE_ID:?}" hud
+  local me="${HERDR_PANE_ID:?}" hud bridge socket
+  # Bind telemetry explicitly: Gentle Shell intentionally rebuilds Pi's environment.
+  bridge="$(dirname "$SELF")/../share/gs3/herdr-session/index.ts"
+  [ -f "$bridge" ] || bridge="$REPO/extensions/herdr-session/index.ts"
+  [ -f "$bridge" ] || die "session bridge missing: reinstall the gs3 launcher"
+  bridge="$(realpath "$bridge")"
+  socket="${HERDR_SOCKET_PATH:-$HOME/.config/herdr/herdr.sock}"
+  case "$socket" in /*) ;; *) die "HERDR_SOCKET_PATH must be an absolute path" ;; esac
   HUD_PANE=""   # global: the EXIT trap runs after this function returns
   if hud="$(find_hud)"; then
     HUD_PANE="$("$HERDR" pane split "$me" --direction right --ratio "$RATIO" \
@@ -68,7 +84,7 @@ inside_herdr() {
   else
     printf 'gs3: gs3-hud not built (cargo build --release in %s/gs3/hud); running gs2 alone\n' "$REPO" >&2
   fi
-  "$SHELL_CMD" "$@"
+  "$SHELL_CMD" --extension "$bridge" --gs3-herdr-pane "$me" --gs3-herdr-socket "$socket" "$@"
 }
 
 outside_herdr() {

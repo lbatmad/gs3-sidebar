@@ -19,6 +19,10 @@ step "Removing gs3-sidebar"
 for f in "$PREFIX/bin/gs3" "$PREFIX/bin/gs3-hud"; do
   if [ -e "$f" ]; then run rm -f "$f"; ok "removed $f"; else warn "not present: $f"; fi
 done
+bridge="$PREFIX/share/gs3/herdr-session"
+for f in "$bridge/index.ts" "$bridge/core.mjs"; do
+  if [ -f "$f" ]; then run rm -f "$f"; ok "removed $f"; fi
+done
 for e in "${EXTENSIONS[@]}" "${EXTENSION_FILES[@]}"; do
   if [ -e "$EXT_DIR/$e" ]; then run rm -rf "$EXT_DIR/$e"; ok "removed extension $e"; else warn "not present: extension $e"; fi
 done

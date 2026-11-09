@@ -10,12 +10,13 @@ printf '#!/bin/sh\nprintf "gentle-shell:%%s\\n" "$*"\n' > "$mock/gentle-shell"
 printf '#!/bin/sh\nprintf "pi:%%s\\n" "$*"\n' > "$mock/pi"
 chmod +x "$mock/herdr" "$mock/gentle-shell" "$mock/pi"
 result="$(env -u GS3_SHELL HERDR_ENV=1 HERDR_PANE_ID=main GS3_HUD=/usr/bin/true PATH="$mock:/usr/bin:/bin" /bin/bash "$repo/gs3/bin/gs3" 'two words')"
-[ "$result" = 'gentle-shell:two words' ] || { printf 'wrong foreground application: %s\n' "$result" >&2; exit 1; }
+expected="--extension $repo/extensions/herdr-session/index.ts --gs3-herdr-pane main --gs3-herdr-socket ${HERDR_SOCKET_PATH:-$HOME/.config/herdr/herdr.sock} two words"
+[ "$result" = "gentle-shell:$expected" ] || { printf 'wrong foreground application: %s\n' "$result" >&2; exit 1; }
 result="$(HERDR_ENV=1 HERDR_PANE_ID=main GS3_HUD=/usr/bin/true GS3_SHELL="$mock/pi" PATH="$mock:/usr/bin:/bin" /bin/bash "$repo/gs3/bin/gs3" 'two words')"
-[ "$result" = 'pi:two words' ] || { printf 'explicit shell override changed: %s\n' "$result" >&2; exit 1; }
+[ "$result" = "pi:$expected" ] || { printf 'explicit shell override changed: %s\n' "$result" >&2; exit 1; }
 printf '#!/bin/sh\nprintf "Linux\\n"\n' > "$mock/uname"
 printf '#!/bin/sh\nprintf "gentle-shell2:%%s\\n" "$*"\n' > "$mock/gentle-shell2"
 chmod +x "$mock/uname" "$mock/gentle-shell2"
 result="$(env -u GS3_SHELL HERDR_ENV=1 HERDR_PANE_ID=main GS3_HUD=/usr/bin/true PATH="$mock:/usr/bin:/bin" /bin/bash "$repo/gs3/bin/gs3" 'two words')"
-[ "$result" = 'gentle-shell2:two words' ] || { printf 'Linux foreground agent changed: %s\n' "$result" >&2; exit 1; }
+[ "$result" = "gentle-shell2:$expected" ] || { printf 'Linux foreground agent changed: %s\n' "$result" >&2; exit 1; }
 printf 'macOS defaults to Gentle Shell; Linux and explicit overrides remain supported\n'

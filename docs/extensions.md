@@ -91,6 +91,12 @@ Reglas:
 
 ---
 
+## Puente explícito de sesión
+
+`extensions/herdr-session/` es una extensión fija que el launcher carga mediante `--extension`, no por auto-descubrimiento. Recibe el panel y el socket como flags explícitos y publica únicamente `pane.report_agent_session`, al iniciar/cambiar/recargar la sesión y al comenzar un turno. Pi conserva esos flags al ejecutar `/reload`.
+
+Esto permite mostrar modelo y tokens sin modificar el supervisor de Gentle Shell. El puente no cambia el modelo, no lee conversaciones ni credenciales y no envía comandos al panel. No sustituye los reportes de estado de la integración oficial de herdr. La ruta de sesión es metadato local sensible: se comunica únicamente al socket seleccionado por el launcher. Ver [instalación](install.md#el-estado-del-agente).
+
 ## Lo que *no* son extensiones
 
 | Función | Dónde vive |

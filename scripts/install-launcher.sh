@@ -12,7 +12,11 @@ done
 step "gs3 launcher"
 run install -d "$PREFIX/bin" "$CONFIG_DIR"
 run install -m 0755 "$ROOT/gs3/bin/gs3" "$PREFIX/bin/gs3"
-ok "installed $PREFIX/bin/gs3"
+run install -d "$PREFIX/share/gs3/herdr-session"
+for file in index.ts core.mjs; do
+  run install -m 0644 "$ROOT/extensions/herdr-session/$file" "$PREFIX/share/gs3/herdr-session/$file"
+done
+ok "installed $PREFIX/bin/gs3 with its explicit session bridge"
 ok "config directory $CONFIG_DIR (gs3-hud.json is written by the HUD's ⛭ tab)"
 case ":$PATH:" in
   *":$PREFIX/bin:"*) ;;

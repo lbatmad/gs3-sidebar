@@ -67,7 +67,9 @@ Fuera de herdr, `gs3` crea un espacio de trabajo nuevo y se conecta a él.
 
 ### El estado del agente
 
-Para que herdr conozca la sesión de Pi (y la barra la siga al hacer `/new` o `/resume`), instalá su integración una vez:
+El launcher carga un puente de gs3 con el panel y socket explícitos para que la barra siga la sesión, incluso cuando Gentle Shell no hereda las variables `HERDR_*`. Se instala en `<prefix>/share/gs3/herdr-session/`, también con `--no-extensions`; no modifica el supervisor ni su manifiesto. Al actualizar el launcher, abrí una sesión nueva con `gs3`: `/reload` solo conserva los argumentos de una sesión que ya arrancó con el puente.
+
+Para los estados `working`/`idle`/`blocked`, instalá además la integración oficial una vez:
 
 ```sh
 herdr integration install pi
@@ -90,7 +92,7 @@ Para que `doctor.sh` renderice la barra contra un panel real, ejecutalo dentro d
 | `gs3: herdr not found` | herdr no está en el `PATH` | Instalalo desde herdr.dev |
 | `gs3: no agent shell found` | No se encuentra el launcher de gs (macOS) ni el agente habitual (Linux) | Definí `GS3_SHELL=/ruta/gentle-shell` en macOS |
 | Pi corre sin barra, con aviso | `gs3-hud` no está instalado | `scripts/build-hud.sh` |
-| La barra dice `conectado` pero sin datos | Pi no está en el panel enlazado | Lanzalo con `gs3`, no a mano |
+| La barra dice `conectado` pero sin datos | Falta la asociación entre el panel y la sesión | Actualizá el launcher con `scripts/install-launcher.sh` y abrí una sesión nueva con `gs3`; no alcanza con `/reload` si faltan los argumentos del puente |
 | `/model-picker` no existe | Extensiones sin cargar | `/reload` en Pi |
 | Los tests de extensiones dicen SKIP | Falta `PI_PKG_ROOT` | Ver [CONTRIBUTING](../CONTRIBUTING.md) |
 
