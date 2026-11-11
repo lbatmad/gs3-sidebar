@@ -1,5 +1,7 @@
 mod screenshot;
+mod stack;
 mod voice;
+pub use stack::stack;
 pub use screenshot::screenshot;
 pub use voice::voice;
 use crate::core::*;
@@ -169,13 +171,6 @@ pub fn roster_of(session:&Path)->Option<Roster> {
     let tasks:Vec<Value>=files("gentle-agents/tasks","json").into_iter().rev().take(200).filter_map(|p|serde_json::from_slice::<Value>(&fs::read(p).ok()?).ok()).map(|v|v["task"].clone()).filter(|t|t.is_object()).collect();
     (settings.is_object()||!agents.is_empty()).then(||roster(&settings,&agents,&tasks))
 }
-/// Stack · Ecosistema: `<tool> --version` once at start (each bounded by run()'s timeout) plus the HUD's own version.
-pub fn stack(cwd:&Path)->Vec<Tool> {
-    let probe=|p:&str,a:&str|run(cwd,p,&[a],3).ok().and_then(|o|clean_version(&o));
-    vec![Tool{name:"pi",version:probe("pi","--version")},Tool{name:"gs3-hud",version:Some(env!("CARGO_PKG_VERSION").into())},
-        Tool{name:"gentle-shell",version:probe("gentle-shell","--version")},Tool{name:"gentle-ai",version:probe("gentle-ai","--version")},
-        Tool{name:"engram",version:probe("engram","version").or_else(||probe("engram","--version"))},Tool{name:"herdr",version:probe("herdr","--version")}]
-}
 /// MCP servers configured for the session's Pi agent dir (`mcp.json`); names only.
 pub fn mcp(session:&Path)->Option<Vec<Mcp>> {
     let dir=agent_dir(&session.to_string_lossy())?;
@@ -298,7 +293,7 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
         loop {
             let msg=match git_deadline {Some(t)=>rx.recv_timeout(t.saturating_duration_since(Instant::now())),None=>rx.recv().map_err(|_|mpsc::RecvTimeoutError::Disconnected)};
             match msg {
-                Ok(Local::Refresh)=>{let _=tx.send(Event::Git(git_snapshot(&cwd))); let _=tx.send(Event::Engram(engram(&cwd))); send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent);}
+                Ok(Local::Refresh)=>{let _=tx.send(Event::Git(git_snapshot(&cwd))); let _=tx.send(Event::Engram(engram(&cwd))); send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent); let _=tx.send(Event::Stack(stack(&cwd,session.as_deref())));}
                 Ok(Local::Session(path))=>{
                     if let (Some(w),Some(p))=(&mut watcher,&session) {let _=w.unwatch(p.parent().unwrap_or(p));}
                     session=path.map(PathBuf::from); tail=Tail::default();
@@ -308,6 +303,7 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
                     }
                     let _=tx.send(Event::Session(session.as_ref().map(|p|p.to_string_lossy().into_owned()),tail.session.clone()));
                     send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent);
+                    let _=tx.send(Event::Stack(stack(&cwd,session.as_deref())));
                 }
                 Ok(Local::Changed(e))=>{
                     if !matches!(e.kind,notify::EventKind::Create(_)|notify::EventKind::Modify(_)|notify::EventKind::Remove(_)) {continue}
@@ -462,6 +458,11 @@ mod tests {
         local.send(Local::Session(Some(old.to_string_lossy().into_owned()))).unwrap();
         let mut state=State::new("bound".into(),dir.clone()); state.session_path=Some(old.to_string_lossy().into_owned());
         apply(&mut state,rx.recv_timeout(Duration::from_secs(3)).unwrap()); assert_eq!(state.session.input,99);
+        // Binding also publishes Stack before later filesystem notifications.
+        match rx.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Event::Stack(tools)=>{assert_eq!(tools.len(),6); assert_eq!(tools[1].version.as_deref(),Some(env!("CARGO_PKG_VERSION")));},
+            _=>panic!("expected Stack after session binding"),
+        }
         local.send(Local::Changed(notify::Event{kind:notify::EventKind::Create(notify::event::CreateKind::File),paths:vec![new.clone()],attrs:Default::default()})).unwrap();
         apply(&mut state,rx.recv_timeout(Duration::from_secs(3)).unwrap());
         assert_eq!(state.session_path.as_deref(),new.to_str()); assert_eq!(state.session.input,0); assert!(state.read_session);

@@ -72,7 +72,7 @@ inside_herdr() {
       # The HUD never creates directories: pass --config only when its folder exists.
       local cfg=""; [ -d "$(dirname "$CONFIG")" ] && cfg=" --config $(printf '%q' "$CONFIG")"
       "$HERDR" pane run "$HUD_PANE" \
-        "exec $(printf '%q' "$hud") --pane $(printf '%q' "$me") --cwd $(printf '%q' "$PWD")$cfg" >/dev/null \
+        "GS3_SHELL=$(printf '%q' "$SHELL_CMD") GS3_HERDR=$(printf '%q' "$HERDR") exec $(printf '%q' "$hud") --pane $(printf '%q' "$me") --cwd $(printf '%q' "$PWD")$cfg" >/dev/null \
         || printf 'gs3: could not start sidecar in %s\n' "$HUD_PANE" >&2
       # Close the sidecar whenever gs2 ends (normal exit, Ctrl-C, terminal hangup).
       trap '"$HERDR" pane close "$HUD_PANE" >/dev/null 2>&1' EXIT

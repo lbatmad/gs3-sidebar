@@ -51,7 +51,7 @@ cd gs3/hud && CARGO_TARGET_DIR=../../target cargo build --release
 | Engram observations | start and agent turn end (read-only SQLite) |
 | Tool-call counts | same JSONL tail as tokens |
 | MCP servers, PROF roster | session change, turn end and `r` (`mcp.json` names only; `settings.json` default model/thinking, `agents/*.md` frontmatter) |
-| Stack versions | once at start |
+| Stack versions | session binding and refresh (`r`/turn end); selected installation only, otherwise `no verificada` |
 | Model picker (MAIN model/effort rows, `sin modelo`, or Status `▸`) | explicit click → focus bound gs2 pane + fixed F9; off-render worker, triggers within 1 s ignored, failures silent; requires model-picker extension in gs2 |
 | Discord voice buttons (MAIN) | local RPC subscription `VOICE_SETTINGS_UPDATE` (pushed); reconnect every 2 s while no client runs; 🎙/🎧 clicks send `SET_VOICE_SETTINGS`, ⚙ opens Vesktop on Linux or Discord on macOS; the flame runs Flameshot on Linux or the native macOS selector to clipboard |
 | Project tree (TREE tab) | only while the tab is shown: entering it, folder toggle, Git change, turn end, `r` |

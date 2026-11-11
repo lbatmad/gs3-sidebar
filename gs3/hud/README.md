@@ -38,12 +38,34 @@ violet double-framed collapsible cards). Card catalog: `skills/gs3-sidebar/refer
 | 1:MAIN | voice buttons `🎙 🎧 ⚙` (Vesktop mute, deafen, open) plus a small capture flame flush right (Flameshot on Linux, native selection to clipboard on macOS), ⌁ Status (project, branch, clickable model section: spaced capitals + `◆ THINKING ◆`; Status `▸` hint), ⌁ Context, ⌁ Todos (latest `todo` tool checklist of the session) |
 | 2:GIT | ⎇ git graph (`[ Grafo \| Ramas ]`: commit graph or branches; click a branch to diff it against HEAD), 📁 Working Tree (changed files; click one for an inline diff preview, secret-like names are never read), ⌁ Pull requests |
 | 3:PROF | ⌁ Profiles & Clusters (host model/thinking from `settings.json`, one row per `agents/*.md` with its model and effort, Task Manager footer) |
-| 4:MEM | 🧠 Engram (daemon health, sync state), 🧠 Active Handoff (latest session summary, bounded), ⌁ Stack (versions probed once at start), 🔧 tools, ⌁ MCP (names only, never values) |
+| 4:MEM | 🧠 Engram (daemon health, sync state), 🧠 Active Handoff (latest session summary, bounded), ⌁ Stack (session-installation versions; refreshed on binding and `r`), 🔧 tools, ⌁ MCP (names only, never values) |
 | 5:TREE | ⌁ PROYECTO (project tree from the git root, dirs first, git badges `M A ? U D`, `●` on folders with changes; click a folder to open/close it, `[ ⊟ ]` folds all, a changed file opens its diff in GIT; names only, symlinks never followed, build dirs skipped) |
 | 6:CONFIG | ⌁ Nombre, ⌁ Pestañas (show/hide tabs), ⌁ Monitor (pane, config file, help) |
 
 The context limit comes from `<agent dir>/cpamc-models-cache.json` (what Pi registers
 at runtime), then `models-store.json`. Token counts are abbreviated like the reference (`33.7k`, `179k`, `1.0M`).
+
+Stack reads Pi and Gentle Shell versions from the selected installation's package
+manifests, not from a supervisor's forwarded `--version` output. A verified, exactly
+versioned managed `npm:gentle-pi` package takes precedence over a disabled legacy
+package; conflicting or unsupported identities remain unverified. Gentle AI is
+checked against the package's pinned private binary; Engram uses the session's
+private executable. Herdr uses the launcher's selected `GS3_HERDR` executable,
+and the HUD reports its own compiled version. The launcher passes its selected
+`GS3_SHELL` and `GS3_HERDR` paths explicitly to the sidecar. An unrecognized
+installation, missing binary, invalid version, or unbound tool is displayed as
+`no verificada` rather than replaced with an unrelated global version. Version
+probes run off the UI thread on session binding and refresh (`r`/turn end).
+
+For a manually started HUD, pass the actual executables selected for the session:
+
+```sh
+GS3_SHELL=/absolute/path/to/gentle-shell GS3_HERDR=/absolute/path/to/herdr \
+  gs3-hud --pane <PI_PANE_ID> --socket /absolute/path/to/herdr.sock --cwd /absolute/path/to/project
+```
+
+Use the genuine Herdr terminal and its actual pane and socket; this does not create
+or restart a pane. Without `GS3_HERDR`, its version remains unverified.
 
 The terminal UI redraws only on changed state or resize. Herdr uses a dedicated
 subscription socket and short-lived request sockets, reconnecting at 1–30 seconds.

@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | `GS3_SHELL` | Comando del panel grande | `gentle-shell2` si existe, si no `pi` |
 | `GS3_HUD` | Ruta del binario `gs3-hud` | `<repo>/target/release/gs3-hud`, luego el del `PATH` |
+| `GS3_HERDR` | Binario herdr seleccionado para el lanzador y la versión de la barra | `herdr` del `PATH`, luego `~/.local/bin/herdr` |
 | `GS3_RATIO` | Fracción del panel para el agente | `0.75` |
 | `GS3_CONFIG` | Archivo de ajustes de la barra | `~/.config/gs3/gs3-hud.json` |
 | `GS3_NO_ATTACH=1` | Fuera de herdr: crea el espacio sin conectarse | desactivado |
@@ -22,6 +23,15 @@ El puente solo actúa en modo TUI, publica la ruta de sesión (no su contenido) 
 ```sh
 gs3-hud --pane <ID_DEL_PANEL_DE_PI> [--socket <ruta>] [--cwd <dir>] [--config <archivo>] [--once]
 ```
+
+Para conservar la procedencia de versiones al arrancar la barra a mano, pasá los ejecutables realmente seleccionados para la sesión:
+
+```sh
+GS3_SHELL=/ruta/absoluta/a/gentle-shell GS3_HERDR=/ruta/absoluta/a/herdr \
+  gs3-hud --pane <ID_DEL_PANEL_DE_PI> --socket /ruta/absoluta/al/socket --cwd /ruta/absoluta/al/proyecto
+```
+
+Usá el terminal genuino de Herdr y el panel y socket reales; este comando no crea ni reinicia paneles. Sin `GS3_HERDR`, su versión queda «no verificada». El lanzador normal ya transmite ambas rutas.
 
 `--once` imprime todas las pestañas como texto plano (ancho 42) y sale; sirve para depurar. Con un panel que no existe no imprime nada.
 

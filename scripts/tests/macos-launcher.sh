@@ -2,8 +2,7 @@
 # Isolated launcher check: nothing is installed and no real herdr pane is touched.
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-mock="$repo/target/gs3-launcher-test-$$"
-mkdir -m 700 "$mock"
+mock="$(mktemp -d /tmp/gs3-launcher-test.XXXXXX)"
 trap 'rm -rf "$mock"' EXIT
 printf '#!/bin/sh\ncase "$1 $2" in "pane split") printf "{\\"result\\":{\\"pane\\":{\\"pane_id\\":\\"hud\\"}}}\\n";; esac\n' > "$mock/herdr"
 printf '#!/bin/sh\nprintf "gentle-shell:%%s\\n" "$*"\n' > "$mock/gentle-shell"

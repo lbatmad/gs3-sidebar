@@ -721,7 +721,7 @@ fn stack_card(s: &State, w: usize) -> Card {
         let accent = match t.name { "pi" | "herdr" => Cyan, "gs3-hud" => Pink, "gentle-shell" => Gold, "gentle-ai" => Mint, "engram" => Secondary, _ => Text };
         match &t.version {
             Some(v) => c.row(vec![seg("● ", Mint), seg(t.name, accent), seg(format!(" v{v}"), Text)], vec![]),
-            None => c.row(vec![seg("○ ", Dim), seg(t.name, Dim), seg(" -", Dim)], vec![]),
+            None => c.row(vec![seg("○ ", Dim), seg(t.name, Dim), seg(" · no verificada", Dim)], vec![]),
         }
     }
     c
@@ -1046,7 +1046,7 @@ mod tests {
         assert!(find(&l, "#214 session_summary").contains("hace 2h")); find(&l, "✦ Goal"); find(&l, "• merged #12 into develop");
         let f = frame(&s, 42, 0); let tone = |needle: &str| f.lines.iter().flatten().find(|g| g.text == needle).map(|g| g.tone);
         assert_eq!((tone("main"), tone("#12"), tone("➔"), tone("done")), (Some(Tone::Mint), Some(Tone::Gold), Some(Tone::Pink), Some(Tone::Cyan)));
-        find(&l, "⌁ Stack · Ecosistema"); find(&l, "● pi v1.5.0"); find(&l, "○ gentle-ai -");
+        find(&l, "⌁ Stack · Ecosistema"); find(&l, "● pi v1.5.0"); find(&l, "○ gentle-ai · no verificada");
         // Tool pills wrap (3-space gap) instead of being cut; the call count sits in the title bar.
         let w38 = render_lines(&s, 38); assert!(find(&w38, "🔧 tools").contains("14 calls [-]"), "{w38:#?}");
         let pills: String = w38.iter().skip_while(|x| !x.contains("🔧 tools")).skip(1).take_while(|x| !x.contains('╚')).cloned().collect();

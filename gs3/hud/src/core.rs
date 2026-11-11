@@ -194,17 +194,18 @@ pub fn now_secs()->i64 {std::time::SystemTime::now().duration_since(std::time::U
 /// One Stack · Ecosistema entry: installed version or None.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tool { pub name:&'static str, pub version:Option<String> }
-/// Reference `cleanVersionString`: the first `x.y.z[-tag]`, else the last token without `v`.
+/// First numeric version on the first output line; banners are not versions.
 pub fn clean_version(raw:&str)->Option<String> {
-    let line=raw.trim().lines().next()?.trim(); if line.is_empty() {return None}
-    for t in line.split_whitespace() {
-        let t=t.trim_start_matches(['v','V']);
-        let v:String=t.chars().take_while(|c|c.is_ascii_alphanumeric()||matches!(c,'.'|'-'|'_')).collect();
-        let mut parts=v.splitn(3,'.');
-        let num=|p:Option<&str>|p.is_some_and(|p|p.chars().next().is_some_and(|c|c.is_ascii_digit()));
-        if num(parts.next()) && num(parts.next()) && num(parts.next()) {return Some(v.trim_end_matches(['.','-','_']).into())}
+    for token in raw.trim().lines().next()?.split_whitespace() {
+        let version=token.trim_start_matches(['v','V']).trim_end_matches([',',';']);
+        let (release,build)=version.split_once('+').map_or((version,None),|(v,b)|(v,Some(b)));
+        let (numbers,tag)=release.split_once('-').map_or((release,None),|(v,t)|(v,Some(t)));
+        let parts:Vec<_>=numbers.split('.').collect();
+        let identifiers=|value:&str|value.split('.').all(|s|!s.is_empty()&&s.chars().all(|c|c.is_ascii_alphanumeric()||c=='-'));
+        if parts.len()==3 && parts.iter().all(|p|!p.is_empty()&&p.chars().all(|c|c.is_ascii_digit()))
+            && tag.is_none_or(identifiers) && build.is_none_or(identifiers) {return Some(version.into())}
     }
-    line.split_whitespace().last().map(|t|t.trim_start_matches(['v','V']).into())
+    None
 }
 /// TREE tab: one scan of the project root with only the `open` directories expanded.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -476,7 +477,9 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
         assert_eq!([None,Some(95),Some(70),Some(-200),Some(-7300),Some(-200_000)].map(|a|ago(a,100)),["nunca","recién","hace 30s","hace 5m","hace 2h","hace 2d"]);
         assert_eq!(clean_version("gentle-shell 4.5.1-main.14f44d11cacb").as_deref(),Some("4.5.1-main.14f44d11cacb"));
         assert_eq!(clean_version("engram 3.6.0\nmore").as_deref(),Some("3.6.0")); assert_eq!(clean_version("v1.2.3,").as_deref(),Some("1.2.3"));
-        assert_eq!(clean_version("tool nightly").as_deref(),Some("nightly")); assert_eq!(clean_version("  "),None);
+        assert_eq!(clean_version("tool nightly"),None); assert_eq!(clean_version("  "),None);
+        for invalid in ["usage: --version", "tool 1.2.3oops", "tool 1x.2y.3z", "tool 1.2", "tool 1.2.3-"] { assert_eq!(clean_version(invalid),None); }
+        assert_eq!(clean_version("tool v1.2.3-rc.1+build.7").as_deref(),Some("1.2.3-rc.1+build.7"));
         let long="x".repeat(500); let body=format!("## Goal\n\n- a\n{long}\n")+&"l\n".repeat(60);
         let l=handoff_lines(&body); assert_eq!(l.len(),40); assert_eq!(&l[..2],["## Goal","- a"]); assert_eq!(l[2].chars().count(),300);
     }
