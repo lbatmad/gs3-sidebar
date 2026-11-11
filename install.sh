@@ -42,11 +42,11 @@ fi
 
 build_args=(); [ -n "$BINARY" ] && build_args=(--binary "$BINARY")
 "$S/check-deps.sh" $([ -n "$BINARY" ] && echo --no-build) || die "fix the missing tools above and run again"
-"$S/build-hud.sh" "${build_args[@]}" "${pass[@]}"
-"$S/install-launcher.sh" "${pass[@]}"
-[ "$WITH_EXT" = 1 ] && "$S/install-extensions.sh" "${pass[@]}"
+"$S/build-hud.sh" ${build_args[@]+"${build_args[@]}"} ${pass[@]+"${pass[@]}"}
+"$S/install-launcher.sh" ${pass[@]+"${pass[@]}"}
+[ "$WITH_EXT" = 1 ] && "$S/install-extensions.sh" ${pass[@]+"${pass[@]}"}
 
 [ "$DRY_RUN" = 1 ] && { printf '\nDry run finished. Nothing was changed.\n'; exit 0; }
 step "Verification"
-"$S/doctor.sh" "${pass[@]}" || warn "doctor reported problems (see above); the install itself finished"
+"$S/doctor.sh" ${pass[@]+"${pass[@]}"} || warn "doctor reported problems (see above); the install itself finished"
 printf '\n%sDone.%s Open a terminal inside herdr and run: gs3\n' "$G" "$N"
