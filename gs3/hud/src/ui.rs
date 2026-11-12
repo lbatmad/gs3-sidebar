@@ -861,7 +861,9 @@ fn spotify_card(s: &State, w: usize) -> Card {
     }
     let ready = sp.running && sp.device_id.is_some();
     if let Some(buf) = &s.ui.spotify_prompt {
-        c.row(vec![seg("> ", PinkBright), seg(buf.clone(), Text), bold("▏", PinkBright)], vec![seg("Enter busca · Esc cancela", Dim)]);
+        // The hint owns its own row: sharing it with the input cut long queries at half the inner width.
+        c.row(vec![seg("> ", PinkBright), seg(buf.clone(), Text), bold("▏", PinkBright)], vec![]);
+        c.row(vec![seg("Enter busca · Esc cancela", Dim)], vec![]);
     } else {
         let row = c.rows.len();
         c.row(vec![seg(if ready { "🔍 buscar tema" } else { "buscar · falta dispositivo" }, if ready { Pink } else { Dim })], vec![]);
@@ -943,7 +945,9 @@ fn youtube_card(s: &State, w: usize) -> Card {
     let mut c = Card::new("youtube", mark("YouTube", Coral), w);
     // S3/S4: the dialog that searches a specific track. Modal, so the card shows only the box.
     if let Some(buf) = &s.ui.prompt {
-        c.row(vec![seg("> ", PinkBright), seg(buf.clone(), Text), bold("▏", PinkBright)], vec![seg("Enter busca · Esc cancela", Dim)]);
+        // The hint owns its own row: sharing it with the input cut long queries at half the inner width.
+        c.row(vec![seg("> ", PinkBright), seg(buf.clone(), Text), bold("▏", PinkBright)], vec![]);
+        c.row(vec![seg("Enter busca · Esc cancela", Dim)], vec![]);
         return c;
     }
     if y.title.is_some() && !y.queue.is_empty() {
@@ -1037,6 +1041,33 @@ mod tests {
         s.mcp = Some(vec![Mcp { name: "engram".into(), local: true }]);
         s
     }
+    #[test]
+    fn both_search_boxes_put_the_hint_below_so_the_query_keeps_the_width() {
+        let query = "around the world daft punk";
+        let mut s = sample();
+        s.ui.tab = Tab::Media;
+        // Spotify's box: the hint used to sit on the input row and eat its width.
+        s.media.spotify.linked = true;
+        s.media.spotify.running = true;
+        s.media.spotify.device_id = Some("d".into());
+        s.ui.spotify_prompt = Some(query.into());
+        let f = frame(&s, 42, 40);
+        let lines: Vec<String> = f.lines.iter().map(|l| plain(l)).collect();
+        let input = lines.iter().position(|l| l.contains("> around")).expect("spotify input row");
+        assert!(lines[input].contains(query), "the hint must not take the query's width: {:?}", lines[input]);
+        assert!(!lines[input].contains("Enter busca"), "the hint is not on the input row: {:?}", lines[input]);
+        assert!(lines[input + 1].contains("Enter busca · Esc cancela"), "{:?}", lines[input + 1]);
+        // YouTube's box had the same defect and moves with it.
+        s.ui.spotify_prompt = None;
+        s.ui.prompt = Some(query.into());
+        let f = frame(&s, 42, 40);
+        let lines: Vec<String> = f.lines.iter().map(|l| plain(l)).collect();
+        let input = lines.iter().position(|l| l.contains("> around")).expect("youtube input row");
+        assert!(lines[input].contains(query), "{:?}", lines[input]);
+        assert!(!lines[input].contains("Enter busca"), "{:?}", lines[input]);
+        assert!(lines[input + 1].contains("Enter busca · Esc cancela"), "{:?}", lines[input + 1]);
+    }
+
     #[test]
     fn cover_layout_is_reserved_only_for_visible_complete_images() {
         let mut s = sample(); s.ui.tab = Tab::Media;

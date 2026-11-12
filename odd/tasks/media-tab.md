@@ -158,6 +158,8 @@ Evidence that the block is real, visible as text even though the pixels are not:
 
 A documentation debt of the same family as L14 was also closed: `main.rs`'s HELP text still said "Spotify previous/next and seek remain pending" after T3b had shipped them. It now names the transport, the seek bar, the search box and the cover protocol. 107 tests passed, 2 ignored.
 
+L30. Human report, with a screenshot of the Spotify box: "fijate de poner Enter busca . Esc cancela, en la línea de abajo, sino se corta el texto de la búsqueda". Reproduced: both search boxes rendered the hint as the row's right column, so the buffer only got `inner - hint width` and a normal query was clipped mid-word. The hint now owns its own row in Spotify's box and in YouTube's — the same defect in the same card, fixed where it appears rather than leaving one box inconsistent. RED was observed on a new test that asserts the full query survives on the input row and that the hint sits on the row below it, for both boxes; then GREEN at 108 tests. Verified on screen at 46 columns: `> around the world daft punk▏` complete, `Enter busca · Esc cancela` below.
+
 ## Delivery
 
 Slice boundary: commit `0457e04` closes the previously prepared rail work, and the next commit is the
