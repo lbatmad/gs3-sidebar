@@ -392,10 +392,11 @@ below and `VIDEO_INSET_Y` is gone. The test that pins the absolute rows moved fr
 `(21, 27)`; the property it really guards — the picture moves exactly as much as the search row — is
 unchanged. 147 tests green.
 
-L55. Human, three rounds of "se sigue viendo muy arriba": measuring the rendered card and the cell rect
-settled it. The rail asks for `CellRect { y: 22, height: 11 }` but the system draws the window about two
-rows higher and one shorter, so the picture crowded `buscar` while the reservation showed a gap below.
-The reservation grew to 15 rows and the inset to 4, which puts the drawn picture one to two rows above
-and three below. This is a compensation, not a fix: the offset lives in `placement`'s cell-to-pixel
-conversion, and it cannot be measured from this session because mpv hides its window when the rail is
-not frontmost (S11), so the honest next step is one real measurement with the rail focused.
+L55. Human: "encima quedó todo mal, el arbol sucio, el video mal centrado, no se volvió a la version
+donde masomenos estaba todo bien" — rolled back. `5ae811a` (the fifteen-row reservation plus
+`VIDEO_NUDGE_DOWN`) is reverted, so the block is again `VIDEO_ROWS = 12` / `VIDEO_ROWS_TALL = 10` with
+pure centring and no compensating nudge. The uncommitted `TITLEBAR_PX = 14` nudge that had been left in
+`sources/media.rs` is discarded (patch kept under `/tmp/gs3-dirty-media-14px-*.patch`); with it goes the
+double compensation that never converged. L54's centred block stands as it was at `80d7d16`. Still
+open and NOT claimed: `geometry()` maps rows through the window frame instead of the text grid, which is
+why a correctly centred cell rect can still draw off, and a size change still rebuilds mpv.
