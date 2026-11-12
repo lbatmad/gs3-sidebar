@@ -77,6 +77,8 @@ unavailable and `sin resultados` for an empty reply. Search and track playback u
 and token-renewal paths as playlist operations. Cover art remains pending.
 The card shows the current title and artist, previous/next, pause/resume and a per-column clickable seek bar with elapsed and total time. After an explicit play or resume, `/me/player` is polled about once per second while playing; polling stops on pause or an empty response. `librespot` uses the same tool search order as YouTube. No device is started and no Spotify request is made on startup or `--once`.
 
+Spotify cover art uses the kitty graphics protocol: the playing album takes precedence over the open playlist. On URL changes the engine downloads and converts off the UI thread, using private temporary files (0600) in `~/.config/gs3/covers` (0700). Missing art, curl, sips or a failed conversion leaves the ordinary text layout with no reserved image space. Cover images are removed when leaving MEDIA or exiting; no cover is fetched on startup or in `--once`.
+
 MEDIA delegates playback instead of drawing it: Spotify audio belongs to `librespot` and YouTube
 video to `mpv` in its own window, so the rail only sends commands and reports state. The YouTube
 engine resolves `mpv` and `yt-dlp` from `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin` and

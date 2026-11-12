@@ -64,6 +64,8 @@ El renglón del host muestra los defaults de `settings.json` mientras el perfil 
 
 ## 6 · MEDIA — Spotify arriba, YouTube abajo
 
+La portada de Spotify usa el protocolo gráfico kitty: prioriza el álbum del tema reproducido y, si no hay, la lista abierta. Al cambiar la URL, el motor descarga y convierte fuera de la interfaz usando la caché privada `~/.config/gs3/covers` (directorio 0700, archivos temporales 0600). Sin imagen, herramientas o conversión válida, no reserva espacio y muestra la tarjeta habitual. La portada se oculta al salir de MEDIA.
+
 La pestaña no reproduce nada por sí misma: la barra es el panel de control y el audio y el vídeo salen en procesos externos. Arriba, **Spotify**; inmediatamente debajo, **YouTube**.
 
 | Sección | Qué muestra |

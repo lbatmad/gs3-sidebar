@@ -1,4 +1,5 @@
 mod config;
+mod cover;
 mod core;
 mod media;
 mod sources;
@@ -7,9 +8,9 @@ use anyhow::{anyhow, Result};
 use core::*;
 use crossterm::{event::{self, Event as Input, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind}, execute, style::Print, terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen}};
 use ratatui::{backend::CrosstermBackend, style::{Color, Modifier, Style}, text::{Line, Span}, widgets::Paragraph, Terminal};
-use std::{io, path::{Path, PathBuf}, sync::mpsc, thread};
+use std::{io::{self, Write}, path::{Path, PathBuf}, sync::mpsc, thread};
 
-const HELP:&str="gs3-hud --pane <HERDR_PANE_ID> [--socket <path>] [--cwd <dir>] [--config <file>] [--once]\n\nRead-only Pi telemetry rail (tabs MAIN GIT PROF MEM TREE MEDIA and ⛭ = CONFIG).\nKeys: 1-7 switch tab (in that order), r refresh, q / Ctrl-C quit (in the CONFIG name editor: type, Backspace, Enter saves, Esc cancels).\nMouse: click a tab, a card's [-]/[+] to collapse or expand it, CONFIG rows to toggle tabs or edit the name;\nGIT: [ Grafo | Ramas ] switches view, a branch shows its diff against HEAD ([ ✕ ] closes), a file previews its diff inline (read-only git diff);\nMAIN: controls use Nerd Font icons by default; plain_controls=true in --config selects ASCII MIC/MUTE, HP/DEAF, APP and CAP labels for ordinary fonts. Mic / headphones toggle voice mute/deafen (Vesktop on Linux, official Discord on macOS; coral active, mint inactive, dim offline); the Discord icon opens or focuses that client; the capture control opens the area selector (Flameshot on Linux, native macOS selection to clipboard; explicit click, ≥1 s apart); an explicit voice click may request one-time consent and save a private 0600 token in ~/.config/gs3/discord-token.json (never displayed). No voice sockets in --once.\nMAIN: click any model/effort row (or Status ▸) to focus the bound agent pane and send fixed F9 for its model picker; repeated clicks within 1 s are ignored, failures are silent;\nPROF: reads global configured assignments from the canonical /gentle:profiles models.json; GENTLE_PI_CONFIG_HOME or absolute GENTLE_SHELL_CONFIG_HOME selects the store, then a bundled <prefix>/agent next to <prefix>/config/models.json, then the standard ~/.pi/gentle-ai store. The host row keeps the settings.json defaults until the profile configures an orchestrator entry. Provider roles are included without MD files; missing/invalid/unknown sources are labeled, never replaced by task/MD model guesses. r re-reads. Session pins/snapshots may differ; profiles and model selections are never written.\nTREE: a folder opens/closes, [ ⊟ ] folds all, a changed file opens its diff in GIT, another file is selected (names only, symlinks never followed);\nwheel over the tab bar cycles tabs, elsewhere scrolls.\nMEDIA: Spotify keeps the upper section and YouTube the section below it. Spotify authorizes with its own PKCE consent: an explicit click opens the browser, waits up to 180 s on http://127.0.0.1:8899/callback (register that exact redirect in the app) and keeps client_id plus tokens in a private 0600 ~/.config/gs3/spotify.json through curl; nothing is fetched until you click. With Spotify Premium, start the gs3 librespot device explicitly, open its first-login OAuth URL shown on the card, then play the open playlist or a track and pause; the private ~/.config/gs3/librespot cache is reused. Spotify previous/next and seek remain pending. A YouTube search queues the best match plus its recommendations (the RD mix) and starts it; the video plays in a separate mpv window, never inside the rail. Transport and a clickable seek bar drive mpv over its JSON IPC socket. Requires librespot, mpv and yt-dlp (PATH, then /opt/homebrew/bin and /usr/local/bin); a missing tool is reported, never installed.\n--config is the HUD's own settings file {name, hidden, collapsed, optional plain_controls}: written atomically (in addition to the private Discord token and Spotify credential file, both 0600, and the private librespot cache); without it changes last until exit.\n--socket defaults to HERDR_SOCKET_PATH or ~/.config/herdr/herdr.sock\n--cwd defaults to the current directory\n--once prints a plain-text snapshot of every visible tab at width 42 (no terminal required)\nStack versions follow the selected installation; r refreshes them. Unverifiable tools show no verificada.\nPR refresh cycles (view + open count) are spaced by at least 30 seconds.";
+const HELP:&str="gs3-hud --pane <HERDR_PANE_ID> [--socket <path>] [--cwd <dir>] [--config <file>] [--once]\n\nRead-only Pi telemetry rail (tabs MAIN GIT PROF MEM TREE MEDIA and ⛭ = CONFIG).\nKeys: 1-7 switch tab (in that order), r refresh, q / Ctrl-C quit (in the CONFIG name editor: type, Backspace, Enter saves, Esc cancels).\nMouse: click a tab, a card's [-]/[+] to collapse or expand it, CONFIG rows to toggle tabs or edit the name;\nGIT: [ Grafo | Ramas ] switches view, a branch shows its diff against HEAD ([ ✕ ] closes), a file previews its diff inline (read-only git diff);\nMAIN: controls use Nerd Font icons by default; plain_controls=true in --config selects ASCII MIC/MUTE, HP/DEAF, APP and CAP labels for ordinary fonts. Mic / headphones toggle voice mute/deafen (Vesktop on Linux, official Discord on macOS; coral active, mint inactive, dim offline); the Discord icon opens or focuses that client; the capture control opens the area selector (Flameshot on Linux, native macOS selection to clipboard; explicit click, ≥1 s apart); an explicit voice click may request one-time consent and save a private 0600 token in ~/.config/gs3/discord-token.json (never displayed). No voice sockets in --once.\nMAIN: click any model/effort row (or Status ▸) to focus the bound agent pane and send fixed F9 for its model picker; repeated clicks within 1 s are ignored, failures are silent;\nPROF: reads global configured assignments from the canonical /gentle:profiles models.json; GENTLE_PI_CONFIG_HOME or absolute GENTLE_SHELL_CONFIG_HOME selects the store, then a bundled <prefix>/agent next to <prefix>/config/models.json, then the standard ~/.pi/gentle-ai store. The host row keeps the settings.json defaults until the profile configures an orchestrator entry. Provider roles are included without MD files; missing/invalid/unknown sources are labeled, never replaced by task/MD model guesses. r re-reads. Session pins/snapshots may differ; profiles and model selections are never written.\nTREE: a folder opens/closes, [ ⊟ ] folds all, a changed file opens its diff in GIT, another file is selected (names only, symlinks never followed);\nwheel over the tab bar cycles tabs, elsewhere scrolls.\nMEDIA: Spotify keeps the upper section and YouTube the section below it. Spotify authorizes with its own PKCE consent: an explicit click opens the browser, waits up to 180 s on http://127.0.0.1:8899/callback (register that exact redirect in the app) and keeps client_id plus tokens in a private 0600 ~/.config/gs3/spotify.json through curl; nothing is fetched until you click. With Spotify Premium, start the gs3 librespot device explicitly, open its first-login OAuth URL shown on the card, then play the open playlist or a track, pause, skip forward or back and seek by clicking the progress bar; `🔍 buscar tema` searches the catalogue and plays what you pick; the cover of the playing album (else of the open playlist) is drawn through the terminal's kitty graphics protocol, with no cover and no reserved space when the terminal or the fetch cannot provide it; the private ~/.config/gs3/librespot cache is reused. A YouTube search queues the best match plus its recommendations (the RD mix) and starts it; the video plays in a separate mpv window, never inside the rail. Transport and a clickable seek bar drive mpv over its JSON IPC socket. Requires librespot, mpv and yt-dlp (PATH, then /opt/homebrew/bin and /usr/local/bin); a missing tool is reported, never installed.\n--config is the HUD's own settings file {name, hidden, collapsed, optional plain_controls}: written atomically (in addition to the private Discord token and Spotify credential file, both 0600, and the private librespot cache); without it changes last until exit.\n--socket defaults to HERDR_SOCKET_PATH or ~/.config/herdr/herdr.sock\n--cwd defaults to the current directory\n--once prints a plain-text snapshot of every visible tab at width 42 (no terminal required)\nStack versions follow the selected installation; r refreshes them. Unverifiable tools show no verificada.\nPR refresh cycles (view + open count) are spaced by at least 30 seconds.";
 struct Args {pane:String,socket:PathBuf,cwd:PathBuf,config:Option<PathBuf>,once:bool}
 fn args()->Result<Option<Args>> {
     let mut a=std::env::args().skip(1); let mut pane=None;
@@ -27,7 +28,9 @@ fn args()->Result<Option<Args>> {
 }
 // Button-only mouse reporting (1000) in SGR form (1006): clicks and wheel, never motion (1003).
 const MOUSE_ON:&str="\x1b[?1000h\x1b[?1006h"; const MOUSE_OFF:&str="\x1b[?1006l\x1b[?1000l";
-fn restore() {let _=disable_raw_mode(); let _=execute!(io::stdout(),Print(MOUSE_OFF),LeaveAlternateScreen);}
+const COVER_DELETE: &str = "\x1b_Ga=d,d=I,i=731951,q=2\x1b\\";
+const COVER_UNPLACE: &str = "\x1b_Ga=d,d=i,i=731951,q=2\x1b\\";
+fn restore() {let _=disable_raw_mode(); let _=execute!(io::stdout(),Print(COVER_DELETE),Print(MOUSE_OFF),LeaveAlternateScreen);}
 struct Guard;
 impl Drop for Guard {fn drop(&mut self){restore();}}
 enum Message {Data(Event),Input(Input)}
@@ -69,6 +72,7 @@ fn main()->Result<()> {
     let capture=sources::screenshot();
     sources::herdr(a.socket,a.pane,data_tx);
     let mut draw=true; let mut last:Option<ui::Frame>=None;
+    let mut transmitted: Option<String> = None;
     loop {
         if let Some(cmd)=state.ui.voice_cmd.take() {let _=voice.send(cmd);}
         if let Some(cmd)=state.ui.media_cmd.take() {let _=media.send(cmd);}
@@ -82,11 +86,29 @@ fn main()->Result<()> {
         if state.ui.tab!=ui::Tab::Tree {scanned=None;}
         else if scanned.as_ref()!=Some(&state.ui.tree_open) {let _=trees.send(state.ui.tree_open.clone()); scanned=Some(state.ui.tree_open.clone());}
         if state.quit {break}
-        if draw {terminal.draw(|f|{
+        if draw {
+        let current = if state.ui.tab == ui::Tab::Media && state.media.spotify.cover_png.is_some() { state.media.spotify.cover_url.as_deref() } else { None };
+        if transmitted.as_deref() != current { if transmitted.take().is_some() { write!(io::stdout(), "{COVER_DELETE}")?; } }
+        else if transmitted.is_some() { write!(io::stdout(), "{COVER_UNPLACE}")?; }
+        terminal.draw(|f|{
             let area=f.area(); let frame=ui::frame(&state,area.width,area.height);
             let lines:Vec<Line>=frame.lines.iter().map(|l|Line::from(l.iter().map(|g|{let (r,gr,b)=g.tone.rgb(); let st=Style::default().fg(Color::Rgb(r,gr,b)); Span::styled(g.text.clone(),if g.bold {st.add_modifier(Modifier::BOLD)} else {st})}).collect::<Vec<_>>())).collect();
             f.render_widget(Paragraph::new(lines),area); last=Some(frame);
-        })?;}
+        })?;
+        if let (Some((x,y)), Some(url), Some(bytes)) = (last.as_ref().and_then(|f|f.cover_pos), current, state.media.spotify.cover_png.as_deref()) {
+            let mut out = io::stdout().lock();
+            if transmitted.is_none() {
+                let encoded = cover::base64(bytes);
+                for (i, (chunk, more)) in cover::chunks(&encoded).into_iter().enumerate() {
+                    if i == 0 { write!(out, "\x1b_Ga=t,f=100,i=731951,q=2,m={};{}\x1b\\", u8::from(more), chunk)?; }
+                    else { write!(out, "\x1b_Gm={};{}\x1b\\", u8::from(more), chunk)?; }
+                }
+                transmitted = Some(url.to_owned());
+            }
+            write!(out, "\x1b7\x1b[{};{}H\x1b_Ga=p,i=731951,p=1,c=12,r=6,C=1,q=2\x1b\\\x1b8", y+1, x+1)?;
+            out.flush()?;
+        }
+        }
         draw=false;
         match rx.recv()? {
             Message::Input(Input::Resize(..))=>draw=true,

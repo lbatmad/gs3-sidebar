@@ -256,7 +256,7 @@ impl Card {
 }
 
 pub struct Hit { pub row: usize, pub x0: usize, pub x1: usize, pub action: Action }
-pub struct Frame { pub lines: Vec<Vec<Seg>>, pub hits: Vec<Hit>, pub tab_row: usize, pub scroll: usize, pub max_scroll: usize }
+pub struct Frame { pub lines: Vec<Vec<Seg>>, pub hits: Vec<Hit>, pub tab_row: usize, pub scroll: usize, pub max_scroll: usize, pub cover_pos: Option<(usize, usize)> }
 /// The narrowest region under the cursor wins (a title toggle beats its whole row).
 pub fn click(f: &Frame, col: usize, row: usize) -> Option<Action> {
     f.hits.iter().filter(|h| h.row == row && (h.x0..h.x1).contains(&col)).min_by_key(|h| h.x1 - h.x0).map(|h| h.action.clone())
@@ -354,7 +354,10 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     hits.extend(body.hits.into_iter().filter(|h| (scroll..scroll + view).contains(&h.row)).map(|h| Hit { row: h.row - scroll + top_rows, ..h }));
     let lines = head.into_iter().chain(body.lines.into_iter().skip(scroll).take(view))
         .map(|l| { if l.is_empty() { return l } let mut p = vec![seg(" ".repeat(PAD), Text)]; p.extend(l); fit(p, w) }).collect();
-    Frame { lines, hits, tab_row, scroll, max_scroll }
+    let cover_pos = (ui.tab == Tab::Media && !ui.collapsed("spotify") && cw >= 16
+        && crate::cover::ready(s.media.spotify.cover_url.as_deref(), s.media.spotify.cover_png.as_deref(), true, true)
+        && scroll <= 1 && 7 <= scroll + view).then(|| (PAD + 2, top_rows + 1 - scroll));
+    Frame { lines, hits, tab_row, scroll, max_scroll, cover_pos }
 }
 pub fn render_lines(s: &State, width: u16) -> Vec<String> { frame(s, width, 0).lines.iter().map(|l| plain(l)).collect() }
 
@@ -833,6 +836,9 @@ fn spotify_card(s: &State, w: usize) -> Card {
     use Tone::*;
     let sp = &s.media.spotify;
     let mut c = Card::new("spotify", mark("Spotify", Mint), w);
+    if w >= 16 && crate::cover::ready(sp.cover_url.as_deref(), sp.cover_png.as_deref(), true, true) {
+        for _ in 0..6 { c.row(vec![], vec![]); }
+    }
     c.row(vec![seg("estado · ", Muted), seg(&sp.state, Text)], vec![]);
     if !sp.linked {
         c.row(vec![seg("creá la app en developer.spotify.com", Dim)], vec![]);
@@ -1032,6 +1038,21 @@ mod tests {
         s
     }
     #[test]
+    fn cover_layout_is_reserved_only_for_visible_complete_images() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        let empty = frame(&s, 42, 30);
+        assert_eq!(empty.cover_pos, None);
+        s.media.spotify.cover_url = Some("https://example.test/image".into());
+        s.media.spotify.cover_png = Some(vec![1]);
+        let shown = frame(&s, 42, 30);
+        assert_eq!(shown.cover_pos, Some((3, 8)));
+        assert_eq!(shown.lines.len(), empty.lines.len() + 6);
+        s.ui.scroll[Tab::Media.index()] = 9;
+        assert_eq!(frame(&s, 42, 20).cover_pos, None);
+        s.ui.tab = Tab::Main;
+        assert_eq!(frame(&s, 42, 30).cover_pos, None);
+    }
+    #[test]
     fn spotify_search_prompt_and_result_actions() {
         let mut s = sample(); s.ui.tab = Tab::Media; s.media.spotify.linked = true;
         let f = frame(&s, 42, 0); let (x, y) = at(&f, "buscar · falta dispositivo"); assert_eq!(click(&f, x, y), None);
@@ -1047,7 +1068,7 @@ mod tests {
         apply(&mut s, Event::Ui(Action::SpotifySearch)); apply(&mut s, Event::Key(Key::Enter)); assert!(s.ui.spotify_cmd.is_none());
         s.media.spotify.search_done = true;
         let f = frame(&s, 42, 0); at(&f, "sin resultados");
-        s.media.spotify.results = (0..10).map(|i| crate::media::SearchTrack { id: format!("id{i}"), title: format!("Resultado {i}"), artist: "Artista".into() }).collect();
+        s.media.spotify.results = (0..10).map(|i| crate::media::SearchTrack { id: format!("id{i}"), title: format!("Resultado {i}"), artist: "Artista".into(), cover: None }).collect();
         let f = frame(&s, 42, 0);
         for i in 0..10 { let (x,y) = at(&f, &format!("Resultado {i}")); assert_eq!(click(&f, x, y), Some(Action::SpotifyPlayResult(i))); }
         apply(&mut s, Event::Ui(Action::SpotifyPlayResult(9))); assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::PlayResult(9)));
@@ -1176,7 +1197,7 @@ mod tests {
         apply(&mut s, Event::Ui(Action::SpotifyStart)); assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Start));
         s.media.spotify.running = true; s.media.spotify.device_id = Some("dev".into());
         let f = frame(&s, 42, 0); at(&f, "abrí una lista");
-        s.media.spotify.playlists.push(crate::media::Playlist { id: "p".into(), name: "Rock".into() });
+        s.media.spotify.playlists.push(crate::media::Playlist { id: "p".into(), name: "Rock".into(), cover: None });
         s.media.spotify.selected = Some(0); s.media.spotify.tracks.push(crate::media::Track { title: "Tema".into(), artist: "Artista".into(), position: 0 });
         let f = frame(&s, 42, 0);
         let (x, y) = at(&f, "reproducir lista"); assert_eq!(click(&f, x, y), Some(Action::SpotifyPlay(0)));
@@ -1215,7 +1236,7 @@ mod tests {
     fn spotify_card_lists_own_playlists_and_exactly_ten_tracks() {
         let mut s = sample();
         s.ui.tab = Tab::Media;
-        let playlist = |id: &str, name: &str| crate::media::Playlist { id: id.into(), name: name.into() };
+        let playlist = |id: &str, name: &str| crate::media::Playlist { id: id.into(), name: name.into(), cover: None };
         let track = |title: &str| crate::media::Track { title: title.into(), artist: "Daft Punk".into(), position: 0 };
         s.media.spotify = crate::media::Spotify {
             state: "2 listas".into(),

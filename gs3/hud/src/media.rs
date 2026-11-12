@@ -34,16 +34,19 @@ pub struct Spotify {
     pub position_ms: u64,
     pub duration_ms: u64,
     pub oauth_url: Option<String>,
+    pub album_cover: Option<String>,
+    pub cover_url: Option<String>,
+    pub cover_png: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Playlist { pub id: String, pub name: String }
+pub struct Playlist { pub id: String, pub name: String, pub cover: Option<String> }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Track { pub title: String, pub artist: String, pub position: usize }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct SearchTrack { pub id: String, pub title: String, pub artist: String }
+pub struct SearchTrack { pub id: String, pub title: String, pub artist: String, pub cover: Option<String> }
 
 /// What the rail asks the Spotify engine to do. Sent over a channel, never run on the render path.
 #[derive(Clone, Debug, PartialEq)]
@@ -102,7 +105,7 @@ pub enum MediaCmd {
 
 impl Default for Spotify {
     fn default() -> Self {
-        Spotify { state: "falta el client_id".into(), linked: false, playlists: Vec::new(), selected: None, tracks: Vec::new(), results: Vec::new(), search_done: false, device_id: None, running: false, playing: false, title: None, artist: String::new(), position_ms: 0, duration_ms: 0, oauth_url: None }
+        Spotify { state: "falta el client_id".into(), linked: false, playlists: Vec::new(), selected: None, tracks: Vec::new(), results: Vec::new(), search_done: false, device_id: None, running: false, playing: false, title: None, artist: String::new(), position_ms: 0, duration_ms: 0, oauth_url: None, album_cover: None, cover_url: None, cover_png: None }
     }
 }
 

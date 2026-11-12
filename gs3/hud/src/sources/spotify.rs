@@ -402,7 +402,7 @@ fn playlists(v: &Value, me: &str) -> Vec<Playlist> {
             let name = item["name"].as_str().unwrap_or_default().trim();
             let owned = item["owner"]["id"].as_str() == Some(me);
             let collaborator = item["collaborative"].as_bool().unwrap_or(false);
-            (!id.is_empty() && !name.is_empty() && (owned || collaborator)).then(|| Playlist { id: id.to_string(), name: name.to_string() })
+            (!id.is_empty() && !name.is_empty() && (owned || collaborator)).then(|| Playlist { id: id.to_string(), name: name.to_string(), cover: crate::cover::image_url(item).map(str::to_owned) })
         })
         .collect()
 }
@@ -429,7 +429,7 @@ fn search_tracks(v: &Value) -> Vec<SearchTrack> {
         let id = item["id"].as_str().unwrap_or_default().trim();
         let title = item["name"].as_str().unwrap_or_default().trim();
         let artist = item["artists"][0]["name"].as_str().unwrap_or_default().trim();
-        (!id.is_empty() && !title.is_empty()).then(|| SearchTrack { id: id.into(), title: title.into(), artist: artist.into() })
+        (!id.is_empty() && !title.is_empty()).then(|| SearchTrack { id: id.into(), title: title.into(), artist: artist.into(), cover: crate::cover::image_url(&item["album"]).map(str::to_owned) })
     }).take(TRACKS).collect()
 }
 
@@ -538,6 +538,7 @@ fn player_reply(state: &mut Spotify, reply: &Value) {
     state.playing = reply["is_playing"].as_bool().unwrap_or(false);
     let item = &reply["item"];
     state.title = item["name"].as_str().map(str::to_owned);
+    state.album_cover = crate::cover::image_url(&item["album"]).map(str::to_owned);
     state.artist = item["artists"][0]["name"].as_str().unwrap_or_default().to_string();
     state.position_ms = if item.is_null() { 0 } else { reply["progress_ms"].as_u64().unwrap_or(0) };
     state.duration_ms = item["duration_ms"].as_u64().unwrap_or(0);
@@ -579,7 +580,7 @@ fn handle(state: &mut Spotify, path: &Path, cmd: SpotifyCmd) {
                 let track = state.results.get(row).ok_or_else(|| "pista no disponible".to_string())?;
                 api_put(&format!("{API}/me/player/play?device_id={}", encode(device)), path, Some(&track_play_body(&track.id, device)))
             });
-            match result { Ok(()) => { state.playing = true; state.state = "reproduciendo".into(); }, Err(e) => state.state = e }
+            match result { Ok(()) => { state.playing = true; state.album_cover = state.results.get(row).and_then(|t| t.cover.clone()); state.state = "reproduciendo".into(); }, Err(e) => state.state = e }
         }
         SpotifyCmd::Play(row) => {
             let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| {
@@ -624,6 +625,55 @@ fn initial(stored: Option<&Creds>, now: u64) -> (String, bool) {
 }
 
 fn publish(tx: &Sender<Event>, state: &Spotify) { let _ = tx.send(Event::Spotify(state.clone())); }
+
+/// The cover files are private from creation; failures never affect playback.
+fn fetch_cover(file: &Path, url: &str) -> Option<Vec<u8>> {
+    use std::os::unix::{fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt}, process::CommandExt};
+    if cfg!(test) || !url.starts_with("https://") { return None }
+    let curl = super::media::find_tool("curl")?;
+    let sips = Path::new("/usr/bin/sips");
+    if !sips.is_file() || super::media::find_tool("sips").is_none() { return None }
+    let dir = file.parent()?.join("covers");
+    match fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            if !fs::symlink_metadata(&dir).ok()?.file_type().is_dir() { return None }
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).ok()?;
+        }
+        Err(_) => return None,
+    }
+    let suffix = random_bytes(16).ok()?.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let input = dir.join(format!("{suffix}.image"));
+    let output = dir.join(format!("{suffix}.png"));
+    fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&input).ok()?;
+    let result = (|| {
+        fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&output).ok()?;
+        let status = Command::new(curl).args(["--silent", "--fail", "--max-time", "15", "--max-filesize", "10485760", "--proto", "=https", "--output"]).arg(&input).arg("--url").arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().ok()?;
+        if !status.success() { return None }
+        let mut convert = Command::new(sips);
+        convert.args(["-s", "format", "png"]).arg(&input).arg("--out").arg(&output).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        // sips may replace its output; constrain permissions in the child even in that case.
+        unsafe { convert.pre_exec(|| { libc::umask(0o077); Ok(()) }); }
+        let status = convert.status().ok()?;
+        if !status.success() { return None }
+        fs::set_permissions(&output, fs::Permissions::from_mode(0o600)).ok()?;
+        let bytes = fs::read(&output).ok()?;
+        (bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() <= 10_485_760).then_some(bytes)
+    })();
+    let _ = fs::remove_file(&input);
+    let _ = fs::remove_file(&output);
+    result
+}
+
+fn update_cover(state: &mut Spotify, file: &Path, tx: &Sender<Event>) {
+    let playlist = state.selected.and_then(|i| state.playlists.get(i)).and_then(|p| p.cover.as_deref());
+    let url = crate::cover::choose_url(state.album_cover.as_deref(), playlist).map(str::to_owned);
+    if url == state.cover_url { return }
+    state.cover_url = url;
+    state.cover_png = None;
+    publish(tx, state);
+    if let Some(url) = state.cover_url.as_deref() { state.cover_png = fetch_cover(file, url); }
+}
 
 struct Librespot(Child);
 impl Drop for Librespot { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
@@ -716,6 +766,7 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
                     // A failed poll keeps the last known track and line; it only counts towards stopping.
                     Err(_) => { idle = next_idle_streak(false, idle); if idle >= IDLE_LIMIT { activated = false } }
                 }
+                update_cover(&mut state, file, &tx);
                 publish(&tx, &state);
             }
             match cmd_rx.recv_timeout(POLL) {
@@ -737,6 +788,7 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
                     let starts_playback = matches!(cmd, SpotifyCmd::Play(_) | SpotifyCmd::PlayResult(_) | SpotifyCmd::Resume);
                     handle(&mut state, file, cmd);
                     if starts_playback && state.playing { activated = true; idle = 0; last_poll = Instant::now(); }
+                    update_cover(&mut state, file, &tx);
                     publish(&tx, &state);
                 }
                 Err(RecvTimeoutError::Timeout) => (),
@@ -752,6 +804,19 @@ mod tests {
     use super::*;
 
     fn hex(bytes: &[u8]) -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() }
+
+    #[test]
+    fn existing_replies_keep_their_cover_urls() {
+        let lists = playlists(&json!({"items":[{"id":"p","name":"Lista","owner":{"id":"me"},"images":[{"url":"playlist"}]}]}), "me");
+        assert_eq!(lists[0].cover.as_deref(), Some("playlist"));
+        let results = search_tracks(&json!({"tracks":{"items":[{"id":"t","name":"Tema","album":{"images":[{"url":"search"}]}}]}}));
+        assert_eq!(results[0].cover.as_deref(), Some("search"));
+        let mut state = Spotify::default();
+        player_reply(&mut state, &json!({"item":{"album":{"images":[{"url":"player"}]}}}));
+        assert_eq!(state.album_cover.as_deref(), Some("player"));
+        player_reply(&mut state, &json!({"item":null}));
+        assert_eq!(state.album_cover, None);
+    }
 
     #[test]
     fn search_url_encodes_query() {
@@ -940,8 +1005,8 @@ mod tests {
             null
         ]});
         assert_eq!(playlists(&reply, ME), vec![
-            Playlist { id: "own".into(), name: "Rock".into() },
-            Playlist { id: "collab".into(), name: "Jazz".into() },
+            Playlist { id: "own".into(), name: "Rock".into(), cover: None },
+            Playlist { id: "collab".into(), name: "Jazz".into(), cover: None },
         ]);
         assert!(playlists(&json!({"items": []}), ME).is_empty());
         assert!(playlists(&json!({}), ME).is_empty());
