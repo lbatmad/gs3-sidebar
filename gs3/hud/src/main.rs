@@ -126,8 +126,6 @@ fn main()->Result<()> {
                 };
                 if let Some(key)=key {draw=apply(&mut state,Event::Key(key));}
             }
-            Message::Input(Input::FocusGained)=>state.ui.media_cmd=Some(media::MediaCmd::Window(true)),
-            Message::Input(Input::FocusLost)=>state.ui.media_cmd=Some(media::MediaCmd::Window(false)),
             Message::Input(Input::Mouse(m))=>{
                 let (col,row)=(usize::from(m.column),usize::from(m.row));
                 let action=last.as_ref().and_then(|f|match m.kind {

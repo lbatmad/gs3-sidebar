@@ -198,6 +198,8 @@ Live, with the video playing: start `minimized = false`; Discord activated `mini
 
 L39. Human: "hace el ocultamiento y aparicion mas rapidos". The old path spawned one `osascript` per 1.2 s check, so hiding could lag a second and a half and cost a process each time. Now a single long-lived helper (`NSWorkspace` in JXA, printing the active pid whenever it changes, sleeping 100 ms between looks) writes into an atomic that the engine reads on every tick; the tick dropped from 500 ms to 80 ms and mpv's own polling stayed at 500 ms behind a timestamp. Measured from the outside, activating Discord and polling mpv's `window-minimized` every 30 ms: hidden in **174 ms**, shown again in **140 ms**, against roughly 1200–1500 ms before. The helper is killed with the player, and if it dies the engine falls back to the one-shot query. 119 tests passed, 2 ignored.
 
+L40. Human: "al hacer click en el chat desaparece el video, pero no desaparece cuando se cambia entre las distintas solapas". Both halves came from the terminal focus events added in L38: herdr reports focus *per pane*, so clicking the Pi pane told the HUD pane it had lost focus and the video vanished, while switching herdr tabs changed nothing the HUD could see. Those arms are gone; visibility is now `app in front` AND `the rail's own tab is the focused one`, the second read from herdr's `session.snapshot` every 150 ms with the rail's tab cached from `pane.get`. Live: on our tab `minimized = false`; after `tab focus w2:t19`, `true`; back on `w2:t1R`, `false` again. 119 tests passed, 2 ignored.
+
 ## Delivery
 
 Slice boundary: commit `0457e04` closes the previously prepared rail work, and the next commit is the

@@ -75,13 +75,39 @@ fn placement(window: Option<(i64,i64,i64,i64)>, layout: Option<(CellRect,CellRec
 
 /// The window belongs to the app that is in front, and only to it: this rail's video is always on top,
 /// so it must hide as soon as anything else comes forward. Pure, so the rule is pinned without a GUI.
-fn visible_now(frontmost: Option<i64>, ours: Option<i64>, player: Option<u32>) -> bool {
+fn visible_now(frontmost: Option<i64>, ours: Option<i64>, player: Option<u32>, on_our_tab: bool) -> bool {
+    // Another herdr tab means the rail is not on screen, so the video must not be either.
+    if !on_our_tab { return false }
     match (frontmost, ours) {
         // The player belongs to this rail: when it takes focus (mpv raises its own window) the video
         // is the thing being watched, so it stays. Anything else in front hides it.
         (Some(f), Some(o)) => f == o || Some(f) == player.map(i64::from),
         _ => true,
     }
+}
+
+/// One request over herdr's socket: the rail's own tab and the tab in front, so the video can follow
+/// tab switches and not only app focus.
+fn herdr_query(path: &std::path::Path, method: &str, params: Value) -> Option<Value> {
+    let mut stream = UnixStream::connect(path).ok()?;
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT)).ok()?;
+    let mut out = stream.try_clone().ok()?;
+    out.write_all(json!({"id": "visibility", "method": method, "params": params}).to_string().as_bytes()).ok()?;
+    out.write_all(b"\n").ok()?;
+    out.flush().ok()?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).ok()?;
+    serde_json::from_str::<Value>(line.trim()).ok()
+}
+
+fn our_tab(path: &std::path::Path, pane: &str) -> Option<String> {
+    let reply = herdr_query(path, "pane.get", json!({"pane_id": pane}))?;
+    reply["result"]["pane"]["tab_id"].as_str().map(str::to_owned)
+}
+
+fn focused_tab(path: &std::path::Path) -> Option<String> {
+    let reply = herdr_query(path, "session.snapshot", json!({}))?;
+    reply["result"]["snapshot"]["focused_tab_id"].as_str().map(str::to_owned)
 }
 
 /// A single long-lived helper reporting the active application as it changes, so the rail reacts in
@@ -405,6 +431,9 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
         let mut shown: Option<bool> = None;
         let mut watch: Option<(Child, Arc<AtomicI64>)> = None;
         let mut last_poll = Instant::now();
+        let mut tab: Option<String> = None;
+        let mut front_tab: Option<String> = None;
+        let mut last_tab = Instant::now();
         let _ = tx.send(Event::Media(youtube.clone()));
         loop {
             match cmd_rx.recv_timeout(TICK) {
@@ -420,7 +449,13 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
                 if watch.is_none() { watch = spawn_focus_watch() }
                 if ours.is_none() { ours = terminal_pid() }
                 let front = match &watch { Some((_, shared)) => match shared.load(Ordering::Relaxed) { -1 => frontmost_pid(), pid => Some(pid) }, None => frontmost_pid() };
-                let now = visible_now(front, ours, Some(p.child.id()));
+                if last_tab.elapsed() >= Duration::from_millis(150) {
+                    last_tab = Instant::now();
+                    if tab.is_none() { tab = std::env::var("HERDR_PANE_ID").ok().and_then(|id| our_tab(&socket, &id)) }
+                    front_tab = focused_tab(&socket);
+                }
+                let same_tab = match (&tab, &front_tab) { (Some(a), Some(b)) => a == b, _ => true };
+                let now = visible_now(front, ours, Some(p.child.id()), same_tab);
                 if shown != Some(now) { shown = Some(now); p.set_bool("window-minimized", window_value(now)); }
             } else { shown = None; if let Some((mut c, _)) = watch.take() { let _ = c.kill(); let _ = c.wait(); } }
             if youtube != sent { sent = youtube.clone(); if tx.send(Event::Media(youtube.clone())).is_err() { break } }
@@ -485,12 +520,13 @@ mod tests {
 
     #[test]
     fn the_window_shows_only_while_our_terminal_is_in_front() {
-        assert!(visible_now(Some(7), Some(7), None));
-        assert!(!visible_now(Some(9), Some(7), None), "another app in front hides the video");
-        assert!(visible_now(None, Some(7), None), "an unreadable frontmost app must not hide the video");
-        assert!(visible_now(Some(7), None, None), "nor must an unknown terminal");
-        assert!(visible_now(Some(9), Some(7), Some(9)), "our own player taking focus is not another app");
-        assert!(!visible_now(Some(9), Some(7), Some(8)));
+        assert!(visible_now(Some(7), Some(7), None, true));
+        assert!(!visible_now(Some(9), Some(7), None, true), "another app in front hides the video");
+        assert!(visible_now(None, Some(7), None, true), "an unreadable frontmost app must not hide the video");
+        assert!(visible_now(Some(7), None, None, true), "nor must an unknown terminal");
+        assert!(visible_now(Some(9), Some(7), Some(9), true), "our own player taking focus is not another app");
+        assert!(!visible_now(Some(9), Some(7), Some(8), true));
+        assert!(!visible_now(Some(7), Some(7), None, false), "another herdr tab hides the video");
     }
 
     #[test]
