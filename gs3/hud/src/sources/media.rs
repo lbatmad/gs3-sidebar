@@ -24,7 +24,7 @@ const QUEUE_MAX: usize = 24;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A Homebrew installation is not always on the PATH the rail inherits from its launcher.
-fn find_tool(name: &str) -> Option<PathBuf> {
+pub(super) fn find_tool(name: &str) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     dirs.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(PathBuf::from));
     dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file())

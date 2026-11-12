@@ -62,7 +62,7 @@ pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, Scrol
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
     Search, PlayPause, PrevTrack, NextTrack, Seek(f64),
     /// MEDIA · Spotify: consent in the browser, renew the stored token, list playlists, open one.
-    SpotifyAuthorize, SpotifyRefresh, SpotifyPlaylists, SelectPlaylist(String) }
+    SpotifyAuthorize, SpotifyRefresh, SpotifyPlaylists, SelectPlaylist(String), SpotifyStart, SpotifyPlay(usize), SpotifyPause }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Key { Char(char), Back, Enter, Esc }
 
@@ -97,6 +97,9 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::SpotifyRefresh => ui.spotify_cmd = Some(SpotifyCmd::Refresh),
         Action::SpotifyPlaylists => ui.spotify_cmd = Some(SpotifyCmd::Playlists),
         Action::SelectPlaylist(id) => ui.spotify_cmd = Some(SpotifyCmd::Select(id)),
+        Action::SpotifyStart => ui.spotify_cmd = Some(SpotifyCmd::Start),
+        Action::SpotifyPlay(row) => ui.spotify_cmd = Some(SpotifyCmd::Play(row)),
+        Action::SpotifyPause => ui.spotify_cmd = Some(SpotifyCmd::Pause),
         Action::Edit => ui.editing = Some(ui.config.name.clone()),
         Action::ScrollTo(n) => ui.scroll[ui.tab.index()] = n,
         Action::GitView(v) => ui.git_view = v,
@@ -824,6 +827,22 @@ fn spotify_card(s: &State, w: usize) -> Card {
         c.hits.push((row, 2, 12, Action::SpotifyAuthorize));
         return c;
     }
+    let row = c.rows.len();
+    c.row(vec![seg(if sp.running { "↻ buscar dispositivo" } else { "▶ iniciar dispositivo" }, Pink)], vec![]);
+    c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyStart));
+    if let Some(url) = &sp.oauth_url {
+        let width = w.saturating_sub(4).clamp(1, 30);
+        let chars: Vec<char> = url.chars().collect();
+        for chunk in chars.chunks(width) { c.row(vec![seg(chunk.iter().collect::<String>(), Text)], vec![]); }
+    }
+    let ready = sp.running && sp.device_id.is_some();
+    let playable = ready && sp.selected.and_then(|i| sp.playlists.get(i)).is_some() && !sp.tracks.is_empty();
+    let row = c.rows.len();
+    c.row(vec![seg(if playable { "▶ reproducir lista" } else if !ready { "reproducir · falta dispositivo" } else { "reproducir · abrí una lista" }, if playable { Pink } else { Dim })], vec![]);
+    if playable { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyPlay(0))); }
+    let row = c.rows.len();
+    c.row(vec![seg(if ready { "❚❚ pausar" } else { "pausar · falta dispositivo" }, if ready { Pink } else { Dim })], vec![]);
+    if ready { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyPause)); }
     for (index, playlist) in sp.playlists.iter().enumerate() {
         let picked = sp.selected == Some(index);
         let row = c.rows.len();
@@ -854,7 +873,9 @@ fn tracks_card(s: &State, w: usize) -> Option<Card> {
     if tracks.is_empty() { return None }
     let mut c = Card::new("pistas", mark("Pistas", Pink), w);
     for (index, track) in tracks.iter().enumerate() {
+        let row = c.rows.len();
         c.row(vec![seg(format!("{:>2}. ", index + 1), Dim), seg(&track.title, Text)], vec![seg(&track.artist, Muted)]);
+        if s.media.spotify.running && s.media.spotify.device_id.is_some() { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyPlay(index))); }
     }
     Some(c)
 }
@@ -1046,6 +1067,34 @@ mod tests {
         assert_eq!(s.ui.media_cmd, None, "an empty query is not a search");
     }
     #[test]
+    fn spotify_oauth_url_is_fully_visible_across_card_rows() {
+        let mut s = sample(); s.ui.tab = Tab::Media; s.media.spotify.linked = true;
+        let url = format!("https://accounts.spotify.com/authorize?{}", "abcdefghij".repeat(12));
+        s.media.spotify.oauth_url = Some(url.clone()); s.media.spotify.state = url.clone();
+        let f = frame(&s, 42, 0);
+        let lines: Vec<String> = f.lines.iter().map(|line| plain(line)).collect();
+        for chunk in url.as_bytes().chunks(30) { let chunk = std::str::from_utf8(chunk).unwrap(); assert!(lines.iter().any(|line| line.contains(chunk)), "missing {chunk}"); }
+    }
+    #[test]
+    fn spotify_playback_rows_explain_prerequisites_and_map_commands() {
+        let mut s = sample(); s.ui.tab = Tab::Media; s.media.spotify.linked = true;
+        let f = frame(&s, 42, 0);
+        at(&f, "iniciar dispositivo"); at(&f, "falta dispositivo");
+        let (x, y) = at(&f, "iniciar dispositivo");
+        assert_eq!(click(&f, x, y), Some(Action::SpotifyStart));
+        apply(&mut s, Event::Ui(Action::SpotifyStart)); assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Start));
+        s.media.spotify.running = true; s.media.spotify.device_id = Some("dev".into());
+        let f = frame(&s, 42, 0); at(&f, "abrí una lista");
+        s.media.spotify.playlists.push(crate::media::Playlist { id: "p".into(), name: "Rock".into() });
+        s.media.spotify.selected = Some(0); s.media.spotify.tracks.push(crate::media::Track { title: "Tema".into(), artist: "Artista".into(), position: 0 });
+        let f = frame(&s, 42, 0);
+        let (x, y) = at(&f, "reproducir lista"); assert_eq!(click(&f, x, y), Some(Action::SpotifyPlay(0)));
+        apply(&mut s, Event::Ui(Action::SpotifyPlay(0))); assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Play(0)));
+        let (x, y) = at(&f, "pausar"); assert_eq!(click(&f, x, y), Some(Action::SpotifyPause));
+        apply(&mut s, Event::Ui(Action::SpotifyPause)); assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Pause));
+        let (x, y) = at(&f, "Tema"); assert_eq!(click(&f, x, y), Some(Action::SpotifyPlay(0)));
+    }
+    #[test]
     fn spotify_card_states_the_prerequisite_then_offers_a_renewal() {
         let mut s = sample();
         s.ui.tab = Tab::Media;
@@ -1076,13 +1125,14 @@ mod tests {
         let mut s = sample();
         s.ui.tab = Tab::Media;
         let playlist = |id: &str, name: &str| crate::media::Playlist { id: id.into(), name: name.into() };
-        let track = |title: &str| crate::media::Track { title: title.into(), artist: "Daft Punk".into() };
+        let track = |title: &str| crate::media::Track { title: title.into(), artist: "Daft Punk".into(), position: 0 };
         s.media.spotify = crate::media::Spotify {
             state: "2 listas".into(),
             linked: true,
             playlists: vec![playlist("p1", "Rock"), playlist("p2", "Jazz")],
             selected: Some(1),
             tracks: (0..10).map(|i| track(&format!("Tema {i}"))).collect(),
+            ..Default::default()
         };
         let f = frame(&s, 42, 0);
         at(&f, "2 listas");

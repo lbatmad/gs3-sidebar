@@ -24,13 +24,17 @@ pub struct Spotify {
     pub selected: Option<usize>,
     /// Exactly the ten tracks of the selected playlist.
     pub tracks: Vec<Track>,
+    pub device_id: Option<String>,
+    pub running: bool,
+    pub playing: bool,
+    pub oauth_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Playlist { pub id: String, pub name: String }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Track { pub title: String, pub artist: String }
+pub struct Track { pub title: String, pub artist: String, pub position: usize }
 
 /// What the rail asks the Spotify engine to do. Sent over a channel, never run on the render path.
 #[derive(Clone, Debug, PartialEq)]
@@ -43,6 +47,9 @@ pub enum SpotifyCmd {
     Playlists,
     /// Show the ten tracks of this playlist id, taken from `playlists`.
     Select(String),
+    Start,
+    Play(usize),
+    Pause,
 }
 
 /// Lower section: YouTube search, transport and seek. The video is drawn by `mpv`, never here.
@@ -80,7 +87,7 @@ pub enum MediaCmd {
 
 impl Default for Spotify {
     fn default() -> Self {
-        Spotify { state: "falta el client_id".into(), linked: false, playlists: Vec::new(), selected: None, tracks: Vec::new() }
+        Spotify { state: "falta el client_id".into(), linked: false, playlists: Vec::new(), selected: None, tracks: Vec::new(), device_id: None, running: false, playing: false, oauth_url: None }
     }
 }
 

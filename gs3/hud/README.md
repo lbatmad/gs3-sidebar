@@ -62,6 +62,15 @@ instead of showing them as current. A token
 about to expire, or a 401 from the API, is renewed from the stored refresh token and the call is
 retried once; nothing is refreshed while no call needs it.
 
+Spotify Premium playback starts only on an explicit `▶ iniciar dispositivo` click. The HUD starts
+`librespot` as `gs3` with the rodio backend; on first login the card shows its OAuth URL in the state
+and wrapped lines to open manually. The private `~/.config/gs3/librespot` cache directory is 0700;
+when credentials exist, subsequent starts reuse them without `--enable-oauth`. The card resolves the
+device, offers `▶ reproducir lista` and `❚❚ pausar`, and clicking a track plays its playlist position.
+Unavailable rows explain whether the device or playlist is missing; `↻ buscar dispositivo` retries.
+Spotify previous/next, progress and seek are not implemented yet. `librespot` uses the same tool
+search order as YouTube. No device is started on startup or `--once`.
+
 MEDIA delegates playback instead of drawing it: Spotify audio belongs to `librespot` and YouTube
 video to `mpv` in its own window, so the rail only sends commands and reports state. The YouTube
 engine resolves `mpv` and `yt-dlp` from `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin` and
@@ -70,9 +79,9 @@ lazily on the first play and is driven over its JSON IPC socket, whose replies a
 `request_id`. The queue lives in the HUD because mpv does not expand a `list=RD` mix into its own
 playlist: `yt-dlp --flat-playlist` enumerates the seed and its recommendations (24 at most), each
 entry is loaded by id, and a finished video advances exactly once, refilling from the same mix at
-the end. Progress is polled every 500 ms; the seek bar maps one click per column. The Spotify side
-writes exactly one file of its own, the private credential file; the HUD's settings file and the
-private Discord token remain the only other writes, and mpv may create its temporary IPC socket.
+the end. YouTube progress is polled every 500 ms; its seek bar maps one click per column. Spotify
+also writes the private librespot cache; the HUD's settings file and private Discord token remain
+other writes, and mpv may create its temporary IPC socket.
 
 The context limit comes from `<agent dir>/cpamc-models-cache.json` (what Pi registers
 at runtime), then `models-store.json`. Token counts are abbreviated like the reference (`33.7k`, `179k`, `1.0M`).

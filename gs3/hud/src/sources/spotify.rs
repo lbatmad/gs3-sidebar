@@ -17,7 +17,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::mpsc::{self, RecvTimeoutError, Sender},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -37,6 +37,10 @@ const TRACKS: usize = 10;
 const PLAYLISTS: usize = 50;
 /// Marked, not printed: a 401 means "renew once and retry", anything else is a real answer.
 const UNAUTHORIZED: &str = "401";
+/// The Spotify Connect device name. One constant because it is written into librespot's command line
+/// and looked for again in `/me/player/devices`: two literals that drift apart would leave the card
+/// starting a device it can never find.
+const DEVICE: &str = "gs3";
 
 /// What the private file holds. `client_id` is the only part the human writes by hand.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -327,6 +331,30 @@ fn get_json(url: &str, token: &str) -> Result<Value, String> {
     Ok(value)
 }
 
+/// Spotify returns an empty body on a successful PUT, so inspect the HTTP status separately.
+fn put_json(url: &str, token: &str, body: Option<&Value>) -> Result<(), String> {
+    let mut cmd = Command::new("curl");
+    cmd.args(["--silent", "--show-error", "--max-time", "20", "--request", "PUT", "--url", url, "--header", &format!("Authorization: Bearer {token}"), "--write-out", "\n%{http_code}"]);
+    if let Some(body) = body { cmd.args(["--header", "Content-Type: application/json", "--data", &body.to_string()]); }
+    let out = cmd.output().map_err(|e| format!("curl no encontrado: {e}"))?;
+    if !out.status.success() { return Err(format!("curl falló: {}", String::from_utf8_lossy(&out.stderr).trim())) }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (body, code) = text.rsplit_once('\n').ok_or("respuesta inesperada de Spotify")?;
+    let code: u16 = code.trim().parse().map_err(|_| "respuesta inesperada de Spotify")?;
+    if code == 401 { return Err(UNAUTHORIZED.into()) }
+    if !(200..300).contains(&code) { return Err(serde_json::from_str::<Value>(body).map(|v| reason(&v)).unwrap_or_else(|_| format!("Spotify: error {code}"))) }
+    Ok(())
+}
+
+fn api_put(url: &str, file: &Path, body: Option<&Value>) -> Result<(), String> {
+    let mut creds = load(file).ok_or_else(|| "falta el client_id".to_string())?;
+    if !creds.fresh(unix_now()) { creds = renew(file, &creds)? }
+    match put_json(url, &creds.access_token, body) {
+        Err(e) if e == UNAUTHORIZED => { let fresh = renew(file, &creds)?; put_json(url, &fresh.access_token, body) }
+        other => other,
+    }
+}
+
 fn renew(file: &Path, creds: &Creds) -> Result<Creds, String> {
     let fresh = refresh(creds)?;
     save(file, &fresh)?;
@@ -363,6 +391,41 @@ fn playlists(v: &Value, me: &str) -> Vec<Playlist> {
         .collect()
 }
 
+/// librespot's own command line: the device name the Web API will look for, the audio backend, the
+/// private cache it owns, and the interactive login only while that cache holds no credentials yet.
+fn librespot_args(cache: &Path, cached: bool) -> Vec<String> {
+    let mut args = vec!["--name".into(), DEVICE.into(), "--backend".into(), "rodio".into(), "--cache".into(), cache.to_string_lossy().into_owned()];
+    if !cached { args.push("--enable-oauth".into()); }
+    args
+}
+
+/// The body `/me/player/play` needs: the playlist as context, the row to start at, and the device.
+fn play_body(playlist: &str, row: usize, device: &str) -> Value {
+    json!({"context_uri": format!("spotify:playlist:{playlist}"), "offset": {"position": row}, "position_ms": 0, "device_id": device})
+}
+
+/// The interactive login URL librespot prints. Pure, so the line format is pinned without a process.
+fn login_url(line: &str) -> Option<String> {
+    let start = line.find("https://accounts.spotify.com/")?;
+    Some(line[start..].split_whitespace().next()?.trim_end_matches(['.', ',', ')', ']', '"']).to_string())
+}
+
+/// The device can take a few seconds to appear after librespot starts, so the lookup is bounded and
+/// repeats: ten attempts, half a second apart through the caller's wait.
+fn discover_with(mut request: impl FnMut() -> Result<Value, String>, mut wait: impl FnMut()) -> Result<String, String> {
+    for attempt in 0..10 {
+        if let Some(id) = device_id(&request()?) { return Ok(id) }
+        if attempt < 9 { wait(); }
+    }
+    Err("dispositivo gs3 no encontrado; intentá de nuevo".into())
+}
+
+/// The id of our own device in a `/me/player/devices` reply, skipping an empty or missing id.
+fn device_id(v: &Value) -> Option<String> {
+    v["devices"].as_array()?.iter().filter(|d| d["name"].as_str() == Some(DEVICE))
+        .filter_map(|d| d["id"].as_str()).find(|id| !id.is_empty()).map(str::to_owned)
+}
+
 /// The playlist rows. `/playlists/{id}/tracks` was retired for this app (it answers 403 even for an
 /// owned playlist), so the request names `/items`, which carries the same rows with the track under
 /// `item`. Percent-encoding an id is harmless and keeps a crafted id from adding a path segment.
@@ -374,11 +437,12 @@ fn tracks(v: &Value) -> Vec<Track> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|row| {
+        .enumerate()
+        .filter_map(|(position, row)| {
             let track = &row["item"];
             let title = track["name"].as_str().unwrap_or_default().trim();
             let artist = track["artists"][0]["name"].as_str().unwrap_or_default().trim();
-            (!title.is_empty()).then(|| Track { title: title.to_string(), artist: artist.to_string() })
+            (!title.is_empty()).then(|| Track { title: title.to_string(), artist: artist.to_string(), position })
         })
         .take(TRACKS)
         .collect()
@@ -438,6 +502,21 @@ fn handle(state: &mut Spotify, path: &Path, cmd: SpotifyCmd) {
         }
         SpotifyCmd::Playlists => { state.linked = true; list_playlists(state, path) }
         SpotifyCmd::Select(id) => { state.linked = true; select_playlist(state, &id, path) }
+        SpotifyCmd::Play(row) => {
+            let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| {
+                let playlist = state.selected.and_then(|i| state.playlists.get(i)).ok_or_else(|| "abrí una lista".to_string())?;
+                let position = state.tracks.get(row).ok_or_else(|| "pista no disponible".to_string())?.position;
+                api_put(&format!("{API}/me/player/play?device_id={}", encode(device)), path, Some(&play_body(&playlist.id, position, device)))
+            });
+            match result { Ok(()) => { state.playing = true; state.state = "reproduciendo".into(); }, Err(e) => state.state = e }
+        }
+        SpotifyCmd::Pause => {
+            let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| api_put(&format!("{API}/me/player/pause?device_id={}", encode(device)), path, None));
+            match result { Ok(()) => { state.playing = false; state.state = "en pausa".into(); }, Err(e) => state.state = e }
+        }
+        // The engine intercepts Start before this function; a state line is still safer here than a
+        // panic that would freeze the rail if a future action ever routed it this way.
+        SpotifyCmd::Start => state.state = "iniciando dispositivo gs3".into(),
     }
 }
 
@@ -454,6 +533,38 @@ fn initial(stored: Option<&Creds>, now: u64) -> (String, bool) {
 
 fn publish(tx: &Sender<Event>, state: &Spotify) { let _ = tx.send(Event::Spotify(state.clone())); }
 
+struct Librespot(Child);
+impl Drop for Librespot { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
+
+fn cache_dir(file: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let cache = file.parent().ok_or("sin directorio de configuración")?.join("librespot");
+    match fs::DirBuilder::new().mode(0o700).create(&cache) {
+        Ok(()) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            if !fs::symlink_metadata(&cache).map_err(|e| e.to_string())?.file_type().is_dir() { return Err("caché de librespot no es un directorio".into()) }
+            fs::set_permissions(&cache, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        }
+        Err(e) => return Err(format!("caché de librespot: {e}")),
+    }
+    Ok(cache)
+}
+
+fn has_credentials(cache: &Path) -> bool { cache.join("credentials.json").is_file() }
+
+fn start_device(file: &Path, urls: Sender<String>) -> Result<(Librespot, PathBuf), String> {
+    let tool = super::media::find_tool("librespot").ok_or("librespot no encontrado")?;
+    let cache = cache_dir(file)?;
+    let cached = has_credentials(&cache);
+    let mut child = Command::new(tool).args(librespot_args(&cache, cached)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("librespot: {e}"))?;
+    if let Some(stdout) = child.stdout.take() {
+        thread::spawn(move || for line in BufReader::new(stdout).lines() {
+            match line { Ok(line) => if let Some(url) = login_url(&line) { let _ = urls.send(url); }, Err(_) => break }
+        });
+    }
+    Ok((Librespot(child), cache))
+}
+
 /// The engine thread. It reads the private file once at start and never touches the network on
 /// its own: authorization is an explicit click, so an unused rail makes no requests.
 pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
@@ -465,19 +576,43 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
             None => ("sin directorio home".to_string(), false),
             Some(_) => initial(stored.as_ref(), unix_now()),
         };
-        let mut state = Spotify { state, linked, playlists: Vec::new(), selected: None, tracks: Vec::new() };
+        let mut state = Spotify { state, linked, ..Spotify::default() };
         publish(&tx, &state);
+        let (url_tx, url_rx) = mpsc::channel::<String>();
+        let mut player: Option<Librespot> = None;
+        let mut cache: Option<PathBuf> = None;
+        let mut discover = false;
         loop {
-            let cmd = match cmd_rx.recv_timeout(POLL) {
-                Ok(cmd) => cmd,
-                Err(RecvTimeoutError::Timeout) => continue,
-                // The rail is gone.
+            if let Ok(url) = url_rx.try_recv() { state.oauth_url = Some(url.clone()); state.state = url; publish(&tx, &state); }
+            if player.as_mut().is_some_and(|p| p.0.try_wait().ok().flatten().is_some()) {
+                player = None; cache = None; discover = false; state.running = false; state.playing = false; state.device_id = None; state.oauth_url = None; state.state = "librespot terminó".into(); publish(&tx, &state);
+            }
+            let Some(file) = path.as_deref() else { break };
+            if discover && cache.as_deref().is_some_and(has_credentials) {
+                discover = false; state.state = "buscando dispositivo gs3".into(); publish(&tx, &state);
+                match discover_with(|| api(&format!("{API}/me/player/devices"), file), || thread::sleep(POLL)) {
+                    Ok(id) => { state.device_id = Some(id); state.oauth_url = None; state.state = "dispositivo gs3 listo".into(); }
+                    Err(e) => state.state = e,
+                }
+                publish(&tx, &state);
+            }
+            match cmd_rx.recv_timeout(POLL) {
+                Ok(SpotifyCmd::Start) => {
+                    if player.is_none() {
+                        match start_device(file, url_tx.clone()) {
+                            Ok((child, dir)) => { player = Some(child); cache = Some(dir); state.running = true; state.state = "iniciando dispositivo gs3".into(); discover = true; }
+                            Err(e) => state.state = e,
+                        }
+                    } else { discover = true; state.state = "buscando dispositivo gs3".into(); }
+                    publish(&tx, &state);
+                }
+                Ok(cmd) => {
+                    if matches!(cmd, SpotifyCmd::Authorize) { state.state = "esperando el navegador".into(); publish(&tx, &state); }
+                    handle(&mut state, file, cmd); publish(&tx, &state);
+                }
+                Err(RecvTimeoutError::Timeout) => (),
                 Err(RecvTimeoutError::Disconnected) => break,
-            };
-            let Some(file) = path.as_deref() else { continue };
-            if matches!(cmd, SpotifyCmd::Authorize) { state.state = "esperando el navegador".into(); publish(&tx, &state); }
-            handle(&mut state, file, cmd);
-            publish(&tx, &state);
+            }
         }
     });
     cmd_tx
@@ -488,6 +623,48 @@ mod tests {
     use super::*;
 
     fn hex(bytes: &[u8]) -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() }
+
+    #[test]
+    fn extracts_librespot_login_url() {
+        assert_eq!(login_url("Please visit https://accounts.spotify.com/authorize?x=1&y=2 to authenticate"), Some("https://accounts.spotify.com/authorize?x=1&y=2".into()));
+        assert_eq!(login_url("no login here"), None);
+    }
+
+    #[test]
+    fn device_retry_stops_on_success_or_after_limit() {
+        let mut calls = 0;
+        let got = discover_with(|| { calls += 1; Ok(if calls == 3 { json!({"devices":[{"name":"gs3","id":"abc"}]}) } else { json!({"devices":[]}) }) }, || {});
+        assert_eq!(got, Ok("abc".into())); assert_eq!(calls, 3);
+        let mut calls = 0;
+        assert!(discover_with(|| { calls += 1; Ok(json!({"devices":[]})) }, || {}).is_err());
+        assert_eq!(calls, 10);
+    }
+
+    #[test]
+    fn cache_presence_controls_oauth_flag() {
+        let cache = Path::new("/private/cache");
+        assert!(librespot_args(cache, false).contains(&"--enable-oauth".to_string()));
+        assert!(!librespot_args(cache, true).contains(&"--enable-oauth".to_string()));
+    }
+
+    #[test]
+    fn librespot_arguments_distinguish_first_login_and_cached_credentials() {
+        let cache = Path::new("/private/cache");
+        assert_eq!(librespot_args(cache, false), vec!["--name", DEVICE, "--backend", "rodio", "--cache", "/private/cache", "--enable-oauth"]);
+        assert_eq!(librespot_args(cache, true), vec!["--name", DEVICE, "--backend", "rodio", "--cache", "/private/cache"]);
+    }
+
+    #[test]
+    fn play_body_carries_context_offset_and_device() {
+        assert_eq!(play_body("abc", 3, "dev"), json!({"context_uri":"spotify:playlist:abc", "offset":{"position":3}, "position_ms":0, "device_id":"dev"}));
+    }
+
+    #[test]
+    fn selects_the_named_device_with_a_nonempty_id() {
+        let fixture = json!({"devices": [{"name":"otro", "id":"x"}, {"name":"gs3", "id":null}, {"name":"gs3", "id":"device"}]});
+        assert_eq!(device_id(&fixture), Some("device".to_string()));
+        assert_eq!(device_id(&json!({"devices": []})), None);
+    }
 
     #[test]
     fn sha256_matches_the_standard_vectors() {
@@ -588,6 +765,7 @@ mod tests {
         assert_eq!(got.len(), 10, "S2 asks for ten, not every row the reply carries");
         assert_eq!((got[0].title.as_str(), got[0].artist.as_str()), ("T0", "Artist"));
         assert_eq!(got[9].title, "T9");
+        assert_eq!(got[2].position, 3, "the play offset includes removed rows");
         // A row without artists still renders: the artist is a detail, not a requirement.
         assert!(tracks(&json!({"items": [{"item": {"name": "Solo"}}]}))[0].artist.is_empty());
     }
