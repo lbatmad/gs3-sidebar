@@ -65,7 +65,8 @@ retried once; nothing is refreshed while no call needs it.
 Spotify Premium playback starts only on an explicit `▶ iniciar dispositivo` click. The HUD starts
 `librespot` as `gs3` with the rodio backend; on first login the card shows its OAuth URL in the state
 and wrapped lines to open manually. The private `~/.config/gs3/librespot` cache directory is 0700;
-when credentials exist, subsequent starts reuse them without `--enable-oauth`. The card resolves the
+when credentials exist, subsequent starts reuse them without `--enable-oauth`, and that file is
+tightened to 0600 as soon as it appears: librespot creates it with the ambient umask. The card resolves the
 device, offers `▶ reproducir lista` and `❚❚ pausar`, and clicking a track plays its playlist position.
 Unavailable rows explain whether the device or playlist is missing; `↻ buscar dispositivo` retries.
 Spotify previous/next, progress and seek are not implemented yet. `librespot` uses the same tool

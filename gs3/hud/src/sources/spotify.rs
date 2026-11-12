@@ -552,10 +552,23 @@ fn cache_dir(file: &Path) -> Result<PathBuf, String> {
 
 fn has_credentials(cache: &Path) -> bool { cache.join("credentials.json").is_file() }
 
+/// librespot creates its credential file with the ambient umask, so a world-readable file can sit
+/// inside the 0700 cache. It is tightened whenever we touch the cache; absent credentials are not an
+/// error, because on a first run the file only appears after the login.
+fn tighten_credentials(cache: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    match fs::set_permissions(cache.join("credentials.json"), fs::Permissions::from_mode(0o600)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("permisos de la caché de librespot: {e}")),
+    }
+}
+
 fn start_device(file: &Path, urls: Sender<String>) -> Result<(Librespot, PathBuf), String> {
     let tool = super::media::find_tool("librespot").ok_or("librespot no encontrado")?;
     let cache = cache_dir(file)?;
     let cached = has_credentials(&cache);
+    tighten_credentials(&cache)?;
     let mut child = Command::new(tool).args(librespot_args(&cache, cached)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("librespot: {e}"))?;
     if let Some(stdout) = child.stdout.take() {
         thread::spawn(move || for line in BufReader::new(stdout).lines() {
@@ -589,7 +602,8 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
             }
             let Some(file) = path.as_deref() else { break };
             if discover && cache.as_deref().is_some_and(has_credentials) {
-                discover = false; state.state = "buscando dispositivo gs3".into(); publish(&tx, &state);
+                discover = false;
+                if let Some(dir) = cache.as_deref() { let _ = tighten_credentials(dir); } state.state = "buscando dispositivo gs3".into(); publish(&tx, &state);
                 match discover_with(|| api(&format!("{API}/me/player/devices"), file), || thread::sleep(POLL)) {
                     Ok(id) => { state.device_id = Some(id); state.oauth_url = None; state.state = "dispositivo gs3 listo".into(); }
                     Err(e) => state.state = e,
@@ -652,6 +666,22 @@ mod tests {
         let cache = Path::new("/private/cache");
         assert_eq!(librespot_args(cache, false), vec!["--name", DEVICE, "--backend", "rodio", "--cache", "/private/cache", "--enable-oauth"]);
         assert_eq!(librespot_args(cache, true), vec!["--name", DEVICE, "--backend", "rodio", "--cache", "/private/cache"]);
+    }
+
+    #[test]
+    fn the_credential_file_librespot_writes_is_kept_private() {
+        let dir = std::env::temp_dir().join(format!("gs3-librespot-perms-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let creds = dir.join("credentials.json");
+        fs::write(&creds, b"{}").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&creds, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        tighten_credentials(&dir).unwrap();
+        assert_eq!(mode(&creds), 0o600, "librespot writes the file with the ambient umask and it holds the device credentials");
+        assert!(tighten_credentials(&dir.join("sin-credentials")).is_ok(), "no credentials yet is not an error");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
