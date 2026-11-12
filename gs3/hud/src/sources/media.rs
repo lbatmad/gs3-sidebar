@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(500);
 const QUEUE_MAX: usize = 24;
@@ -68,6 +68,37 @@ fn placement(window: Option<(i64,i64,i64,i64)>, layout: Option<(CellRect,CellRec
     let window = window.ok_or("sin ubicación de ventana del terminal")?;
     geometry(window, area, pane, card).ok_or("área de video inválida")
 }
+
+/// The window belongs to the app that is in front, and only to it: this rail's video is always on top,
+/// so it must hide as soon as anything else comes forward. Pure, so the rule is pinned without a GUI.
+fn visible_now(frontmost: Option<i64>, ours: Option<i64>) -> bool {
+    match (frontmost, ours) { (Some(f), Some(o)) => f == o, _ => true }
+}
+
+/// The app in front, from the window list CoreGraphics orders front to back. No permission needed.
+fn frontmost_pid() -> Option<i64> {
+    let script = r#"ObjC.import("CoreGraphics");
+const list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));
+const hit = list.find(w => (w.kCGWindowLayer|0) === 0 && (w.kCGWindowBounds.Width|0) > 100);
+hit ? String(hit.kCGWindowOwnerPID|0) : "";"#;
+    let out = Command::new("osascript").args(["-l", "JavaScript", "-e", script]).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse::<i64>().ok()
+}
+
+/// The app that owns this rail's window: the terminal at the top of the process chain.
+fn terminal_pid() -> Option<i64> {
+    let owners = serde_json::to_string(&ancestors()).ok()?;
+    let script = format!(r#"ObjC.import("CoreGraphics");
+const owners = {owners};
+const list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));
+const hit = list.find(w => (w.kCGWindowLayer|0) === 0 && owners.includes(w.kCGWindowOwnerPID|0) && (w.kCGWindowBounds.Width|0) > 100);
+hit ? String(hit.kCGWindowOwnerPID|0) : "";"#);
+    let out = Command::new("osascript").args(["-l", "JavaScript", "-e", &script]).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse::<i64>().ok()
+}
+
+/// The value mpv's `window-minimized` takes for the requested visibility.
+fn window_arg(visible: bool) -> &'static str { if visible { "false" } else { "true" } }
 
 fn mpv_args(socket: &str, geometry: Option<&str>) -> Vec<String> {
     let mut args = vec!["--idle=yes".into(), "--no-terminal".into(), "--msg-level=all=error".into(), "--keep-open=yes".into(), "--title=gs3 media".into(), format!("--input-ipc-server={socket}"), "--border=no".into(), "--osc=no".into(), "--ontop".into(), "--panscan=1.0".into()];
@@ -268,8 +299,14 @@ fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &
         }
         return;
     }
+    if let MediaCmd::Window(visible) = cmd {
+        // A player that is not there yet has nothing to hide, and must not report an error for it.
+        if let Some(player) = player.as_mut() { player.call(&["set_property", "window-minimized", window_arg(visible)]); }
+        return;
+    }
     let Some(player) = player.as_mut() else { y.state = "mpv no encontrado".into(); return };
     match cmd {
+        MediaCmd::Window(_) => unreachable!("handled above"),
         MediaCmd::Toggle => { player.call(&["cycle", "pause"]); }
         MediaCmd::Next => advance(player, y, 1),
         MediaCmd::Prev => advance(player, y, -1),
@@ -319,6 +356,9 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
         let mut youtube = Youtube { state: if find_tool("mpv").is_some() { "sin reproducción".into() } else { "mpv no encontrado".into() }, ..Youtube::default() };
         let mut player: Option<Player> = None;
         let mut sent = youtube.clone();
+        let mut ours: Option<i64> = None;
+        let mut shown: Option<bool> = None;
+        let mut last_focus = Instant::now();
         let _ = tx.send(Event::Media(youtube.clone()));
         loop {
             match cmd_rx.recv_timeout(POLL) {
@@ -327,6 +367,17 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
                 // The rail is gone: dropping the player stops mpv with it.
                 Err(RecvTimeoutError::Disconnected) => break,
             }
+            // The video window is always on top, so it may only exist while our own terminal is in
+            // front. Polled about once a second and only while a player is alive: the check costs one
+            // osascript call, which is cheap compared with an always-visible window over other apps.
+            if let Some(p) = player.as_mut() {
+                if last_focus.elapsed() >= Duration::from_millis(1200) {
+                    last_focus = Instant::now();
+                    if ours.is_none() { ours = terminal_pid() }
+                    let now = visible_now(frontmost_pid(), ours);
+                    if shown != Some(now) { shown = Some(now); p.call(&["set_property", "window-minimized", window_arg(now)]); }
+                }
+            } else { shown = None }
             if youtube != sent { sent = youtube.clone(); if tx.send(Event::Media(youtube.clone())).is_err() { break } }
         }
     });
@@ -376,6 +427,22 @@ mod tests {
         assert!(placement(Some((0,0,100,100)), None, Some(r)).is_err());
         assert!(placement(Some((0,0,100,100)), Some((r,r)), None).is_err());
         assert!(placement(Some((0,0,100,100)), Some((r,r)), Some(r)).is_ok());
+    }
+
+    #[test]
+    fn the_window_shows_only_while_our_terminal_is_in_front() {
+        assert!(visible_now(Some(7), Some(7)));
+        assert!(!visible_now(Some(9), Some(7)), "another app in front hides the video");
+        assert!(visible_now(None, Some(7)), "an unreadable frontmost app must not hide the video");
+        assert!(visible_now(Some(7), None), "nor must an unknown terminal");
+    }
+
+    #[test]
+    fn the_window_visibility_command_is_a_minimize_toggle() {
+        // Measured on macOS: `window-minimized` removes the always-on-top window from the screen and
+        // restores it at the same rectangle, which is what "hide while another app is in front" needs.
+        assert_eq!(window_arg(true), "false");
+        assert_eq!(window_arg(false), "true");
     }
 
     #[test]
