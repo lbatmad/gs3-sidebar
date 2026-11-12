@@ -424,6 +424,17 @@ fn handle(state: &mut Spotify, path: &Path, cmd: SpotifyCmd) {
     }
 }
 
+/// What the card says before any click. The file may be missing, hold only a `client_id` (the
+/// hand-written first step) or carry a session that is fresh — or already stale.
+fn initial(stored: Option<&Creds>, now: u64) -> (String, bool) {
+    match stored {
+        None => ("falta el client_id".to_string(), false),
+        Some(creds) if creds.access_token.is_empty() => ("sin autorizar".to_string(), false),
+        Some(creds) if !creds.fresh(now) => ("sesión vencida · renovar".to_string(), true),
+        Some(_) => ("sesión guardada".to_string(), true),
+    }
+}
+
 fn publish(tx: &Sender<Event>, state: &Spotify) { let _ = tx.send(Event::Spotify(state.clone())); }
 
 /// The engine thread. It reads the private file once at start and never touches the network on
@@ -433,19 +444,11 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
     thread::spawn(move || {
         let path = creds_path();
         let stored = path.as_deref().and_then(load);
-        let mut state = Spotify {
-            state: match (&path, &stored) {
-                (None, _) => "sin directorio home".into(),
-                (Some(_), None) => "falta el client_id".into(),
-                (Some(_), Some(c)) if c.access_token.is_empty() => "sin autorizar".into(),
-                (Some(_), Some(c)) if !c.fresh(unix_now()) => "sesión vencida · renovar".into(),
-                (Some(_), Some(_)) => "sesión guardada".into(),
-            },
-            linked: stored.is_some_and(|c| !c.access_token.is_empty()),
-            playlists: Vec::new(),
-            selected: None,
-            tracks: Vec::new(),
+        let (state, linked) = match &path {
+            None => ("sin directorio home".to_string(), false),
+            Some(_) => initial(stored.as_ref(), unix_now()),
         };
+        let mut state = Spotify { state, linked, playlists: Vec::new(), selected: None, tracks: Vec::new() };
         publish(&tx, &state);
         loop {
             let cmd = match cmd_rx.recv_timeout(POLL) {
@@ -599,6 +602,21 @@ mod tests {
             assert!(verdict.is_err(), "{why} must reach the rail as an error: {verdict:?}");
             assert!(!reply.contains("recibida"), "the browser is told {why} succeeded: {reply:?}");
         }
+    }
+
+    #[test]
+    fn the_card_state_follows_the_credential_file() {
+        // The hand-written first step: a file with only a client id, exactly what the docs ask for.
+        let written: Value = serde_json::from_str(r#"{"client_id":"7a0f0000000000000000000000000000"}"#).unwrap();
+        let hand_written = Creds::from_json(&written);
+        assert_eq!(initial(None, 0).0, "falta el client_id");
+        assert_eq!(initial(Some(&hand_written), 0), ("sin autorizar".to_string(), false), "a client id alone is not a session");
+        assert!(!initial(Some(&hand_written), 0).1, "so the card still offers connect, not renew");
+        let now = unix_now();
+        let live = Creds { client_id: "cid".into(), access_token: "at".into(), refresh_token: "rt".into(), expires_at: now + 3_600 };
+        assert_eq!(initial(Some(&live), now), ("sesión guardada".to_string(), true));
+        let stale = Creds { expires_at: now - 1, ..live };
+        assert_eq!(initial(Some(&stale), now), ("sesión vencida · renovar".to_string(), true));
     }
 
     #[test]
