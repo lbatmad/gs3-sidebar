@@ -40,6 +40,9 @@ pub struct Ui {
     pub voice_cmd: Option<VoiceCmd>,
     /// MEDIA: the YouTube search box while it is open, and the command the engine consumes off the render path.
     pub prompt: Option<String>, pub spotify_prompt: Option<String>, pub media_cmd: Option<MediaCmd>, pub spotify_cmd: Option<SpotifyCmd>,
+    /// MEDIA · `⌁ Pistas`: index of the first track row the card shows. A playlist longer than the
+    /// card's window scrolls here, inside its own frame, instead of pushing YouTube out of reach.
+    pub track_scroll: usize,
     /// Explicit click on the Flameshot icon; main consumes this intent off the render path.
     pub screenshot: bool,
 }
@@ -57,6 +60,9 @@ impl Ui {
 /// What a click, wheel step or key does. Pure intents: nothing here performs I/O.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, ScrollTo(usize), GitView(GitView), Branch(Option<String>), File(String),
+    /// MEDIA · `⌁ Pistas`: the index of the first track row to show, so the wheel can scroll a long
+    /// playlist inside its card.
+    ScrollList(usize),
     /// TREE: toggle a folder, fold every folder, open a changed file's diff in GIT, select an unchanged file.
     Dir(String), Fold, Inspect(String), Pick(String), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot,
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
@@ -97,7 +103,7 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::SpotifyAuthorize => ui.spotify_cmd = Some(SpotifyCmd::Authorize),
         Action::SpotifyRefresh => ui.spotify_cmd = Some(SpotifyCmd::Refresh),
         Action::SpotifyPlaylists => ui.spotify_cmd = Some(SpotifyCmd::Playlists),
-        Action::SelectPlaylist(id) => ui.spotify_cmd = Some(SpotifyCmd::Select(id)),
+        Action::SelectPlaylist(id) => { ui.track_scroll = 0; ui.spotify_cmd = Some(SpotifyCmd::Select(id)); }
         Action::SpotifySearch => { ui.prompt = None; ui.spotify_prompt = Some(String::new()); }
         Action::SpotifyPlayResult(row) => ui.spotify_cmd = Some(SpotifyCmd::PlayResult(row)),
         Action::SpotifyStart => ui.spotify_cmd = Some(SpotifyCmd::Start),
@@ -112,6 +118,7 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::SpotifyRepeat(repeat) => ui.spotify_cmd = Some(SpotifyCmd::Repeat(repeat)),
         Action::Edit => ui.editing = Some(ui.config.name.clone()),
         Action::ScrollTo(n) => ui.scroll[ui.tab.index()] = n,
+        Action::ScrollList(n) => ui.track_scroll = n,
         Action::GitView(v) => ui.git_view = v,
         // Clicking the selected branch again (or ✕) closes the inspector and its file.
         Action::Branch(b) => { ui.git_file = None; ui.git_branch = if b.is_some() && b == ui.git_branch { None } else { b }; }
@@ -248,9 +255,11 @@ fn keyed(label: &str, value: Vec<Seg>, w: usize) -> Vec<Seg> {
 }
 
 /// One framed card: `id` keys its collapsed state, rows may carry click actions.
-struct Card { id: &'static str, title: Vec<Seg>, extra: Extra, w: usize, rows: Vec<Vec<Seg>>, hits: Vec<(usize, usize, usize, Action)> }
+struct Card { id: &'static str, title: Vec<Seg>, extra: Extra, w: usize, rows: Vec<Vec<Seg>>, hits: Vec<(usize, usize, usize, Action)>, list: Option<(usize, usize)> }
 impl Card {
-    fn new(id: &'static str, title: Vec<Seg>, w: usize) -> Self { Card { id, title, extra: Vec::new(), w, rows: Vec::new(), hits: Vec::new() } }
+    fn new(id: &'static str, title: Vec<Seg>, w: usize) -> Self { Card { id, title, extra: Vec::new(), w, rows: Vec::new(), hits: Vec::new(), list: None } }
+    /// This card's rows are a window of a longer list: the wheel over it scrolls the list, not the body.
+    fn scrolls(&mut self, scroll: usize, max_scroll: usize) { if max_scroll > 0 { self.list = Some((scroll, max_scroll)); } }
     fn row(&mut self, l: Vec<Seg>, r: Vec<Seg>) { self.rows.push(row(l, r, self.w)); }
     fn keyed(&mut self, label: &str, v: Vec<Seg>) { self.rows.push(keyed(label, v, self.w)); }
     fn divider(&mut self) { self.rows.push(divider(self.w)); }
@@ -259,14 +268,26 @@ impl Card {
 }
 
 pub struct Hit { pub row: usize, pub x0: usize, pub x1: usize, pub action: Action }
-pub struct Frame { pub lines: Vec<Vec<Seg>>, pub hits: Vec<Hit>, pub tab_row: usize, pub scroll: usize, pub max_scroll: usize, pub cover_pos: Option<(usize, usize)>, pub youtube_rect: Option<crate::media::CellRect> }
+/// A card that scrolls its own rows: its first screen row, how many rows it shows, and where the list
+/// stands. Screen rows are absolute, like [`Hit`], so the wheel can tell which card the pointer is on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ListWindow { pub top: usize, pub height: usize, pub scroll: usize, pub max_scroll: usize }
+pub struct Frame { pub lines: Vec<Vec<Seg>>, pub hits: Vec<Hit>, pub tab_row: usize, pub scroll: usize, pub max_scroll: usize, pub cover_pos: Option<(usize, usize)>, pub youtube_rect: Option<crate::media::CellRect>, pub lists: Vec<ListWindow> }
 /// The narrowest region under the cursor wins (a title toggle beats its whole row).
 pub fn click(f: &Frame, col: usize, row: usize) -> Option<Action> {
     f.hits.iter().filter(|h| h.row == row && (h.x0..h.x1).contains(&col)).min_by_key(|h| h.x1 - h.x0).map(|h| h.action.clone())
 }
-/// Wheel over the tab bar cycles tabs; anywhere else scrolls the body (clamped, 3 lines a step).
+/// Wheel over the tab bar cycles tabs; a card that owns a longer list takes it over its own rows;
+/// anywhere else scrolls the body (clamped, 3 lines a step).
 pub fn wheel(f: &Frame, row: usize, down: bool) -> Option<Action> {
     if row <= f.tab_row + 1 && row + 1 >= f.tab_row { return Some(Action::Cycle(if down { 1 } else { -1 })) }
+    // A list is what the human is aiming at, and letting the body move instead would carry the card
+    // away before they ever see row eleven. Past its own ends it hands the wheel back, or the
+    // sections below it would be unreachable.
+    if let Some(l) = f.lists.iter().find(|l| (l.top..l.top + l.height).contains(&row)) {
+        let n = if down { (l.scroll + 3).min(l.max_scroll) } else { l.scroll.saturating_sub(3) };
+        if n != l.scroll { return Some(Action::ScrollList(n)) }
+    }
     let n = if down { (f.scroll + 3).min(f.max_scroll) } else { f.scroll.saturating_sub(3) };
     (n != f.scroll).then_some(Action::ScrollTo(n))
 }
@@ -286,7 +307,7 @@ const VIDEO_INSET_PCT: usize = 16;
 const VIDEO_RIGHT_PCT: usize = 2;
 const VIDEO_INSET_Y: usize = 3;
 const VIDEO_ROWS_TALL: usize = 10;
-struct Body { lines: Vec<Vec<Seg>>, hits: Vec<Hit>, glued: bool }
+struct Body { lines: Vec<Vec<Seg>>, hits: Vec<Hit>, glued: bool, lists: Vec<ListWindow> }
 impl Body {
     fn push(&mut self, ui: &Ui, c: Card) {
         if !self.lines.is_empty() && !std::mem::take(&mut self.glued) { self.lines.push(Vec::new()); }
@@ -297,6 +318,8 @@ impl Body {
         self.hits.push(Hit { row: start, x0: PAD, x1: PAD + c.w, action: Action::Collapse(c.id.into()) });
         if let Some(t) = toggle { self.hits.push(toggle_at(t)); }
         if !collapsed {
+            // Title included: the whole visible card takes the wheel, which is where the hand is.
+            if let Some((scroll, max_scroll)) = c.list { self.lists.push(ListWindow { top: start, height: c.rows.len() + 1, scroll, max_scroll }); }
             for (i, x0, x1, a) in c.hits { self.hits.push(Hit { row: start + 1 + i, x0: PAD + x0, x1: PAD + x1, action: a }); }
             self.lines.extend(c.rows);
         }
@@ -347,7 +370,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     if ui.tab != Tab::Main { head.push(Vec::new()); }
     let top_rows = head.len();
 
-    let mut body = Body { lines: Vec::new(), hits: Vec::new(), glued: false };
+    let mut body = Body { lines: Vec::new(), hits: Vec::new(), glued: false, lists: Vec::new() };
     let cw = net;
 
     // The cover owns six rows at the top of the Spotify card and the image is only placed while that
@@ -366,7 +389,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
         Tab::Prof => body.push(ui, profiles_card(s, cw)),
         Tab::Mem => { for c in [engram_card(s, cw), handoff_card(s, cw), stack_card(s, cw), tools_card(s, cw), mcp_card(s, cw)] { body.push(ui, c); } }
         Tab::Tree => body.push(ui, tree_card(s, cw)),
-        Tab::Media => { body.push(ui, spotify_card(s, cw, show_cover)); if let Some(c) = tracks_card(s, cw) { body.push(ui, c); } youtube_start = Some(body.lines.len() + 1); body.push(ui, youtube_card(s, cw)); }
+        Tab::Media => { body.push(ui, spotify_card(s, cw, show_cover)); if let Some(c) = tracks_card(s, cw, ui.track_scroll) { body.push(ui, c); } youtube_start = Some(body.lines.len() + 1); body.push(ui, youtube_card(s, cw)); }
         Tab::Config => { for c in config_cards(s, cw) { body.push(ui, c); } }
     }
     if body.lines.is_empty() { body.lines.push(centered(vec![seg("Sin información disponible en esta pestaña.", Dim)], net)); }
@@ -380,6 +403,12 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
         head[tab_row + 1] = vec![seg("─".repeat(net.saturating_sub(mark.width())), BorderMuted), seg(mark, Muted)];
     }
     hits.extend(body.hits.into_iter().filter(|h| (scroll..scroll + view).contains(&h.row)).map(|h| Hit { row: h.row - scroll + top_rows, ..h }));
+    // The same mapping for the cards that own a list, clipped to what the body actually shows: a list
+    // half scrolled out only owns the rows still on screen.
+    let lists = body.lists.into_iter().filter_map(|l| {
+        let top = l.top.max(scroll); let end = (l.top + l.height).min(scroll + view);
+        (end > top).then(|| ListWindow { top: top - scroll + top_rows, height: end - top, scroll: l.scroll, max_scroll: l.max_scroll })
+    }).collect();
     let lines = head.into_iter().chain(body.lines.into_iter().skip(scroll).take(view))
         .map(|l| { if l.is_empty() { return l } let mut p = vec![seg(" ".repeat(PAD), Text)]; p.extend(l); fit(p, w) }).collect();
     let cover_pos = show_cover.then(|| (PAD + 2, top_rows + 1 - scroll));
@@ -389,7 +418,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
         (y >= scroll && y + VIDEO_ROWS <= scroll + view).then(|| (|| { let inner = cw.saturating_sub(2); let left = inner * VIDEO_INSET_PCT / 100; let right = inner * VIDEO_RIGHT_PCT / 100;
             crate::media::CellRect::new((PAD + 1 + left) as u32, (top_rows + y + VIDEO_INSET_Y - scroll) as u32, inner.saturating_sub(left + right) as u32, VIDEO_ROWS_TALL as u32) })())
     });
-    Frame { lines, hits, tab_row, scroll, max_scroll, cover_pos, youtube_rect }
+    Frame { lines, hits, tab_row, scroll, max_scroll, cover_pos, youtube_rect, lists }
 }
 pub fn render_lines(s: &State, width: u16) -> Vec<String> { frame(s, width, 0).lines.iter().map(|l| plain(l)).collect() }
 
@@ -969,13 +998,24 @@ fn spotify_card(s: &State, w: usize, show_cover: bool) -> Card {
     c
 }
 
-/// The ten tracks of the selected playlist: one card, so `S2` shows the list and its music together.
-fn tracks_card(s: &State, w: usize) -> Option<Card> {
+/// The rows the `⌁ Pistas` card shows at once. The card is a window, not a copy of the playlist: a
+/// fifty-track list used to be cut at ten, and showing all fifty would push the YouTube section off
+/// the rail entirely. The wheel over the card scrolls the rest.
+const TRACK_ROWS: usize = 10;
+
+/// The tracks of the selected playlist, as a window of [`TRACK_ROWS`] rows: `S13` lets the whole list
+/// be reached by scrolling inside the card, while `S2` keeps the list and its music side by side.
+fn tracks_card(s: &State, w: usize, scroll: usize) -> Option<Card> {
     use Tone::*;
     let tracks = &s.media.spotify.tracks;
     if tracks.is_empty() { return None }
+    let max_scroll = tracks.len().saturating_sub(TRACK_ROWS);
+    let first = scroll.min(max_scroll);
+    let last = (first + TRACK_ROWS).min(tracks.len());
     let mut c = Card::new("pistas", mark("Pistas", Pink), w);
-    for (index, track) in tracks.iter().enumerate() {
+    // Which rows are on screen: without it a windowed list looks like the whole playlist.
+    if max_scroll > 0 { c.extra = vec![(seg(format!("{}-{}/{} ", first + 1, last, tracks.len()), Dim), None)]; }
+    for (index, track) in tracks.iter().enumerate().take(last).skip(first) {
         // S12: the row `/me/player` names by id is the one being heard. A track started from the search
         // box is not in this list, so it marks nothing here.
         let playing = s.media.spotify.playing_id.as_deref() == Some(track.id.as_str());
@@ -984,6 +1024,7 @@ fn tracks_card(s: &State, w: usize) -> Option<Card> {
         c.row(number, vec![seg(&track.artist, Muted)]);
         if s.media.spotify.running && s.media.spotify.device_id.is_some() { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyPlay(index))); }
     }
+    c.scrolls(first, max_scroll);
     Some(c)
 }
 
@@ -1416,7 +1457,7 @@ mod tests {
         assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Refresh));
     }
     #[test]
-    fn spotify_card_lists_own_playlists_and_exactly_ten_tracks() {
+    fn spotify_card_lists_own_playlists_and_the_playlist_rows() {
         let mut s = sample();
         s.ui.tab = Tab::Media;
         let playlist = |id: &str, name: &str| crate::media::Playlist { id: id.into(), name: name.into(), cover: None };
@@ -1438,7 +1479,7 @@ mod tests {
         assert_eq!(click(&f, x, y), Some(Action::SelectPlaylist("p2".into())));
         apply(&mut s, Event::Ui(Action::SelectPlaylist("p2".into())));
         assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Select("p2".into())));
-        // Exactly ten tracks: the engine caps them, and the card shows every one it got.
+        // The window holds ten rows, so a ten-track list is shown whole.
         let rows = f.lines.iter().filter(|l| plain(l).contains("Tema ")).count();
         assert_eq!(rows, 10, "ten track rows, one per song: {:#?}", f.lines.iter().map(|l| plain(l)).collect::<Vec<_>>());
         at(&f, "10. Tema 9");
@@ -1455,6 +1496,93 @@ mod tests {
         at(&f, "sin listas propias todavía");
         let (x, y) = at(&f, "traer mis listas");
         assert_eq!(click(&f, x, y), Some(Action::SpotifyPlaylists));
+    }
+
+    /// A playlist longer than the card's window: the `S13` fixture, where ten rows used to be all
+    /// there was and the wheel had nothing left to reach.
+    fn long_playlist(s: &mut State, n: usize) {
+        s.ui.tab = Tab::Media;
+        s.media.spotify = crate::media::Spotify {
+            state: format!("{n} de Rock"),
+            linked: true,
+            running: true,
+            device_id: Some("d".into()),
+            playlists: vec![crate::media::Playlist { id: "p1".into(), name: "Rock".into(), cover: None }],
+            selected: Some(0),
+            tracks: (0..n).map(|i| crate::media::Track { id: format!("id{i}"), title: format!("Tema {i}"), artist: "Daft Punk".into(), position: i }).collect(),
+            ..Default::default()
+        };
+    }
+
+    #[test]
+    fn a_long_playlist_scrolls_inside_its_own_card() {
+        let mut s = sample();
+        long_playlist(&mut s, 57);
+        let f = frame(&s, 42, 40);
+        let visible = |f: &Frame| f.lines.iter().map(|l| plain(l)).collect::<Vec<_>>();
+        // Ten rows fit the window; the rest wait for the list to scroll, not for the body.
+        at(&f, "10. Tema 9");
+        assert!(!visible(&f).iter().any(|l| l.contains(" 11. Tema 10")), "the eleventh row is out of the window");
+        assert!(visible(&f).iter().any(|l| l.contains("Pistas") && l.contains("1-10/57")), "the title says which rows are on screen: {:?}", visible(&f));
+        // The wheel over the card belongs to the list, and the body stays where it was.
+        let (_, y) = at(&f, "Tema 3");
+        let step = wheel(&f, y, true).expect("the wheel over the list scrolls the list");
+        assert_eq!(step, Action::ScrollList(3));
+        apply(&mut s, Event::Ui(step));
+        assert_eq!(s.ui.scroll[Tab::Media.index()], 0, "the body does not move under the list");
+        let f = frame(&s, 42, 40);
+        let scrolled = visible(&f);
+        assert!(!scrolled.iter().any(|l| l.contains(" 1. Tema 0") || l.contains(" 3. Tema 2")), "the first rows left the window: {scrolled:#?}");
+        assert!(scrolled.iter().any(|l| l.contains(" 4. Tema 3")), "the window starts at the fourth track: {scrolled:#?}");
+        assert!(scrolled.iter().any(|l| l.contains("13. Tema 12")), "and reaches one row further: {scrolled:#?}");
+        assert!(scrolled.iter().any(|l| l.contains("Pistas") && l.contains("4-13/57")), "the title moved with it");
+        // A click plays the row it names, not the position inside the window.
+        let (x, y) = at(&f, "Tema 12");
+        assert_eq!(click(&f, x, y), Some(Action::SpotifyPlay(12)));
+    }
+
+    #[test]
+    fn the_track_list_clamps_at_its_end_and_walks_back() {
+        let mut s = sample();
+        long_playlist(&mut s, 57);
+        // A stored scroll past the end is clamped, so the last rows stay reachable.
+        s.ui.track_scroll = 1000;
+        let f = frame(&s, 42, 40);
+        let visible = |f: &Frame| f.lines.iter().map(|l| plain(l)).collect::<Vec<_>>();
+        at(&f, "57. Tema 56");
+        assert!(visible(&f).iter().any(|l| l.contains("Pistas") && l.contains("48-57/57")));
+        // One step up walks back inside the list, not through the body.
+        let (_, y) = at(&f, "Tema 50");
+        let step = wheel(&f, y, false).expect("the wheel up over the list moves the list");
+        assert_eq!(step, Action::ScrollList(44));
+        apply(&mut s, Event::Ui(step));
+        assert!(render_lines(&s, 42).iter().any(|l| l.contains(" 45. Tema 44")), "the window kept the list's scroll");
+        // Past its own end the card hands the wheel back, or the YouTube section would be unreachable.
+        s.ui.track_scroll = 1000;
+        let f = frame(&s, 42, 30);
+        assert!(f.max_scroll >= 3, "the fixture leaves the body scrollable: {}", f.max_scroll);
+        let (_, y) = at(&f, "Pistas");
+        assert_eq!(wheel(&f, y, true), Some(Action::ScrollTo(3)), "a list at its last row lets the body take the wheel");
+    }
+
+    #[test]
+    fn a_row_outside_the_list_keeps_the_body_scroll() {
+        let mut s = sample();
+        long_playlist(&mut s, 57);
+        let f = frame(&s, 42, 30);
+        assert!(f.max_scroll >= 3, "the fixture leaves the body scrollable: {}", f.max_scroll);
+        let (_, y) = at(&f, "vol ");
+        assert_eq!(wheel(&f, y, true), Some(Action::ScrollTo(3)), "a Spotify control row is not a list");
+    }
+
+    #[test]
+    fn opening_another_playlist_returns_the_list_to_its_first_rows() {
+        let mut s = sample();
+        long_playlist(&mut s, 57);
+        s.ui.track_scroll = 30;
+        apply(&mut s, Event::Ui(Action::SelectPlaylist("p1".into())));
+        assert_eq!(s.ui.track_scroll, 0, "a new list starts at its first row");
+        assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Select("p1".into())));
     }
     #[test]
     fn plain_controls_preserve_states_layout_and_actions() {

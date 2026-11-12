@@ -11,7 +11,7 @@ pub struct Media { pub spotify: Spotify, pub youtube: Youtube }
 /// accepts plain HTTP, and `localhost` is rejected.
 pub const REDIRECT: &str = "http://127.0.0.1:8899/callback";
 
-/// Upper section: the user's own playlists, the selected playlist's ten tracks, transport and seek.
+/// Upper section: the user's own playlists, the selected playlist's tracks, transport and seek.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spotify {
     /// One line under the section title: `falta el client_id`, `esperando el navegador`, … or the failure reason.
@@ -22,7 +22,8 @@ pub struct Spotify {
     pub playlists: Vec<Playlist>,
     /// Which playlist the tracks below belong to.
     pub selected: Option<usize>,
-    /// Exactly the ten tracks of the selected playlist.
+    /// The tracks of the selected playlist, page by page up to the engine's cap: the card shows a
+    /// window of them and the wheel scrolls the rest.
     pub tracks: Vec<Track>,
     pub results: Vec<SearchTrack>,
     pub search_done: bool,
@@ -74,7 +75,7 @@ pub enum SpotifyCmd {
     Refresh,
     /// List the playlists of the authorized profile.
     Playlists,
-    /// Show the ten tracks of this playlist id, taken from `playlists`.
+    /// Show this playlist's tracks (every page, up to the engine's cap), taken from `playlists`.
     Select(String),
     Search(String),
     PlayResult(usize),

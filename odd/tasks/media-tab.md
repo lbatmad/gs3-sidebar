@@ -5,7 +5,8 @@ Status: done by code and verified live, the cover picture included (L31); every 
 closed. Spotify playlists, playback on the `gs3` device, transport with seek, search and
 cover art all run against the real API. A later refinement round (S12, T11) added the missing playback
 controls —clickable volume, shuffle and repeat— and marks the track that is actually playing inside
-`⌁ Pistas`.
+`⌁ Pistas`. A third round (S13, T12) replaced the ten-row cap with the whole playlist, scrolled inside
+the card's own window (L47).
 
 ## Specs
 
@@ -13,7 +14,8 @@ S1. User: "quiero crear una nueva pestaña para poner musica con spotify y otra 
 One new tab; Spotify occupies the upper section, YouTube the section directly below it. Each section uses its own library/backend ("la libreria correspondiente").
 
 S2. User: "En spotify debe dejar elegir listas de mi perfil y mostrar 10 canciones de esa lista."
-The tab lists the user's own Spotify playlists and, for the selected one, shows exactly 10 tracks.
+The tab lists the user's own Spotify playlists and, for the selected one, shows the track list. Extended
+by S13: the ten rows are the card's window, not the length of the list.
 
 S3. User: "Ademas debe tener una cuadro de dialogo para buscar un tema especifico, si tiene se debe mostrar la portada de la lista o disco del tema."
 A search dialog for a specific track. When the selected item has cover art, show the cover of that playlist/album/track.
@@ -41,6 +43,13 @@ S12. User refinement request: "la primera opción, sumale que quede resaltado el
 The Spotify card gains a clickable volume control, a shuffle toggle and a repeat toggle, each showing the state the account really has, and `⌁ Pistas` marks the row of the track that is playing now.
 
 ## Tasks
+
+T13 | S14 | parent: the Spotify control block from seven rows to three — device and `🔍 buscar` sharing one row with disjoint hitboxes, `▶ reproducir lista` / `❚❚ pausar` becoming one state-aware button, and `vol … 99%   ⇄ no   ⟲ no` sharing the third row with hits computed from the segment widths | done by code and unit tests: 138 passed, 2 ignored; the new test pins the three rows verbatim, each hitbox, the state-aware button both ways, the `sin dispositivo` hint with no actionable hits, and no overflow from 8 to 46 columns. Live on the rail at 46 columns: `▶ dispositivo · 🔍 buscar · sin dispositivo` / `▶ reproducir lista` / `vol ▱▱▱▱▱▱▱▱▱▱ —   ⇄ no   ⟲ no`, and after opening a 69-track playlist the Pistas window still read `4-13/69` | commit: pending
+
+T12 | S13 | parent: the whole playlist instead of ten rows — `/playlists/{id}/items` walked with `limit=100&offset=` up to 500, `position` continuing across pages, a ten-row window in `⌁ Pistas` that owns the wheel over itself, the visible range in its title, the window reset when another playlist opens, and the wheel handed back to the body past either end | done by code and unit tests: 137 passed, 2 ignored; 6 new tests (a page keeps every row it was given, the paged URL names the offset, a later page keeps the real position, `page_done` stops on a short page or at the cap, the wheel over the list scrolls the list and its click plays the row it names, the clamp and the hand-back, a card row outside the list keeps the body scroll, another playlist resets the window). Live-verified against the real API: `Los Mejores Temas de los 80s` read `69 de …` and the
+card `1-10/69`, one wheel step over the card moved it to `4-13/69` with the YouTube section
+unmoved, 25 steps reached `60-69/69`, and 25 back returned `1-10/69` (driven with SGR wheel
+sequences through `herdr pane send-text` on pane `w2:p3S`). | commit: pending
 
 T11 | S12 | parent: `PUT /me/player/volume`, `/shuffle` and `/repeat` driven from clickable rows, the account's `volume_percent`, `shuffle_state` and `repeat_state` read from `/me/player`, and the playing track marked in `⌁ Pistas` by its `item.id` | done and live-verified against the real API: `PUT /me/player/volume` answered `204` and the following `GET` showed `60`, `/shuffle` answered `200` with `shuffle_state: true`, `/repeat` accepted `context` and `track`, every value restored afterwards (`99`, `false`, `off`); one read of `/me/player` runs as soon as the device is known so a fresh card never claims an unread state; the row whose id `/me/player` reports carries `▶` and keeps its click; 130 tests green (7 new: volume/shuffle/repeat URLs, the clamp, the repeat cycle and its unknown-word fallback, the reply carrying the controls and the playing id, the id kept by the playlist parser, the bar's per-cell actions, the two toggles, the mark and its click) | commit: this unit
 
@@ -265,6 +274,55 @@ The branch, not this unit, is what has outgrown a slice: `feat/gs3-macos` now ca
 `3317` insertions against `origin/main` (`52` files). Delivering it as one PR would hand a reviewer
 something no one can read in one pass, so delivery needs a chained-PR plan (the `chained-pr` skill)
 before anything is pushed. That plan is the human's decision; nothing here has been pushed or merged.
+
+L46. Human, with a screenshot of the MEDIA card: "dejo de mostrarse la portada por Spotify". The picture
+was still being fetched and the card still reserved its six rows: the card was merely *scrolled*, which
+the frame had always used to withhold the placement (`scroll <= 1`), but the reservation was decided
+inside `spotify_card` from `cover::ready` alone, so the block stayed behind as an empty hole. Scrolling
+became reachable in practice only with L45, which put the volume, shuffle and repeat rows below the
+tracks on a card that no longer fits one screen. Reservation and placement are now one decision, taken
+in `frame()` from the wheel's scroll and the viewport before the cards are built, and the card receives
+it as a parameter. RED: the new `scrolling_the_spotify_card_leaves_no_cover_sized_hole` failed on
+`max_scroll` 7 against 1, exactly the six rows. 131 tests passed, 2 ignored.
+L47. Human: "en la solapa de Media, la parte de spotify no me deja hacer scroll sobre los temas de
+la lista, siempre mustra los primeros 10". Diagnosed before writing: the wheel was never the problem —
+it scrolls the body from any row — the list itself held ten tracks, because `TRACKS: usize = 10` was
+both the page size and the hard cap and `select_playlist` asked once. So this was a requirement change
+against S2, not a bugfix, and the placement question was the human's: fetch everything and scroll the
+body (which would push the YouTube card past hundreds of rows), a bounded cap, or scroll the list
+inside its own card. Chosen: "Scroll propio dentro de la card". Design bounds taken here, not from the
+human: the walk stops at `TRACK_CAP = 500` (five whole pages of 100, so one click cannot become an
+unbounded number of requests) and the card is a window of `TRACK_ROWS = 10`, which also keeps `--once`
+readable. The offset is a raw row index, so `position` carries `offset + row`: a removed episode still
+counts, and a click on page three plays the song it names. Past either end of the list the card hands
+the wheel back to the body, or the YouTube section would be unreachable from a long playlist. RED: the
+new tests needed `PAGE`, `TRACK_CAP`, `tracks_page`, `page_done`, `Action::ScrollList` and `Frame::lists`
+before they could even compile. 137 tests passed, 2 ignored (6 new).
+
+L48. The human reported "sigo sin poder hacer scroll" after L47 was green. Not a code defect: the
+rail was still executing `/Users/albertobellido/.local/bin/gs3-hud` (hash `23f9dcc`, 13:03) while the
+change lived in `target/release` (hash `4824ac5`), because `gs3` resolves the binary as `$GS3_HUD` ->
+`$(dirname $SELF)/gs3-hud` -> `$REPO/target/release/gs3-hud` -> `PATH` and the launcher is installed in
+`~/.local/bin`. `scripts/build-hud.sh` also installed into this agent's isolated `HOME`
+(`/Users/albertobellido/gs-root/shell/home`), not the human's, and it builds into `$ROOT/target`. Fixed
+by installing explicitly to `/Users/albertobellido/.local/bin/gs3-hud` (hash verified equal) and
+recreating the sidecar pane (`herdr pane close w2:p3R`, `pane split w2:p3N --direction right --ratio
+0.75`, `pane run <new> exec gs3-hud …`) so the new process (PID 27342) is the one on screen. Lesson for
+every HUD change: compare the installed binary's hash before claiming anything is live.
+
+L49. Human: "podes hacer que los controles de spotify ocupen la menor cantidad de lineas posibles? sin
+romper la estética", with a screenshot of the seven rows. The card had room for the compression because
+each action already had its own hitbox mechanism (`c.hits` with explicit spans, as the transport row and
+the seek columns do), so sharing a row costs precision work, not new machinery. Offered three layouts
+with previews against the real 42-column content width; the human chose "3 filas, etiquetas cortas".
+Two design calls taken here: `▶ reproducir lista` and `❚❚ pausar` collapse into ONE button that shows
+what `/me/player` reports (the standalone pause row was mostly a no-op while nothing played), and the
+volume percentage moves from the card's right edge to sit next to the bar, because the right half of
+that row now belongs to the two toggles. Delegated with a closed handoff; the worker's "fixture width"
+note was checked against the card: the overflow test sweeps 8-46 columns and the row is clipped by
+`fit`, so the narrowing was a test-fixture fix, not a hidden regression. 138 tests passed, 2 ignored.
+Live on the real rail at 46 columns and at the ready state, then with the 69-track playlist open to
+confirm Pistas still scrolled (`4-13/69`).
 
 
 L46. Human, with a screenshot of the MEDIA card: "dejo de mostrarse la portada por Spotify". The picture

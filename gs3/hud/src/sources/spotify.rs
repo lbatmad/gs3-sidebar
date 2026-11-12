@@ -32,8 +32,15 @@ const PORT: u16 = 8899;
 /// Long enough for a login and a second factor, short enough to free the port.
 const CONSENT: Duration = Duration::from_secs(180);
 const POLL: Duration = Duration::from_millis(500);
-/// S2 asks for exactly ten tracks; the profile list is capped so one reply cannot flood the rail.
-const TRACKS: usize = 10;
+/// The search box shows ten hits; the catalogue always has more and a card only fits ten.
+const SEARCH: usize = 10;
+/// One page of a playlist. Spotify answers at most 100 rows per request, and an own playlist can hold
+/// thousands, so `S13` walks it page by page: the request names the offset and the card scrolls the
+/// whole list instead of the first ten rows.
+const PAGE: usize = 100;
+/// Where that walk stops. Five full pages still read as one list and cost five requests on an explicit
+/// click; a 10 000-row playlist must not turn one click into a hundred round trips.
+const TRACK_CAP: usize = 500;
 const PLAYLISTS: usize = 50;
 /// Marked, not printed: a 401 means "renew once and retry", anything else is a real answer.
 const UNAUTHORIZED: &str = "401";
@@ -429,7 +436,7 @@ fn shuffle_url(state: bool, device: &str) -> String { format!("{API}/me/player/s
 /// `PUT /me/player/repeat`.
 fn repeat_url(repeat: Repeat, device: &str) -> String { format!("{API}/me/player/repeat?state={}&device_id={}", repeat.state(), encode(device)) }
 
-fn search_url(query: &str) -> String { format!("{API}/search?type=track&limit={TRACKS}&q={}", encode(query)) }
+fn search_url(query: &str) -> String { format!("{API}/search?type=track&limit={SEARCH}&q={}", encode(query)) }
 
 fn search_tracks(v: &Value) -> Vec<SearchTrack> {
     v["tracks"]["items"].as_array().into_iter().flatten().filter_map(|item| {
@@ -437,7 +444,7 @@ fn search_tracks(v: &Value) -> Vec<SearchTrack> {
         let title = item["name"].as_str().unwrap_or_default().trim();
         let artist = item["artists"][0]["name"].as_str().unwrap_or_default().trim();
         (!id.is_empty() && !title.is_empty()).then(|| SearchTrack { id: id.into(), title: title.into(), artist: artist.into(), cover: crate::cover::image_url(&item["album"]).map(str::to_owned) })
-    }).take(TRACKS).collect()
+    }).take(SEARCH).collect()
 }
 
 /// The interactive login URL librespot prints. Pure, so the line format is pinned without a process.
@@ -462,27 +469,50 @@ fn device_id(v: &Value) -> Option<String> {
         .filter_map(|d| d["id"].as_str()).find(|id| !id.is_empty()).map(str::to_owned)
 }
 
-/// The playlist rows. `/playlists/{id}/tracks` was retired for this app (it answers 403 even for an
-/// owned playlist), so the request names `/items`, which carries the same rows with the track under
-/// `item`. Percent-encoding an id is harmless and keeps a crafted id from adding a path segment.
-fn items_url(id: &str) -> String { format!("{API}/playlists/{}/items?limit={TRACKS}", encode(id)) }
+/// The playlist rows, one page at a time. `/playlists/{id}/tracks` was retired for this app (it
+/// answers 403 even for an owned playlist), so the request names `/items`, which carries the same
+/// rows with the track under `item`. Percent-encoding an id is harmless and keeps a crafted id from
+/// adding a path segment.
+fn items_url(id: &str, offset: usize) -> String { format!("{API}/playlists/{}/items?limit={PAGE}&offset={offset}", encode(id)) }
 
-/// `/playlists/{id}/items`: exactly [`TRACKS`] entries, skipping a null track (a removed episode).
-fn tracks(v: &Value) -> Vec<Track> {
+/// `/playlists/{id}/items` for one page, skipping a null track (a removed episode). `position` is the
+/// row's place in the whole playlist, so it takes the page's `offset`: it is what the play request
+/// sends as `offset.position`, and a page that restarted at zero would play the wrong song.
+fn tracks_page(v: &Value, offset: usize) -> Vec<Track> {
     v["items"]
         .as_array()
         .into_iter()
         .flatten()
         .enumerate()
-        .filter_map(|(position, row)| {
-            let track = &row["item"];
+        .filter_map(|(row, row_value)| {
+            let track = &row_value["item"];
             let title = track["name"].as_str().unwrap_or_default().trim();
             let artist = track["artists"][0]["name"].as_str().unwrap_or_default().trim();
             let id = track["id"].as_str().unwrap_or_default().trim().to_string();
-            (!title.is_empty()).then(|| Track { id, title: title.to_string(), artist: artist.to_string(), position })
+            (!title.is_empty()).then(|| Track { id, title: title.to_string(), artist: artist.to_string(), position: offset + row })
         })
-        .take(TRACKS)
         .collect()
+}
+
+/// Whether the walk is over: a short page is the last one Spotify has, and the cap ends it even when
+/// there is more. Without both, a reply that keeps answering [`PAGE`] rows loops forever.
+fn page_done(rows_returned: usize, rows_seen: usize) -> bool { rows_returned < PAGE || rows_seen >= TRACK_CAP }
+
+/// The whole playlist up to [`TRACK_CAP`]. Called on an explicit click, never on the render path.
+fn fetch_tracks(id: &str, file: &Path) -> Result<Vec<Track>, String> {
+    let mut all: Vec<Track> = Vec::new();
+    // Raw rows, not parsed tracks: a removed episode is skipped in the list but still counts as a row
+    // of the playlist, and the offset must be the playlist's, not the card's.
+    let mut rows = 0usize;
+    loop {
+        let v = api(&items_url(id, rows), file)?;
+        let page = v["items"].as_array().map(Vec::len).unwrap_or(0);
+        all.extend(tracks_page(&v, rows));
+        rows += page;
+        if page_done(page, rows) { break }
+    }
+    all.truncate(TRACK_CAP);
+    Ok(all)
 }
 
 /// The profile id is what tells an own playlist from a followed one, so it is read first and the
@@ -509,9 +539,9 @@ fn list_playlists(state: &mut Spotify, file: &Path) {
 
 fn select_playlist(state: &mut Spotify, id: &str, file: &Path) {
     let name = state.playlists.iter().find(|p| p.id == id).map(|p| p.name.clone()).unwrap_or_default();
-    match api(&items_url(id), file) {
-        Ok(v) => {
-            state.tracks = tracks(&v);
+    match fetch_tracks(id, file) {
+        Ok(all) => {
+            state.tracks = all;
             state.selected = state.playlists.iter().position(|p| p.id == id);
             state.state = format!("{} de {name}", state.tracks.len());
         }
@@ -1060,29 +1090,55 @@ mod tests {
     }
 
     #[test]
-    fn item_reply_keeps_exactly_ten_and_skips_a_removed_track() {
+    fn a_page_keeps_every_row_it_was_given_and_skips_a_removed_track() {
         let mut items: Vec<Value> = (0..14).map(|i| items_row(&format!("T{i}"))).collect();
         items.insert(2, json!({"added_at": "2026-11-11T23:20:00Z", "item": null}));
-        let got = tracks(&json!({"items": items}));
-        assert_eq!(got.len(), 10, "S2 asks for ten, not every row the reply carries");
+        let got = tracks_page(&json!({"items": items}), 0);
+        assert_eq!(got.len(), 14, "S13: the page is shown whole, not cut at ten");
         assert_eq!((got[0].title.as_str(), got[0].artist.as_str()), ("T0", "Artist"));
-        assert_eq!(got[9].title, "T9");
+        assert_eq!(got[13].title, "T13");
         assert_eq!(got[2].position, 3, "the play offset includes removed rows");
         // A row without artists still renders: the artist is a detail, not a requirement.
-        assert!(tracks(&json!({"items": [{"item": {"name": "Solo"}}]}))[0].artist.is_empty());
+        assert!(tracks_page(&json!({"items": [{"item": {"name": "Solo"}}]}), 0)[0].artist.is_empty());
     }
 
     #[test]
-    fn the_tracks_request_uses_the_items_endpoint() {
+    fn the_tracks_request_pages_and_names_the_offset() {
         // The request must name the endpoint that still answers: `/tracks` returns 403 for this app,
-        // and a 403 is the whole playlist card losing its rows to a one-word URL.
-        assert_eq!(items_url("abc123"), format!("{API}/playlists/abc123/items?limit={TRACKS}"));
-        assert!(!items_url("abc123").contains("/tracks"));
+        // and a 403 is the whole playlist card losing its rows to a one-word URL. `S13` needs the
+        // offset, or page two is page one again.
+        assert_eq!(items_url("abc123", 0), format!("{API}/playlists/abc123/items?limit={PAGE}&offset=0"));
+        assert_eq!(items_url("abc123", 200), format!("{API}/playlists/abc123/items?limit={PAGE}&offset=200"));
+        assert!(!items_url("abc123", 0).contains("/tracks"));
+    }
+
+    #[test]
+    fn a_later_page_keeps_the_real_position_of_every_track() {
+        // The offset is a raw row index, so a removed episode still counts: `position` is what the
+        // play request sends as `offset.position`, and a wrong one plays the wrong song.
+        let page = json!({"items": [
+            {"item": {"id": "a", "name": "Uno", "artists": [{"name": "A"}]}},
+            {"item": null},
+            {"item": {"id": "b", "name": "Dos", "artists": [{"name": "B"}]}},
+        ]});
+        let got = tracks_page(&page, 100);
+        assert_eq!(got.iter().map(|t| t.position).collect::<Vec<_>>(), vec![100, 102], "positions continue the playlist, not the page");
+        assert_eq!((got[1].title.as_str(), got[1].artist.as_str()), ("Dos", "B"));
+        assert!(tracks_page(&json!({}), 40).is_empty());
+    }
+
+    #[test]
+    fn paging_stops_on_a_short_page_or_at_the_cap() {
+        assert!(!page_done(PAGE, PAGE), "a full first page asks for the next one");
+        assert!(page_done(PAGE - 1, PAGE - 1), "a short answer is the last page");
+        assert!(page_done(PAGE, TRACK_CAP), "the cap ends the walk even when Spotify holds more");
+        assert!(page_done(0, 0), "an empty answer never loops");
+        assert_eq!(TRACK_CAP % PAGE, 0, "the cap is a whole number of pages, so the window never grows a partial one");
     }
 
     #[test]
     fn a_playlist_row_keeps_the_track_id_the_rail_marks() {
-        let got = tracks(&json!({"items": [{"item": {"id": "tid1", "name": "Uno", "artists": [{"name": "A"}]}}]}));
+        let got = tracks_page(&json!({"items": [{"item": {"id": "tid1", "name": "Uno", "artists": [{"name": "A"}]}}]}), 0);
         assert_eq!(got[0].id, "tid1", "the card can only mark the playing row if the row knows its track");
     }
 
