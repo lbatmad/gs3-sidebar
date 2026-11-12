@@ -1002,7 +1002,9 @@ fn youtube_card(s: &State, w: usize) -> Card {
     } else {
         c.row(vec![seg("estado · ", Muted), seg(&y.state, Text)], vec![]);
     }
-    c.on_click(Action::Search);
+    // The whole card opens the search box, not only its last row: while a track plays the last row is
+    // the progress line and the search row used to stop answering.
+    for row in 0..c.rows.len() { c.hits.push((row, 2, w.saturating_sub(2), Action::Search)); }
     c
 }
 
@@ -1116,6 +1118,22 @@ mod tests {
         assert_eq!(f.youtube_rect, Some(rect));
         assert!(f.lines.iter().any(|l| plain(l).contains("sin geometría")));
         assert!(f.lines.iter().any(|l| plain(l).contains("sin geometría")));
+    }
+
+    #[test]
+    fn the_whole_youtube_card_opens_the_search_box_while_a_video_plays() {
+        // The search row used to stop working the moment a video started, because the card registered
+        // the action on its last row only and the last row is then the progress line.
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        s.media.youtube.title = Some("The Weeknd".into());
+        s.media.youtube.queue = vec![crate::media::Video { id: "a".into(), title: "The Weeknd".into() }];
+        s.media.youtube.duration = 247.0;
+        let f = frame(&s, 42, 60);
+        let (x, y) = at(&f, "buscar");
+        assert_eq!(click(&f, x, y), Some(Action::Search), "the search row works while playing");
+        // The transport keeps its own, narrower hitboxes.
+        let (px, py) = at(&f, "▶");
+        assert_eq!(click(&f, px, py), Some(Action::PlayPause));
     }
 
     #[test]
