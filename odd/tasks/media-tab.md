@@ -1,8 +1,8 @@
 # Media tab (Spotify + YouTube)
 Add one HUD tab that controls Spotify audio and YouTube video, with the actual playback delegated to external processes.
 
-Status: authorized, in progress. T1, T2a, T5, T6 and T7 done. T2b, T3 and T4 wait on one human
-input: a Spotify `client_id` from the developer app only the account owner can create.
+Status: authorized, in progress. T1, T2a, T2b, T5, T6 and T7 done by code and unit tests; the
+Spotify network calls stay unproven until the human supplies a `client_id`. T3 and T4 remain.
 
 ## Specs
 
@@ -35,7 +35,7 @@ S10. User decision on tab placement (recorded in Log): keys follow visual order;
 
 T1 | S1, S10 | parent: MEDIA tab in the `Tab` enum, two stacked sections with empty states, config integration, transition note for the CONFIG key | done: 66 tests green (RED: 4 existing tab tests), keys 1-7, `--once` renders Spotify above YouTube | commit: pending (uncommitted: this document's task, blocked by the pre-existing dirty unit)
 T2a | S2, S7 | parent: Spotify PKCE consent in an own engine thread, loopback redirect, 0600 credential file shared with the tokens, company-free SHA-256/base64url/urandom, `curl` for the token exchange, card states the prerequisite and offers connect/renew | done: 75 tests green, 7 of them new (SHA-256 FIPS vectors, RFC 7636 Appendix B, authorize URL, callback decoding, private atomic file, freshness margin, card actions). The live consent is NOT verified: it needs the human's client_id | commit: this unit
-T2b | S2 | parent: own playlists from the profile and the selected playlist's ten tracks, drawn in the Spotify card | blocked: T2a's live consent needs the human's client_id before these calls can be proven | commit: pending
+T2b | S2 | parent: own playlists from `/me/playlists` (50 cap), the selected playlist's exact ten tracks from `/playlists/{id}/tracks?limit=10`, `⌁ Pistas` card, one renewal on 401, reply parsers | done by code and unit tests: 78 passed, 2 ignored. The two `curl` calls are NOT live-verified: they need the human's client_id | commit: this unit
 T3 | S5, S7 | parent: librespot device launch plus Web API playback control (play/pause/prev/next), 1 s progress poll, clickable seek bar | pending | commit: pending
 T4 | S3 | parent: search dialog and cover art for the playlist/album/track (the dialog itself ships with T5; T4 adds the Spotify side and the cover) | pending | commit: pending
 T5 | S4, S5 | parent: mpv spawn with IPC, yt-dlp search and playback, prev/next, clickable seek bar | done: engine owns the queue; 4 new tests green; the `#[ignore]` live test passed against real network + yt-dlp (seed + recommendations) | commit: pending
@@ -114,10 +114,13 @@ R7. User decision: disable receipt-driven development for this clone (`gentle-ai
 
 R8. Consequence for delivery: the branch carries about 2574 authored lines across 9 commits since `origin/main`, far past the ~400-line review slice, and the whole-branch candidate can never fit the reviewer budget. Delivery needs a chained sequence of smaller reviewable commits, not one diff.
 
+L17. T2b done: the Spotify card lists the profile's own playlists (`/me/playlists?limit=50`, dropping entries without id or name), one click opens a playlist and a second card `⌁ Pistas` shows exactly the ten rows `/playlists/{id}/tracks?limit=10` returns, a null track (a removed episode) skipped. `curl` GETs carry the bearer token, a token within a minute of expiry is renewed before the call and a 401 renews once and retries; nothing is refreshed while no call needs it. Reply parsers are unit-tested from fixtures, not from the network. Same honest gap as T2a: the two calls are not live-verified and are not claimed. 78 tests passed, 2 ignored.
+
 ## Slice boundary
 
 The T7 unit landed as `f03986b` (53 insertions across docs, a probe script and comment banners). The
 T2a unit is `548` changed lines (525 insertions, 23 deletions) and is deliberately kept whole: the
 consent flow, its primitives, its tests, its card and its docs are one behaviour, and splitting the
 primitives from the flow would leave one commit with unused code and neither commit reviewable on its
-own. It therefore exceeds the ~400-line slice by design and must be reviewed as one unit.
+own. It therefore exceeds the ~400-line slice by design and must be reviewed as one unit. The T2b unit
+follows the same rule: card, engine calls, parsers and docs of one behaviour, reviewed together.

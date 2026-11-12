@@ -61,8 +61,8 @@ pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, Scrol
     Dir(String), Fold, Inspect(String), Pick(String), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot,
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
     Search, PlayPause, PrevTrack, NextTrack, Seek(f64),
-    /// MEDIA · Spotify: consent in the browser, or renew the stored token.
-    SpotifyAuthorize, SpotifyRefresh }
+    /// MEDIA · Spotify: consent in the browser, renew the stored token, list playlists, open one.
+    SpotifyAuthorize, SpotifyRefresh, SpotifyPlaylists, SelectPlaylist(String) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Key { Char(char), Back, Enter, Esc }
 
@@ -95,6 +95,8 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::Seek(fraction) => ui.media_cmd = Some(MediaCmd::Seek(fraction)),
         Action::SpotifyAuthorize => ui.spotify_cmd = Some(SpotifyCmd::Authorize),
         Action::SpotifyRefresh => ui.spotify_cmd = Some(SpotifyCmd::Refresh),
+        Action::SpotifyPlaylists => ui.spotify_cmd = Some(SpotifyCmd::Playlists),
+        Action::SelectPlaylist(id) => ui.spotify_cmd = Some(SpotifyCmd::Select(id)),
         Action::Edit => ui.editing = Some(ui.config.name.clone()),
         Action::ScrollTo(n) => ui.scroll[ui.tab.index()] = n,
         Action::GitView(v) => ui.git_view = v,
@@ -314,7 +316,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
         Tab::Prof => body.push(ui, profiles_card(s, cw)),
         Tab::Mem => { for c in [engram_card(s, cw), handoff_card(s, cw), stack_card(s, cw), tools_card(s, cw), mcp_card(s, cw)] { body.push(ui, c); } }
         Tab::Tree => body.push(ui, tree_card(s, cw)),
-        Tab::Media => { body.push(ui, spotify_card(s, cw)); body.push(ui, youtube_card(s, cw)); }
+        Tab::Media => { body.push(ui, spotify_card(s, cw)); if let Some(c) = tracks_card(s, cw) { body.push(ui, c); } body.push(ui, youtube_card(s, cw)); }
         Tab::Config => { for c in config_cards(s, cw) { body.push(ui, c); } }
     }
     if body.lines.is_empty() { body.lines.push(centered(vec![seg("Sin información disponible en esta pestaña.", Dim)], net)); }
@@ -804,16 +806,14 @@ fn mcp_card(s: &State, w: usize) -> Card {
 
 // ---- 6:MEDIA --------------------------------------------------------------------------
 /// Upper section of MEDIA: Spotify. Without a credential file the card states the prerequisite and
-/// the exact redirect the app must allowlist; with one it offers a renewal instead of first-time setup.
+/// the exact redirect the app must allowlist; with one it lists the user's own playlists and offers
+/// a renewal instead of first-time setup.
 fn spotify_card(s: &State, w: usize) -> Card {
     use Tone::*;
+    let sp = &s.media.spotify;
     let mut c = Card::new("spotify", mark("Spotify", Mint), w);
-    c.row(vec![seg("estado · ", Muted), seg(&s.media.spotify.state, Text)], vec![]);
-    if s.media.spotify.linked {
-        let row = c.rows.len();
-        c.row(vec![seg("↻ renovar sesión", Pink)], vec![seg("por si expiró", Dim)]);
-        c.hits.push((row, 2, 18, Action::SpotifyRefresh));
-    } else {
+    c.row(vec![seg("estado · ", Muted), seg(&sp.state, Text)], vec![]);
+    if !sp.linked {
         c.row(vec![seg("creá la app en developer.spotify.com", Dim)], vec![]);
         c.row(vec![seg("guardá el client_id en", Dim)], vec![]);
         c.row(vec![seg("~/.config/gs3/spotify.json", Dim)], vec![]);
@@ -822,8 +822,41 @@ fn spotify_card(s: &State, w: usize) -> Card {
         let row = c.rows.len();
         c.row(vec![seg("↗ conectar", Pink)], vec![seg("abre el navegador", Dim)]);
         c.hits.push((row, 2, 12, Action::SpotifyAuthorize));
+        return c;
+    }
+    for (index, playlist) in sp.playlists.iter().enumerate() {
+        let picked = sp.selected == Some(index);
+        let row = c.rows.len();
+        c.row(
+            vec![
+                seg(if picked { "● " } else { "○ " }, if picked { Mint } else { Dim }),
+                seg(&playlist.name, if picked { PinkBright } else { Text }),
+            ],
+            vec![],
+        );
+        c.hits.push((row, 2, w.saturating_sub(2), Action::SelectPlaylist(playlist.id.clone())));
+    }
+    if sp.playlists.is_empty() {
+        c.row(vec![seg("sin listas propias todavía", Dim)], vec![]);
+    }
+    for (label, action, end) in [("↻ traer mis listas", Action::SpotifyPlaylists, 19), ("↻ renovar sesión", Action::SpotifyRefresh, 18)] {
+        let row = c.rows.len();
+        c.row(vec![seg(label, Pink)], vec![seg(if end == 19 { "solo lectura" } else { "por si expiró" }, Dim)]);
+        c.hits.push((row, 2, end, action));
     }
     c
+}
+
+/// The ten tracks of the selected playlist: one card, so `S2` shows the list and its music together.
+fn tracks_card(s: &State, w: usize) -> Option<Card> {
+    use Tone::*;
+    let tracks = &s.media.spotify.tracks;
+    if tracks.is_empty() { return None }
+    let mut c = Card::new("pistas", mark("Pistas", Pink), w);
+    for (index, track) in tracks.iter().enumerate() {
+        c.row(vec![seg(format!("{:>2}. ", index + 1), Dim), seg(&track.title, Text)], vec![seg(&track.artist, Muted)]);
+    }
+    Some(c)
 }
 
 /// Lower section of MEDIA: YouTube. mpv draws the video in its own window; this card is the control.
@@ -1027,7 +1060,7 @@ mod tests {
         apply(&mut s, Event::Ui(Action::SpotifyAuthorize));
         assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Authorize));
         // With a stored session the setup rows are gone and only the renewal is offered.
-        s.media.spotify = crate::media::Spotify { state: "sesión guardada".into(), linked: true };
+        s.media.spotify = crate::media::Spotify { state: "sesión guardada".into(), linked: true, ..Default::default() };
         s.ui.spotify_cmd = None;
         let f = frame(&s, 42, 0);
         at(&f, "sesión guardada");
@@ -1037,6 +1070,46 @@ mod tests {
         assert_eq!(click(&f, x, y), Some(Action::SpotifyRefresh));
         apply(&mut s, Event::Ui(Action::SpotifyRefresh));
         assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Refresh));
+    }
+    #[test]
+    fn spotify_card_lists_own_playlists_and_exactly_ten_tracks() {
+        let mut s = sample();
+        s.ui.tab = Tab::Media;
+        let playlist = |id: &str, name: &str| crate::media::Playlist { id: id.into(), name: name.into() };
+        let track = |title: &str| crate::media::Track { title: title.into(), artist: "Daft Punk".into() };
+        s.media.spotify = crate::media::Spotify {
+            state: "2 listas".into(),
+            linked: true,
+            playlists: vec![playlist("p1", "Rock"), playlist("p2", "Jazz")],
+            selected: Some(1),
+            tracks: (0..10).map(|i| track(&format!("Tema {i}"))).collect(),
+        };
+        let f = frame(&s, 42, 0);
+        at(&f, "2 listas");
+        // S2: the playlists are the user's own, and clicking one asks for its tracks.
+        let (x, y) = at(&f, "Rock");
+        assert_eq!(click(&f, x, y), Some(Action::SelectPlaylist("p1".into())));
+        let (x, y) = at(&f, "Jazz");
+        assert_eq!(click(&f, x, y), Some(Action::SelectPlaylist("p2".into())));
+        apply(&mut s, Event::Ui(Action::SelectPlaylist("p2".into())));
+        assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Select("p2".into())));
+        // Exactly ten tracks: the engine caps them, and the card shows every one it got.
+        let rows = f.lines.iter().filter(|l| plain(l).contains("Tema ")).count();
+        assert_eq!(rows, 10, "ten track rows, one per song: {:#?}", f.lines.iter().map(|l| plain(l)).collect::<Vec<_>>());
+        at(&f, "10. Tema 9");
+        assert!(f.lines.iter().any(|l| plain(l).contains("Daft Punk")), "each row keeps its artist");
+        assert!(f.lines.iter().all(|l| plain(l).width() <= 42), "no line may overflow 42 columns");
+        // The section keeps the YouTube control below the whole Spotify block.
+        let spotify = f.lines.iter().position(|l| plain(l).contains("Spotify")).unwrap();
+        let pistas = f.lines.iter().position(|l| plain(l).contains("Pistas")).unwrap();
+        let youtube = f.lines.iter().position(|l| plain(l).contains("YouTube")).unwrap();
+        assert!(spotify < pistas && pistas < youtube, "S1: Spotify above, YouTube below");
+        // An empty profile says so instead of showing a blank card.
+        s.media.spotify = crate::media::Spotify { state: "sin listas propias".into(), linked: true, ..Default::default() };
+        let f = frame(&s, 42, 0);
+        at(&f, "sin listas propias todavía");
+        let (x, y) = at(&f, "traer mis listas");
+        assert_eq!(click(&f, x, y), Some(Action::SpotifyPlaylists));
     }
     #[test]
     fn plain_controls_preserve_states_layout_and_actions() {

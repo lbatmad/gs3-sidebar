@@ -18,7 +18,19 @@ pub struct Spotify {
     pub state: String,
     /// A private credential file exists, so the section offers a refresh instead of first-time setup.
     pub linked: bool,
+    /// The user's own playlists, as `/me/playlists` returns them.
+    pub playlists: Vec<Playlist>,
+    /// Which playlist the tracks below belong to.
+    pub selected: Option<usize>,
+    /// Exactly the ten tracks of the selected playlist.
+    pub tracks: Vec<Track>,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Playlist { pub id: String, pub name: String }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Track { pub title: String, pub artist: String }
 
 /// What the rail asks the Spotify engine to do. Sent over a channel, never run on the render path.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,6 +39,10 @@ pub enum SpotifyCmd {
     Authorize,
     /// Renew the stored access token from the refresh token.
     Refresh,
+    /// List the playlists of the authorized profile.
+    Playlists,
+    /// Show the ten tracks of this playlist id, taken from `playlists`.
+    Select(String),
 }
 
 /// Lower section: YouTube search, transport and seek. The video is drawn by `mpv`, never here.
@@ -63,7 +79,9 @@ pub enum MediaCmd {
 }
 
 impl Default for Spotify {
-    fn default() -> Self { Spotify { state: "falta el client_id".into(), linked: false } }
+    fn default() -> Self {
+        Spotify { state: "falta el client_id".into(), linked: false, playlists: Vec::new(), selected: None, tracks: Vec::new() }
+    }
 }
 
 impl Default for Media {

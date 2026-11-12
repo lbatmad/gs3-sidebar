@@ -10,7 +10,7 @@
 //! `http://127.0.0.1:8899/callback` and must be registered exactly like that in the app.
 
 use crate::core::Event;
-use crate::media::{Spotify, SpotifyCmd, REDIRECT};
+use crate::media::{Playlist, Spotify, SpotifyCmd, Track, REDIRECT};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -25,12 +25,18 @@ use std::{
 
 const AUTHORIZE: &str = "https://accounts.spotify.com/authorize";
 const TOKEN: &str = "https://accounts.spotify.com/api/token";
+const API: &str = "https://api.spotify.com/v1";
 /// Own playlists plus playback control: no scope here reads or writes anything else.
 pub const SCOPES: &str = "playlist-read-private playlist-read-collaborative user-read-private user-read-playback-state user-modify-playback-state";
 const PORT: u16 = 8899;
 /// Long enough for a login and a second factor, short enough to free the port.
 const CONSENT: Duration = Duration::from_secs(180);
 const POLL: Duration = Duration::from_millis(500);
+/// S2 asks for exactly ten tracks; the profile list is capped so one reply cannot flood the rail.
+const TRACKS: usize = 10;
+const PLAYLISTS: usize = 50;
+/// Marked, not printed: a 401 means "renew once and retry", anything else is a real answer.
+const UNAUTHORIZED: &str = "401";
 
 /// What the private file holds. `client_id` is the only part the human writes by hand.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -260,7 +266,12 @@ fn post_form(url: &str, form: &[(&str, &str)]) -> Result<Value, String> {
 }
 
 fn reason(v: &Value) -> String {
-    format!("Spotify: {}", v["error_description"].as_str().or_else(|| v["error"].as_str()).unwrap_or("respuesta sin token"))
+    let text = v["error_description"]
+        .as_str()
+        .or_else(|| v["error"]["message"].as_str())
+        .or_else(|| v["error"].as_str())
+        .unwrap_or("respuesta sin token");
+    format!("Spotify: {text}")
 }
 
 fn expiry(reply: &Value) -> u64 { unix_now() + reply["expires_in"].as_u64().unwrap_or(3600).saturating_sub(60) }
@@ -287,13 +298,100 @@ fn refresh(creds: &Creds) -> Result<Creds, String> {
     Ok(Creds { client_id: creds.client_id.clone(), access_token: reply["access_token"].as_str().unwrap_or_default().to_string(), refresh_token: rotated, expires_at: expiry(&reply) })
 }
 
+/// One authenticated GET. A 401 comes back as [`UNAUTHORIZED`] so the caller renews exactly once.
+fn get_json(url: &str, token: &str) -> Result<Value, String> {
+    let out = Command::new("curl")
+        .args(["--silent", "--show-error", "--max-time", "20", "--url", url, "--header", &format!("Authorization: Bearer {token}")])
+        .output()
+        .map_err(|e| format!("curl no encontrado: {e}"))?;
+    let body = String::from_utf8_lossy(&out.stdout);
+    let value: Value = serde_json::from_str(&body).map_err(|_| format!("respuesta inesperada de Spotify: {}", body.chars().take(120).collect::<String>()))?;
+    if value["error"]["status"].as_u64() == Some(401) { return Err(UNAUTHORIZED.into()) }
+    if !out.status.success() || !value["error"].is_null() { return Err(reason(&value)) }
+    Ok(value)
+}
+
+fn renew(file: &Path, creds: &Creds) -> Result<Creds, String> {
+    let fresh = refresh(creds)?;
+    save(file, &fresh)?;
+    Ok(fresh)
+}
+
+/// A token kept warm: renew before the call when it is about to expire, and once more if Spotify
+/// still answers 401 (a revocation between the two).
+fn api(url: &str, file: &Path) -> Result<Value, String> {
+    let mut creds = load(file).ok_or_else(|| "falta el client_id".to_string())?;
+    if !creds.fresh(unix_now()) { creds = renew(file, &creds)? }
+    match get_json(url, &creds.access_token) {
+        Err(e) if e == UNAUTHORIZED => { let fresh = renew(file, &creds)?; get_json(url, &fresh.access_token) }
+        other => other,
+    }
+}
+
+/// `/me/playlists`: entries without an id or a name cannot be selected and are dropped.
+fn playlists(v: &Value) -> Vec<Playlist> {
+    v["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(PLAYLISTS)
+        .filter_map(|item| {
+            let id = item["id"].as_str().unwrap_or_default();
+            let name = item["name"].as_str().unwrap_or_default().trim();
+            (!id.is_empty() && !name.is_empty()).then(|| Playlist { id: id.to_string(), name: name.to_string() })
+        })
+        .collect()
+}
+
+/// `/playlists/{id}/tracks`: exactly [`TRACKS`] entries, skipping a null track (a removed episode).
+fn tracks(v: &Value) -> Vec<Track> {
+    v["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let title = item["track"]["name"].as_str().unwrap_or_default().trim();
+            let artist = item["track"]["artists"][0]["name"].as_str().unwrap_or_default().trim();
+            (!title.is_empty()).then(|| Track { title: title.to_string(), artist: artist.to_string() })
+        })
+        .take(TRACKS)
+        .collect()
+}
+
+fn list_playlists(state: &mut Spotify, file: &Path) {
+    match api(&format!("{API}/me/playlists?limit={PLAYLISTS}"), file) {
+        Ok(v) => {
+            state.playlists = playlists(&v);
+            state.tracks.clear();
+            state.selected = None;
+            state.state = match state.playlists.len() {
+                0 => "sin listas propias".into(),
+                n => format!("{n} listas"),
+            };
+        }
+        Err(e) => state.state = e,
+    }
+}
+
+fn select_playlist(state: &mut Spotify, id: &str, file: &Path) {
+    let name = state.playlists.iter().find(|p| p.id == id).map(|p| p.name.clone()).unwrap_or_default();
+    match api(&format!("{API}/playlists/{}/tracks?limit={TRACKS}", encode(id)), file) {
+        Ok(v) => {
+            state.tracks = tracks(&v);
+            state.selected = state.playlists.iter().position(|p| p.id == id);
+            state.state = format!("{} de {name}", state.tracks.len());
+        }
+        Err(e) => state.state = e,
+    }
+}
+
 fn handle(state: &mut Spotify, path: &Path, cmd: SpotifyCmd) {
     let stored = load(path);
     match cmd {
         SpotifyCmd::Authorize => {
             let Some(creds) = stored else { state.state = "falta el client_id".into(); return };
             match authorize(&creds.client_id).and_then(|fresh| save(path, &fresh).map(|_| fresh)) {
-                Ok(_) => { state.linked = true; state.state = "sesión guardada".into() }
+                Ok(_) => { state.linked = true; state.state = "sesión guardada".into(); list_playlists(state, path) }
                 Err(e) => state.state = e,
             }
         }
@@ -305,6 +403,8 @@ fn handle(state: &mut Spotify, path: &Path, cmd: SpotifyCmd) {
                 Err(e) => state.state = e,
             }
         }
+        SpotifyCmd::Playlists => { state.linked = true; list_playlists(state, path) }
+        SpotifyCmd::Select(id) => { state.linked = true; select_playlist(state, &id, path) }
     }
 }
 
@@ -326,6 +426,9 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
                 (Some(_), Some(_)) => "sesión guardada".into(),
             },
             linked: stored.is_some_and(|c| !c.access_token.is_empty()),
+            playlists: Vec::new(),
+            selected: None,
+            tracks: Vec::new(),
         };
         publish(&tx, &state);
         loop {
@@ -403,6 +506,35 @@ mod tests {
         fs::write(&path, b"not json").unwrap();
         assert_eq!(load(&path), None);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn playlist_reply_drops_entries_that_cannot_be_selected() {
+        let reply = json!({"items": [
+            {"id": "a", "name": "  Rock  "},
+            {"id": "b", "name": ""},
+            {"name": "sin id"},
+            {"id": "c", "name": "Jazz"},
+            null
+        ]});
+        assert_eq!(playlists(&reply), vec![
+            Playlist { id: "a".into(), name: "Rock".into() },
+            Playlist { id: "c".into(), name: "Jazz".into() },
+        ]);
+        assert!(playlists(&json!({"items": []})).is_empty());
+        assert!(playlists(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn track_reply_keeps_exactly_ten_and_skips_a_removed_track() {
+        let mut items: Vec<Value> = (0..14).map(|i| json!({"track": {"name": format!("T{i}"), "artists": [{"name": "Artist"}]}})).collect();
+        items.insert(2, json!({"track": null}));
+        let got = tracks(&json!({"items": items}));
+        assert_eq!(got.len(), 10, "S2 asks for ten, not every row the reply carries");
+        assert_eq!((got[0].title.as_str(), got[0].artist.as_str()), ("T0", "Artist"));
+        assert_eq!(got[9].title, "T9");
+        // A track without artists still renders: the artist is a detail, not a requirement.
+        assert!(tracks(&json!({"items": [{"track": {"name": "Solo"}}]}))[0].artist.is_empty());
     }
 
     #[test]
