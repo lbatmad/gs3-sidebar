@@ -798,7 +798,7 @@ fn mcp_card(s: &State, w: usize) -> Card {
     c
 }
 
-// ---- 7:MEDIA --------------------------------------------------------------------------
+// ---- 6:MEDIA --------------------------------------------------------------------------
 /// Upper section of MEDIA: Spotify. The client does not exist yet, so the card states the exact
 /// prerequisite and the next step instead of an empty list with no way forward.
 fn spotify_card(s: &State, w: usize) -> Card {
@@ -858,7 +858,7 @@ fn seek_bar(fraction: f64, inner: usize) -> Vec<Seg> {
     vec![seg("━".repeat(at), Mint), seg("●", PinkBright), seg("┄".repeat(inner.saturating_sub(at + 1)), BorderMuted)]
 }
 
-// ---- 6:CONFIG -------------------------------------------------------------------------
+// ---- 7:CONFIG -------------------------------------------------------------------------
 fn config_cards(s: &State, w: usize) -> Vec<Card> {
     use Tone::*;
     let ui = &s.ui;

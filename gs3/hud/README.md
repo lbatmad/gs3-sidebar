@@ -10,7 +10,7 @@ gs3-hud --pane w1W:p1 [--socket /path/to/herdr.sock] [--cwd /path/to/repo] [--co
 `--pane` is required. Socket defaults to `HERDR_SOCKET_PATH`, then
 `~/.config/herdr/herdr.sock`. Working directory defaults to the current directory.
 `--help` prints the CLI. `--once` prints every visible tab as plain text at width 42,
-without raw mode or an alternate screen. Keys in the interactive UI: `1`–`6` switch tab,
+without raw mode or an alternate screen. Keys in the interactive UI: `1`–`7` switch tab,
 `q` / Ctrl-C quit, `r` refreshes Git, Engram, MCP, and requests a PR refresh.
 Mouse (button-only, no motion events): click a tab, a card's `[-]`/`[+]` (or its title)
 to collapse/expand it, and CONFIG rows; the wheel over the tab bar cycles tabs and
@@ -39,7 +39,19 @@ violet double-framed collapsible cards). Card catalog: `skills/gs3-sidebar/refer
 | 3:PROF | ⌁ Profiles & Clusters (global assignments from `/gentle:profiles` canonical `models.json`, including provider roles without MD files; the store is the explicit routing home or the bundled `<prefix>/config` beside the linked `<prefix>/agent`; MD names and Task Manager counts retained; the host row keeps its `settings.json` defaults without an `orchestrator` entry; `r` rereads; configured routing, not a session-execution claim) |
 | 4:MEM | 🧠 Engram (daemon health, sync state), 🧠 Active Handoff (latest session summary, bounded), ⌁ Stack (session-installation versions; refreshed on binding and `r`), 🔧 tools, ⌁ MCP (names only, never values) |
 | 5:TREE | ⌁ PROYECTO (project tree from the git root, dirs first, git badges `M A ? U D`, `●` on folders with changes; click a folder to open/close it, `[ ⊟ ]` folds all, a changed file opens its diff in GIT; names only, symlinks never followed, build dirs skipped) |
-| 6:CONFIG | ⌁ Nombre, ⌁ Pestañas (show/hide tabs), ⌁ Monitor (pane, config file, help) |
+| 6:MEDIA | ⌁ Spotify (upper section; states the exact prerequisite, a `client_id` from developer.spotify.com, PKCE, no secret), ⌁ YouTube (lower section: search box, transport, clickable seek bar, the seed plus its recommendations queued by the HUD, and the next one started when a video ends) |
+| 7:CONFIG | ⌁ Nombre, ⌁ Pestañas (show/hide tabs), ⌁ Monitor (pane, config file, help) |
+
+MEDIA delegates playback instead of drawing it: Spotify audio belongs to `librespot` and YouTube
+video to `mpv` in its own window, so the rail only sends commands and reports state. The YouTube
+engine resolves `mpv` and `yt-dlp` from `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin` and
+`/usr/bin`; it reports a missing tool (`mpv no encontrado`) and never installs one. `mpv` starts
+lazily on the first play and is driven over its JSON IPC socket, whose replies are matched by
+`request_id`. The queue lives in the HUD because mpv does not expand a `list=RD` mix into its own
+playlist: `yt-dlp --flat-playlist` enumerates the seed and its recommendations (24 at most), each
+entry is loaded by id, and a finished video advances exactly once, refilling from the same mix at
+the end. Progress is polled every 500 ms; the seek bar maps one click per column. The tab writes
+no files: the HUD's own settings file and the private Discord token remain the only two.
 
 The context limit comes from `<agent dir>/cpamc-models-cache.json` (what Pi registers
 at runtime), then `models-store.json`. Token counts are abbreviated like the reference (`33.7k`, `179k`, `1.0M`).

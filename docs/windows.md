@@ -75,7 +75,7 @@ Limitaciones propias de herdr en Windows que conviene conocer: no existe `herdr 
 ## Antes de afirmar que funciona
 
 - [ ] `cargo build --release` termina sin errores en Windows
-- [ ] `gs3-hud --pane <id> --once` imprime las seis pestañas
+- [ ] `gs3-hud --pane <id> --once` imprime las siete pestañas
 - [ ] Al escribirle algo a Pi, el estado cambia de `idle` a `working`
 - [ ] `/reload` carga las extensiones en Pi
 

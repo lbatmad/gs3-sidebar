@@ -1,7 +1,8 @@
 # Media tab (Spotify + YouTube)
 Add one HUD tab that controls Spotify audio and YouTube video, with the actual playback delegated to external processes.
 
-Status: authorized, in progress. Dependencies being installed via Homebrew (mpv, yt-dlp, librespot).
+Status: authorized, in progress. T1, T5, T6 and T7 done. T2, T3 and T4 are blocked on one human
+input: a Spotify `client_id` from a developer app the user creates.
 
 ## Specs
 
@@ -38,7 +39,7 @@ T3 | S5, S7 | parent: librespot device launch plus Web API playback control (pla
 T4 | S3 | parent: search dialog and cover art for the playlist/album/track (the dialog itself ships with T5; T4 adds the Spotify side and the cover) | pending | commit: pending
 T5 | S4, S5 | parent: mpv spawn with IPC, yt-dlp search and playback, prev/next, clickable seek bar | done: engine owns the queue; 4 new tests green; the `#[ignore]` live test passed against real network + yt-dlp (seed + recommendations) | commit: pending
 T6 | S4 | bounded writer + parent review: autoplay of the next YouTube recommendation when a track ends, refilling the queue at its end | done by code and unit tests: 68 passed, 2 ignored. `--keep-open=yes` adopted so `eof-reached` stays observable, with an `EofGuard` state machine so one finished track advances exactly once. Live EOF playback (window, refill, continued playback) remains a manual check and is NOT claimed | commit: pending
-T7 | all | parent: docs (docs/tabs.md, gs3/hud/README.md, HELP text, skills/gs3-sidebar/references/cards.md), dependency detection and installer notes | pending: tab list and key range already updated in T1 | commit: pending
+T7 | all | parent: docs (docs/tabs.md, gs3/hud/README.md, HELP text, skills/gs3-sidebar/references/cards.md), dependency detection and installer notes | done: MEDIA section added to docs/tabs.md and CONFIG renumbered to 7; README keys 1-7 plus the MEDIA row and its engine paragraph; two card-catalog entries; `docs/windows.md` no longer says six tabs; `check-deps.sh` reports mpv and yt-dlp as optional; 68 tests passed, 2 ignored | commit: this unit
 
 ## Log
 
@@ -76,6 +77,8 @@ L11. T5 done: new `gs3/hud/src/media.rs` (state plus `MediaCmd`), new `gs3/hud/s
 L12. T6 delegated to a bounded writer and reviewed by the parent. The writer adopted `--keep-open=yes` because with `--keep-open=no` mpv clears `eof-reached` immediately and the end cannot be observed through a polling `get_property`; a small `EofGuard` state machine (Waiting -> Armed -> Handled) makes one finished track advance exactly once and re-arms only on a new load. The parent removed the writer's unused `next_index` parameter, simplified its `advance` call, and deleted the writer's external build scratch. 68 tests passed, 2 ignored, release build clean apart from the pre-existing `VoiceRed`/`VoiceGreen` dead-code warning. Live end-to-end EOF playback is NOT verified and is not claimed.
 
 L13. Nothing is committed. Both `media.rs` files are new and untracked; every touched tracked file (`ui.rs`, `core.rs`, `main.rs`, `sources.rs`, `docs/tabs.md`, `README.md`, `gs3/hud/README.md`, `cards.md`) already carried the previous feature's uncommitted theme work, so a scoped commit needs a separate human decision rather than a blanket `git add`.
+
+L14. T7 done, and it closed a documentation debt T1 left behind: `docs/tabs.md` announced seven tabs while still listing six sections and numbering CONFIG as 6; `gs3/hud/README.md` and `cards.md` still said keys `1`–`6` and `6:CONFIG`; `docs/windows.md` still expected `--once` to print six tabs; and two section banners in `ui.rs` were swapped (`7:MEDIA`, `6:CONFIG`). All corrected in one unit. The MEDIA section documents what actually ships (Spotify states its prerequisite because T2/T3/T4 need the human's `client_id`; YouTube documents search, queue, transport, per-column seek, mpv in its own window, lazy spawn, 24-video cap, 500 ms poll and the tool search order). `check-deps.sh` gained optional `mpv` and `yt-dlp` probes; it installs nothing. No screenshot was invented for MEDIA: `docs/assets/` still holds `tab6.png`, which shows CONFIG, so a MEDIA capture and the CONFIG image rename remain pending. 68 tests passed, 2 ignored.
 
 ## Delivery
 

@@ -10,7 +10,7 @@
 - `─` divider (borderMuted); when the body scrolls it ends with ` ↓`, ` ↑↓` or ` ↑`. Blank line, then the cards of the active tab separated by one blank line. Empty tab: `Sin información disponible en esta pestaña.` (dim, centered).
 - Frame: `╔═ title ═…═ [-] ═╗`, rows `║ left ··· right ║`, divider `╠═╣`, `╚═╝` (violet `#8e44ad`). `[-]` collapses the card to `╔ title [+] ╗` + `╚╝`; the whole title row is clickable too. No toggle under 16 columns.
 - MAIN voice row: a single row of regular-weight Material Design Nerd Font glyphs: microphone outline U+F036E (off U+F036D), headphones U+F02CB (off U+F07CE), cog outline U+F08BB; five-cell centered slots, three-cell gaps, slot plus one column each side clickable. Mint when audio enabled, coral when muted/deafened, dim offline; cog secondary/lavender online. Capture uses U+F019F in secondary/lavender, flush right with the previous narrow-width visibility threshold; click actions are unchanged. Requires a Nerd Font with Material Design coverage. Status follows immediately below.
-- Mouse (button-only, SGR): click tab / `[-]` / CONFIG rows; wheel over the tab bar cycles tabs, elsewhere scrolls 3 lines (per tab, clamped). Keys `1`–`6`, `r`, `q`, Ctrl-C.
+- Mouse (button-only, SGR): click tab / `[-]` / CONFIG rows; wheel over the tab bar cycles tabs, elsewhere scrolls 3 lines (per tab, clamped). Keys `1`–`7`, `r`, `q`, Ctrl-C.
 
 ## ⌁ Status
 - Tab 1:MAIN. Rows: `Project` (`~/…`, `…/<name>` when too long), `Branch` (`⎇ branch` + `±N` yellow; `no-git`), then a model section between two dividers (S10): the model id without provider in spaced capitals (`G P T - 6 . 1 - S O L`, pinkBright bold, centered; plain wrapped capitals when spacing does not fit) and `◆ MEDIUM ◆` (thinking, gold, centered; omitted when off/empty); `sin modelo` (dim) without a model. Then `<icon> <status>` (working ● cyan, idle ○ muted, blocked ! coral, done ✓ mint) + workspace label/id, `herdr ● <pane>` + `conectado|desconectado`.
@@ -76,12 +76,20 @@
 ## ⌁ MCP
 - Tab 4:MEM. Title `⌁ MCP · N`; rows `● <name>` + `[local]` (has `command`) or `[remote]`. Without `mcp.json`: `sin mcp.json`. Names only, never values.
 
+## Spotify
+- Tab 6:MEDIA, upper section. Title `Spotify` with the mint power mark. Rows: `estado · <state>` (default `sin autorizar`) and, dim, the prerequisite itself: `creá la app en developer.spotify.com` then `pasá su client_id · PKCE, sin secret`. Own playlists, their ten tracks, the search dialog and cover art need that `client_id`; until it exists the card states the prerequisite and shows no invented rows.
+
+## YouTube
+- Tab 6:MEDIA, lower section. Title `YouTube` with the coral power mark. Search mode (`ui.prompt`): `> <buffer>▏` + `Enter busca · Esc cancela`, modal, so `q` and the tab keys type into the buffer; `Enter` submits exactly one `MediaCmd::Play` and an empty query submits nothing.
+- Playing: title + `{index+1}/{len}`, transport `◀◀   ❚❚|▶   ▶▶` with hitboxes at columns 2-4, 7-8 and 11-13, the seek bar `━`/`●`/`┄` where every column maps to `Action::Seek(k/(inner-1))`, then `m:ss / m:ss` + state. Idle: `estado · <state>`. Bottom row `🔍 buscar` + `el vídeo se abre en mpv`; the whole card opens the search box.
+- Data: `Media.youtube` (`state/title/position/duration/playing/queue/index`), each 500 ms poll off the render path. Engine (`sources/media.rs`): `mpv --idle=yes --no-terminal --keep-open=yes --input-ipc-server`, lazily started; the queue lives in the HUD because mpv does not expand a `list=RD` mix; at most 24 videos; `EofGuard` advances once per finished video and refills from the same mix at the end; tools resolved from `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`.
+
 ## ⌁ Nombre
-- Tab 6:CONFIG. `Nombre` → the custom name (pinkBright) or ` - - `; row `✎ editar` (click) + `vacío = " - - "`. Editing: `> <buffer>▏` + `n/24`, `Enter guarda · Esc cancela`; keys type into the buffer (`q`, `1`–`6` included).
+- Tab 7:CONFIG. `Nombre` → the custom name (pinkBright) or ` - - `; row `✎ editar` (click) + `vacío = " - - "`. Editing: `> <buffer>▏` + `n/24`, `Enter guarda · Esc cancela`; keys type into the buffer (`q`, `1`–`7` included).
 
 ## ⌁ Pestañas
-- Tab 6:CONFIG. One row per tab `[✓] NAME` + `visible` / `[ ] NAME` + `oculta` (names without numbers); click toggles. `[✓] ⛭ CONFIG` (purple gearbox) is `fija` (never hidden).
+- Tab 7:CONFIG. One row per tab `[✓] NAME` + `visible` / `[ ] NAME` + `oculta` (names without numbers); click toggles. `[✓] ⛭ CONFIG` (purple gearbox) is `fija` (never hidden).
 
 ## ⌁ Monitor
-- Tab 6:CONFIG. `Panel` (bound herdr pane), `Archivo` (`--config` path or `sin --config (no se guarda)`), save error (coral) if any; divider; key and mouse help.
+- Tab 7:CONFIG. `Panel` (bound herdr pane), `Archivo` (`--config` path or `sin --config (no se guarda)`), save error (coral) if any; divider; key and mouse help.
 - Persistence: `config.rs` `save()` writes `{name, hidden, collapsed}` to `--config` via `<file>.json.tmp` + rename; never creates directories. The launcher passes `<repo>/.gentle-shell/gs3-hud.json` (or `GS3_CONFIG`). The only file the HUD writes.
