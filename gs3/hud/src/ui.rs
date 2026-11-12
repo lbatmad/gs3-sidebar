@@ -365,7 +365,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     let video_block = s.ui.prompt.is_some() || s.media.youtube.title.is_some();
     let youtube_rect = youtube_start.filter(|_| video_block && !ui.collapsed("youtube") && cw > 4).and_then(|start| {
         let y = start + 3;
-        (y >= scroll && y + VIDEO_ROWS <= scroll + view).then(|| crate::media::CellRect::new((PAD + 2) as u32, (top_rows + y - scroll) as u32, (cw - 4) as u32, VIDEO_ROWS as u32))
+        (y >= scroll && y + VIDEO_ROWS <= scroll + view).then(|| crate::media::CellRect::new((PAD + 1) as u32, (top_rows + y - scroll) as u32, (cw - 2) as u32, VIDEO_ROWS as u32))
     });
     Frame { lines, hits, tab_row, scroll, max_scroll, cover_pos, youtube_rect }
 }
@@ -1122,6 +1122,14 @@ mod tests {
         // Twelve rows is the closest a card this narrow gets to 16:9, so the video has almost no
         // letterbox left to crop and the window stays inside the frame.
         assert_eq!(playing.youtube_rect.unwrap().height, VIDEO_ROWS as u32, "the block must match the video's shape");
+        // The block must sit exactly inside the card's borders: one cell in from the left one, and
+        // ending where the right border starts. Anything else shows up as an uncentred video.
+        let r = playing.youtube_rect.unwrap();
+        // One cell in from the left border, and ending where the right border starts: the card spans
+        // PAD..width-1-PAD, so its inner span is PAD+1..width-1-PAD exclusive.
+        let width = 42usize;
+        assert_eq!(r.x as usize, PAD + 1, "left edge inside the border");
+        assert_eq!((r.x + r.width) as usize, width - 1 - PAD, "right edge at the border");
         assert!(playing.youtube_rect.unwrap().width >= 20, "and the card's inner width");
         assert!(playing.lines.len() > idle.lines.len(), "the block is real rows, not an invisible promise");
     }
