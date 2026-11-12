@@ -16,8 +16,7 @@ Mouse (button-only, no motion events): click a tab, a card's `[-]`/`[+]` (or its
 to collapse/expand it, and CONFIG rows; the wheel over the tab bar cycles tabs and
 elsewhere scrolls the body. MAIN's model section is a button: click any model-name,
 effort or `sin modelo` row (or the dim Status `▸`) to open the model picker in gs2.
-Above Status, three centered pixel-art icons (5×2, no frame) control the local Discord RPC client (Vesktop on Linux; official Discord on macOS):
-🎙 toggles mute, 🎧 toggles deafen (red = active, green = off, white = no client running), the Discord icon opens or focuses that client. Each whole icon (plus one column on each side) is clickable.
+Above Status, a centered row of regular-weight controls operates the local Discord RPC client (Vesktop on Linux; official Discord on macOS) and capture selector. Mic toggles mute, headphones toggles deafen (coral = active, mint = off, dim = no client running), and the Discord control opens or focuses that client. Each five-cell slot plus one column on either side is clickable. Controls use Nerd Font glyphs by default, or portable ASCII labels with `plain_controls` enabled.
 The first click asks for RPC consent; the token is kept private in `~/.config/gs3/discord-token.json` (0600). On macOS the connected peer's UID and executable path are checked before any RPC data is sent.
 It focuses only the bound pane, then sends fixed F9 to the model-picker extension.
 A dedicated worker keeps socket I/O off rendering, coalesces pending clicks and
@@ -30,14 +29,14 @@ via a temp file and rename; it never creates directories. Without `--config` cha
 last until exit. `gs3` passes `~/.config/gs3/gs3-hud.json` (override with `GS3_CONFIG`).
 
 Layout: the CUTE sidebar of pi-cinlodev-cute (banner `⌁ <name> ⌁` / `GENTLE-SHELL`, tab bar by name
-`MAIN GIT PROF MEM TREE ⛭` (the purple gearbox `⛭` is CONFIG; banner and card titles use the purple power mark `⌁`; two-letter names when narrow),
+`MAIN GIT PROF MEM TREE MEDIA ⛭` (the purple gearbox `⛭` is CONFIG; banner and card titles use the purple power mark `⌁`; two-letter names when narrow),
 violet double-framed collapsible cards). Card catalog: `skills/gs3-sidebar/references/cards.md`.
 
 | Tab | Cards |
 | --- | --- |
-| 1:MAIN | regular-weight Nerd Font voice buttons (mic, headphones, cog) (Vesktop mute, deafen, open) plus a small lavender capture-area icon flush right (Flameshot on Linux, native selection to clipboard on macOS), ⌁ Status (project, branch, clickable model section: spaced capitals + `◆ THINKING ◆`; Status `▸` hint), ⌁ Context, ⌁ Todos (latest `todo` tool checklist of the session) |
+| 1:MAIN | regular-weight voice controls (mic, headphones, Discord; Nerd Font or portable ASCII) and a capture-area control in a centered group (Flameshot on Linux, native selection to clipboard on macOS), ⌁ Status (project, branch, clickable model section: spaced capitals + `◆ THINKING ◆`; Status `▸` hint), ⌁ Context, ⌁ Todos (latest `todo` tool checklist of the session) |
 | 2:GIT | ⎇ git graph (`[ Grafo \| Ramas ]`: commit graph or branches; click a branch to diff it against HEAD), 📁 Working Tree (changed files; click one for an inline diff preview, secret-like names are never read), ⌁ Pull requests |
-| 3:PROF | ⌁ Profiles & Clusters (host model/thinking from `settings.json`, one row per `agents/*.md` with its model and effort, Task Manager footer) |
+| 3:PROF | ⌁ Profiles & Clusters (global assignments from `/gentle:profiles` canonical `models.json`, including provider roles without MD files; the store is the explicit routing home or the bundled `<prefix>/config` beside the linked `<prefix>/agent`; MD names and Task Manager counts retained; the host row keeps its `settings.json` defaults without an `orchestrator` entry; `r` rereads; configured routing, not a session-execution claim) |
 | 4:MEM | 🧠 Engram (daemon health, sync state), 🧠 Active Handoff (latest session summary, bounded), ⌁ Stack (session-installation versions; refreshed on binding and `r`), 🔧 tools, ⌁ MCP (names only, never values) |
 | 5:TREE | ⌁ PROYECTO (project tree from the git root, dirs first, git badges `M A ? U D`, `●` on folders with changes; click a folder to open/close it, `[ ⊟ ]` folds all, a changed file opens its diff in GIT; names only, symlinks never followed, build dirs skipped) |
 | 6:CONFIG | ⌁ Nombre, ⌁ Pestañas (show/hide tabs), ⌁ Monitor (pane, config file, help) |
@@ -95,4 +94,4 @@ Binary: `./target/release/gs3-hud`. Dependencies include bundled
 SQLite and no OpenSSL or HTTP client. The launcher should pass the **Pi pane's**
 id, not the HUD pane's id. It can terminate the HUD pane after Pi exits.
 
-The MAIN controls require a Nerd Font with Material Design glyph coverage. Audio controls use the existing mint/coral state colors, dim when offline; client and capture controls use the panel's lavender secondary tone.
+The default MAIN controls require a Nerd Font with Material Design glyph coverage. As an alternative for ordinary fonts, add `"plain_controls": true` to the existing HUD JSON settings passed through `--config`, preserving its other settings. The controls then use ASCII labels: `MIC` / `MUTE`, `HP` / `DEAF`, `APP` (Discord) and `CAP` (capture). Their actions, click regions, centering and state colors are unchanged; capture stays hidden at narrow widths. This is an explicit mode, not automatic font detection. Missing, false or invalid `plain_controls` values retain the Nerd Font default. Audio controls use mint/coral state colors, dim when offline; client and capture controls use the panel's secondary tone.

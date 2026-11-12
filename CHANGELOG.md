@@ -4,6 +4,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 
 ## [Sin publicar]
 
+### Corregido
+
+- `PROF` resuelve el store de `/gentle:profiles` en instalaciones bundleadas: lee `<prefix>/config/models.json` junto al `<prefix>/agent` de la sesión cuando no hay routing home explícito, así los roles configurados (incluidos `review-refuter` y `review-validator`) aparecen con su modelo en vez de quedar en `—`.
+- `gs3` reenvía al panel de la barra los routing homes absolutos de su entorno (`GENTLE_PI_CONFIG_HOME`, `GENTLE_SHELL_CONFIG_HOME`, `GENTLE_PI_AGENT_HOME`, `PI_CODING_AGENT_DIR`), que el panel no hereda de Pi.
+- `PROF` mantiene los defaults de `settings.json` en el renglón del host cuando el perfil no configura `orchestrator`, en lugar de mostrar `—`.
+
 ## [0.1.0]
 
 Primera publicación.

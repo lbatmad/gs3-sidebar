@@ -74,9 +74,9 @@ Es de solo lectura, con **cuatro excepciones acotadas y explícitas**, todas por
 | Voz de Discord (Vesktop en Linux, Discord oficial en macOS) | Silencia / ensordece por el RPC local. El token queda en `~/.config/gs3/discord-token.json` con permisos `0600`. |
 | Botón de captura | Abre Flameshot en Linux o el selector nativo de macOS (copia al portapapeles). |
 
-## Las seis pestañas
+## Las siete pestañas
 
-Se cambian con las teclas `1`–`6` o con el ratón. `r` refresca y `q` sale.
+Se cambian con las teclas `1`–`7` o con el ratón. `r` refresca y `q` sale.
 
 | Tecla | Pestaña | Para qué sirve |
 | --- | --- | --- |

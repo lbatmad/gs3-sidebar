@@ -12,9 +12,10 @@
 | `GS3_NO_ATTACH=1` | Fuera de herdr: crea el espacio sin conectarse | desactivado |
 | `HERDR_SOCKET_PATH` | Socket de herdr | `~/.config/herdr/herdr.sock` |
 | `HERDR_BIN_PATH` | Binario de herdr (lo usa `herdr-workspace-title`) | `herdr` del `PATH` |
-| `PI_CODING_AGENT_DIR` | Carpeta del agente de Pi | `~/.pi/agent` |
+| `PI_CODING_AGENT_DIR` | Carpeta del agente de Pi (reenviada al panel de la barra para PROF) | `~/.pi/agent` |
+| `GENTLE_PI_CONFIG_HOME`, `GENTLE_SHELL_CONFIG_HOME`, `GENTLE_PI_AGENT_HOME` | Routing homes que el lanzador reenvía al panel de la barra cuando son absolutos | sin definir |
 
-Los argumentos después de `gs3` se conservan al pasarlos al agente; `gs3 --help` muestra la ayuda del lanzador. El launcher antepone `--extension <puente> --gs3-herdr-pane <panel> --gs3-herdr-socket <ruta absoluta>` para asociar la sesión sin depender del entorno de Pi. Los dos flags `--gs3-herdr-*` están reservados: no los pases manualmente antes de `--`. Después de `--`, se conservan como texto del prompt.
+Los argumentos después de `gs3` se conservan al pasarlos al agente; `gs3 --help` muestra la ayuda del lanzador. El launcher antepone `--extension <puente> --gs3-herdr-pane <panel> --gs3-herdr-socket <ruta absoluta>` para asociar la sesión sin depender del entorno de Pi. Cuando su propio entorno tiene `GENTLE_PI_CONFIG_HOME`, `GENTLE_SHELL_CONFIG_HOME`, `GENTLE_PI_AGENT_HOME` o `PI_CODING_AGENT_DIR` absolutos, los reenvía al comando del panel de la barra; nunca reenvía valores relativos ni variables sin definir. Los dos flags `--gs3-herdr-*` están reservados: no los pases manualmente antes de `--`. Después de `--`, se conservan como texto del prompt.
 
 El puente solo actúa en modo TUI, publica la ruta de sesión (no su contenido) y requiere un socket local propiedad del usuario, no un enlace simbólico. Sin sesión persistida no publica nada. Si herdr ya recibe las variables completas de su integración oficial, el puente no compite con ella. Los errores de conexión o de API generan un aviso y no bloquean Pi indefinidamente.
 
@@ -34,6 +35,12 @@ GS3_SHELL=/ruta/absoluta/a/gentle-shell GS3_HERDR=/ruta/absoluta/a/herdr \
 Usá el terminal genuino de Herdr y el panel y socket reales; este comando no crea ni reinicia paneles. Sin `GS3_HERDR`, su versión queda «no verificada». El lanzador normal ya transmite ambas rutas.
 
 `--once` imprime todas las pestañas como texto plano (ancho 42) y sale; sirve para depurar. Con un panel que no existe no imprime nada.
+
+## Controles con fuentes normales
+
+Los controles de MAIN usan Nerd Font por defecto. Como alternativa, agregá `"plain_controls": true` al JSON existente indicado con `--config`, conservando los otros ajustes. Se muestran etiquetas ASCII: `MIC` / `MUTE`, `HP` / `DEAF`, `APP` (Discord) y `CAP` (captura). Mantienen las mismas acciones, colores y áreas de clic; captura sigue oculta cuando el panel es estrecho.
+
+El modo es explícito: no detecta la cobertura de la fuente ni modifica la configuración del terminal. Si el campo falta, es `false` o tiene un tipo inválido, se conserva el modo Nerd Font. El ajuste se conserva al guardar los demás cambios del HUD; cuando está desactivado no agrega una clave al formato anterior.
 
 ## Pestaña ⛭ CONFIG
 

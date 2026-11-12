@@ -17,6 +17,7 @@ chmod +x "$mock/tools with spaces/herdr" "$mock/tools with spaces/shell"
 export GS3_TEST_COMMAND="$mock/command"
 HERDR_ENV=1 HERDR_PANE_ID=main GS3_HUD=/usr/bin/true \
   GS3_SHELL="$mock/tools with spaces/shell" GS3_HERDR="$mock/tools with spaces/herdr" \
+  env -u GENTLE_PI_CONFIG_HOME -u GENTLE_SHELL_CONFIG_HOME -u GENTLE_PI_AGENT_HOME -u PI_CODING_AGENT_DIR \
   /bin/bash "$repo/gs3/bin/gs3"
 command_text="$(< "$mock/command")"
 expected="GS3_SHELL=$(printf '%q' "$mock/tools with spaces/shell") GS3_HERDR=$(printf '%q' "$mock/tools with spaces/herdr") exec "
@@ -26,6 +27,16 @@ command_text="${command_text%%exec *}/usr/bin/env"
 result="$(/bin/bash -c "$command_text")"
 [[ "$result" == *"GS3_SHELL=$mock/tools with spaces/shell"* ]]
 [[ "$result" == *"GS3_HERDR=$mock/tools with spaces/herdr"* ]]
+# A forwarded routing home comes first and survives shell parsing untouched.
+HERDR_ENV=1 HERDR_PANE_ID=main GS3_HUD=/usr/bin/true \
+  GENTLE_PI_CONFIG_HOME="$mock/tools with spaces/config" \
+  GS3_SHELL="$mock/tools with spaces/shell" GS3_HERDR="$mock/tools with spaces/herdr" \
+  /bin/bash "$repo/gs3/bin/gs3"
+command_text="$(< "$mock/command")"
+[[ "$command_text" == "GENTLE_PI_CONFIG_HOME=$(printf '%q' "$mock/tools with spaces/config") "* ]] || { printf 'routing home lost or unquoted: %s\n' "$command_text" >&2; exit 1; }
+command_text="${command_text%%exec *}/usr/bin/env"
+result="$(/bin/bash -c "$command_text")"
+[[ "$result" == *"GENTLE_PI_CONFIG_HOME=$mock/tools with spaces/config"* ]] || { printf 'routing home mangled by the shell: %s\n' "$result" >&2; exit 1; }
 printf 'Stack launcher paths are explicit and shell-safe\n'
 
 # Run the public HUD against a wholly synthetic installation and Unix socket.

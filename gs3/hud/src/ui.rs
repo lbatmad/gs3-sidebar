@@ -2,28 +2,31 @@
 //! scroll and mouse hit-test. Pure: `frame()` draws, `act()`/`key()` change only `Ui`.
 use crate::config::{clean_name, Config, NAME_MAX};
 use crate::core::*;
+use crate::media::MediaCmd;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Tab { #[default] Main, Git, Prof, Mem, Tree, Config }
+pub enum Tab { #[default] Main, Git, Prof, Mem, Tree, Media, Config }
 impl Tab {
-    pub const ALL: [Tab; 6] = [Tab::Main, Tab::Git, Tab::Prof, Tab::Mem, Tab::Tree, Tab::Config];
+    pub const ALL: [Tab; 7] = [Tab::Main, Tab::Git, Tab::Prof, Tab::Mem, Tab::Tree, Tab::Media, Tab::Config];
     pub fn index(self) -> usize { self as usize }
+    /// Keys follow visual order: MEDIA takes 6 and the CONFIG gear moves to 7 (S10).
     pub fn key(self) -> char { (b'1' + self as u8) as char }
-    pub fn label(self) -> &'static str { ["MAIN", "GIT", "PROF", "MEM", "TREE", "CONFIG"][self.index()] }
+    pub fn label(self) -> &'static str { ["MAIN", "GIT", "PROF", "MEM", "TREE", "MEDIA", "CONFIG"][self.index()] }
     /// Tab-bar name (no numbers; CONFIG is its icon) and the two-letter fallback for narrow panes.
+    /// The fallbacks stay distinct: MEM is `ME`, MEDIA is `MD`.
     pub fn name(self, short: bool) -> &'static str {
-        if short { ["MA", "GI", "PR", "ME", "TR", CONFIG_ICON][self.index()] } else { ["MAIN", "GIT", "PROF", "MEM", "TREE", CONFIG_ICON][self.index()] }
+        if short { ["MA", "GI", "PR", "ME", "TR", "MD", CONFIG_ICON][self.index()] } else { ["MAIN", "GIT", "PROF", "MEM", "TREE", "MEDIA", CONFIG_ICON][self.index()] }
     }
-    pub fn id(self) -> &'static str { ["main", "git", "prof", "mem", "tree", "config"][self.index()] }
+    pub fn id(self) -> &'static str { ["main", "git", "prof", "mem", "tree", "media", "config"][self.index()] }
     pub fn from_id(id: &str) -> Option<Tab> { Self::ALL.into_iter().find(|t| t.id() == id) }
     pub fn from_key(c: char) -> Option<Tab> { Self::ALL.into_iter().find(|t| t.key() == c) }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Ui {
-    pub tab: Tab, pub config: Config, pub scroll: [usize; 6],
+    pub tab: Tab, pub config: Config, pub scroll: [usize; 7],
     /// Name being typed in CONFIG (`None` when not editing).
     pub editing: Option<String>,
     /// Where CONFIG is persisted (`--config`); `None` keeps changes in memory only.
@@ -35,6 +38,8 @@ pub struct Ui {
     /// Explicit model-section click; main consumes this intent off the render path.
     pub open_picker: bool,
     pub voice_cmd: Option<VoiceCmd>,
+    /// MEDIA: the YouTube search box while it is open, and the command the engine consumes off the render path.
+    pub prompt: Option<String>, pub media_cmd: Option<MediaCmd>,
     /// Explicit click on the Flameshot icon; main consumes this intent off the render path.
     pub screenshot: bool,
 }
@@ -53,7 +58,9 @@ impl Ui {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, ScrollTo(usize), GitView(GitView), Branch(Option<String>), File(String),
     /// TREE: toggle a folder, fold every folder, open a changed file's diff in GIT, select an unchanged file.
-    Dir(String), Fold, Inspect(String), Pick(String), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot }
+    Dir(String), Fold, Inspect(String), Pick(String), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot,
+    /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
+    Search, PlayPause, PrevTrack, NextTrack, Seek(f64) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Key { Char(char), Back, Enter, Esc }
 
@@ -79,6 +86,11 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::VoiceDeaf => ui.voice_cmd = Some(VoiceCmd::Deaf),
         Action::VoiceOpen => ui.voice_cmd = Some(VoiceCmd::Open),
         Action::Screenshot => ui.screenshot = true,
+        Action::Search => ui.prompt = Some(String::new()),
+        Action::PlayPause => ui.media_cmd = Some(MediaCmd::Toggle),
+        Action::NextTrack => ui.media_cmd = Some(MediaCmd::Next),
+        Action::PrevTrack => ui.media_cmd = Some(MediaCmd::Prev),
+        Action::Seek(fraction) => ui.media_cmd = Some(MediaCmd::Seek(fraction)),
         Action::Edit => ui.editing = Some(ui.config.name.clone()),
         Action::ScrollTo(n) => ui.scroll[ui.tab.index()] = n,
         Action::GitView(v) => ui.git_view = v,
@@ -100,6 +112,20 @@ pub fn key(s: &mut State, k: Key) {
             Key::Back => { buf.pop(); }
             Key::Enter => { s.ui.config.name = clean_name(buf); s.ui.editing = None; s.ui.save = true; }
             Key::Esc => s.ui.editing = None,
+            _ => {}
+        }
+        return;
+    }
+    // MEDIA · YouTube search box: modal while open, so `q` and the tab keys are text here.
+    if let Some(buf) = &mut s.ui.prompt {
+        match k {
+            Key::Char(c) if !c.is_control() && buf.chars().count() < 120 => buf.push(c),
+            Key::Back => { buf.pop(); }
+            Key::Enter => {
+                let query = buf.trim().to_string(); s.ui.prompt = None;
+                if !query.is_empty() { s.ui.media_cmd = Some(MediaCmd::Play(query)); }
+            }
+            Key::Esc => s.ui.prompt = None,
             _ => {}
         }
         return;
@@ -279,11 +305,12 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     let mut body = Body { lines: Vec::new(), hits: Vec::new(), glued: false };
     let cw = net;
     match ui.tab {
-        Tab::Main => { voice_row(&mut body, s.voice, cw); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); }
+        Tab::Main => { voice_row(&mut body, s.voice, cw, ui.config.plain_controls); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); }
         Tab::Git => { body.push(ui, git_card(s, cw)); body.push(ui, worktree_card(s, cw)); body.push(ui, pr_card(s, cw)); }
         Tab::Prof => body.push(ui, profiles_card(s, cw)),
         Tab::Mem => { for c in [engram_card(s, cw), handoff_card(s, cw), stack_card(s, cw), tools_card(s, cw), mcp_card(s, cw)] { body.push(ui, c); } }
         Tab::Tree => body.push(ui, tree_card(s, cw)),
+        Tab::Media => { body.push(ui, spotify_card(s, cw)); body.push(ui, youtube_card(s, cw)); }
         Tab::Config => { for c in config_cards(s, cw) { body.push(ui, c); } }
     }
     if body.lines.is_empty() { body.lines.push(centered(vec![seg("Sin información disponible en esta pestaña.", Dim)], net)); }
@@ -305,17 +332,21 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
 pub fn render_lines(s: &State, width: u16) -> Vec<String> { frame(s, width, 0).lines.iter().map(|l| plain(l)).collect() }
 
 /// Material Design Nerd Font controls, regular weight in fixed five-cell slots.
-/// Requires a Nerd Font with Material Design glyph coverage in the terminal.
+/// Requires Nerd Font coverage unless plain_controls selects ASCII labels.
 const MIC_ICON: &str = "\u{f036e}";
 const MIC_OFF: &str = "\u{f036d}";
 const HEADPHONES_ICON: &str = "\u{f02cb}";
 const HEADPHONES_OFF: &str = "\u{f07ce}";
 const DISCORD_ICON: &str = "\u{f066f}";
 const CAPTURE_ICON: &str = "\u{f019f}";
-fn voice_row(body: &mut Body, voice: Voice, w: usize) {
+fn voice_row(body: &mut Body, voice: Voice, w: usize, plain_controls: bool) {
     const ICON: usize = 5; const GAP: usize = 3;
     let tone = |active| if !voice.online { Tone::Dim } else if active { Tone::Coral } else { Tone::Mint };
-    let icons = [if voice.mute || voice.deaf { MIC_OFF } else { MIC_ICON }, if voice.deaf { HEADPHONES_OFF } else { HEADPHONES_ICON }, DISCORD_ICON, CAPTURE_ICON];
+    let icons = if plain_controls {
+        [if voice.mute || voice.deaf { "MUTE" } else { "MIC" }, if voice.deaf { "DEAF" } else { "HP" }, "APP", "CAP"]
+    } else {
+        [if voice.mute || voice.deaf { MIC_OFF } else { MIC_ICON }, if voice.deaf { HEADPHONES_OFF } else { HEADPHONES_ICON }, DISCORD_ICON, CAPTURE_ICON]
+    };
     let tones = [tone(voice.mute || voice.deaf), tone(voice.deaf), if voice.online { Tone::Secondary } else { Tone::Dim }, Tone::Secondary];
     let start = body.lines.len();
     let count = if w >= 4 * ICON + 3 * GAP { 4 } else { 3 };
@@ -642,7 +673,14 @@ fn profiles_card(s: &State, w: usize) -> Card {
     use Tone::*;
     let mut c = Card::new("profiles", mark("Profiles & Clusters", PinkBright), w);
     let r = s.roster.clone().unwrap_or_default();
-    model_rows(&mut c, vec![seg("🎯 ", Border), bold("host / orquestador", Border)], &r.model, &r.thinking);
+    if !r.profile_source.is_empty() {c.row(vec![seg(r.profile_source.clone(), Dim)], vec![]);}
+    // A profile without an `orchestrator` entry keeps the host defaults of settings.json;
+    // the store never rewrites STATUS, only this card.
+    let (model,thinking)=match r.configured_host.as_ref() {
+        Some(a)=>(a.model.as_str(),a.thinking.as_str()),
+        None=>(r.model.as_str(),r.thinking.as_str()),
+    };
+    model_rows(&mut c, vec![seg("🎯 ", Border), bold("host / orquestador", Border)], model, thinking);
     if r.agents.is_empty() { c.row(vec![], vec![]); c.row(vec![seg("sin subagentes configurados", Dim)], vec![]); }
     for a in &r.agents {
         c.row(vec![], vec![]);
@@ -760,6 +798,66 @@ fn mcp_card(s: &State, w: usize) -> Card {
     c
 }
 
+// ---- 7:MEDIA --------------------------------------------------------------------------
+/// Upper section of MEDIA: Spotify. The client does not exist yet, so the card states the exact
+/// prerequisite and the next step instead of an empty list with no way forward.
+fn spotify_card(s: &State, w: usize) -> Card {
+    use Tone::*;
+    let mut c = Card::new("spotify", mark("Spotify", Mint), w);
+    c.row(vec![seg("estado · ", Muted), seg(&s.media.spotify.state, Text)], vec![]);
+    c.row(vec![seg("creá la app en developer.spotify.com", Dim)], vec![]);
+    c.row(vec![seg("pasá su client_id · PKCE, sin secret", Dim)], vec![]);
+    c
+}
+
+/// Lower section of MEDIA: YouTube. mpv draws the video in its own window; this card is the control.
+fn youtube_card(s: &State, w: usize) -> Card {
+    use Tone::*;
+    let y = &s.media.youtube;
+    let inner = w.saturating_sub(4);
+    let mut c = Card::new("youtube", mark("YouTube", Coral), w);
+    // S3/S4: the dialog that searches a specific track. Modal, so the card shows only the box.
+    if let Some(buf) = &s.ui.prompt {
+        c.row(vec![seg("> ", PinkBright), seg(buf.clone(), Text), bold("▏", PinkBright)], vec![seg("Enter busca · Esc cancela", Dim)]);
+        return c;
+    }
+    if y.title.is_some() && !y.queue.is_empty() {
+        c.row(vec![seg(y.title.clone().unwrap_or_default(), Text)], vec![seg(format!("{}/{}", y.index + 1, y.queue.len()), Dim)]);
+        c.row(vec![seg("◀◀   ", Muted), seg(if y.playing { "❚❚" } else { "▶" }, PinkBright), seg("   ▶▶", Muted)], vec![]);
+        let row = c.rows.len() - 1;
+        c.hits.push((row, 2, 4, Action::PrevTrack));
+        c.hits.push((row, 7, 8, Action::PlayPause));
+        c.hits.push((row, 11, 13, Action::NextTrack));
+        let fraction = if y.duration > 0.0 { (y.position / y.duration).clamp(0.0, 1.0) } else { 0.0 };
+        c.row(seek_bar(fraction, inner), vec![]);
+        // S5: every column of the bar seeks to its own position.
+        if inner > 0 {
+            let row = c.rows.len() - 1; let last = inner.saturating_sub(1).max(1);
+            for k in 0..inner { c.hits.push((row, 2 + k, 3 + k, Action::Seek(k as f64 / last as f64))); }
+        }
+        c.row(vec![seg(format!("{} / {}", clock(y.position), clock(y.duration)), Muted)], vec![seg(&y.state, Dim)]);
+    } else {
+        c.row(vec![seg("estado · ", Muted), seg(&y.state, Text)], vec![]);
+    }
+    c.row(vec![seg("🔍 buscar", Pink)], vec![seg("el vídeo se abre en mpv", Dim)]);
+    c.on_click(Action::Search);
+    c
+}
+
+/// `m:ss`, or `h:mm:ss` past an hour. Negative and non-finite positions are drawn as zero.
+fn clock(seconds: f64) -> String {
+    let total = if seconds.is_finite() && seconds > 0.0 { seconds as u64 } else { 0 };
+    if total >= 3600 { format!("{}:{:02}:{:02}", total / 3600, total % 3600 / 60, total % 60) } else { format!("{}:{:02}", total / 60, total % 60) }
+}
+
+/// The seek bar itself: played `━`, the current position `●`, and the rest `┄`.
+fn seek_bar(fraction: f64, inner: usize) -> Vec<Seg> {
+    use Tone::*;
+    if inner == 0 { return Vec::new() }
+    let at = (fraction.clamp(0.0, 1.0) * inner.saturating_sub(1) as f64).round() as usize;
+    vec![seg("━".repeat(at), Mint), seg("●", PinkBright), seg("┄".repeat(inner.saturating_sub(at + 1)), BorderMuted)]
+}
+
 // ---- 6:CONFIG -------------------------------------------------------------------------
 fn config_cards(s: &State, w: usize) -> Vec<Card> {
     use Tone::*;
@@ -790,7 +888,7 @@ fn config_cards(s: &State, w: usize) -> Vec<Card> {
     mon.keyed("Archivo", vec![file]);
     if let Some(e) = &ui.save_error { mon.row(vec![seg(format!("error al guardar: {e}"), Coral)], vec![]); }
     mon.divider();
-    mon.row(vec![seg("1–6 ", Gold), seg("pestañas · ", Muted), seg("r ", Gold), seg("refrescar · ", Muted), seg("q ", Gold), seg("salir", Muted)], vec![]);
+    mon.row(vec![seg("1–7 ", Gold), seg("pestañas · ", Muted), seg("r ", Gold), seg("refrescar · ", Muted), seg("q ", Gold), seg("salir", Muted)], vec![]);
     mon.row(vec![seg("[-] ", Gold), seg("minimiza/maximiza · rueda: scroll", Muted)], vec![]);
     vec![name, tabs, mon]
 }
@@ -813,6 +911,126 @@ mod tests {
         s.engram = Engram { project: "repo".into(), count: Some(7), online: true, ..Engram::default() };
         s.mcp = Some(vec![Mcp { name: "engram".into(), local: true }]);
         s
+    }
+    #[test]
+    fn media_tab_sits_before_config_and_keeps_spotify_above_youtube() {
+        // S10: keys follow visual order, so MEDIA takes 6 and the CONFIG gear moves to 7.
+        assert_eq!(Tab::ALL.len(), 7);
+        assert_eq!((Tab::ALL[5], Tab::ALL[6]), (Tab::Media, Tab::Config));
+        for (key, tab) in [('1', Tab::Main), ('2', Tab::Git), ('3', Tab::Prof), ('4', Tab::Mem), ('5', Tab::Tree), ('6', Tab::Media), ('7', Tab::Config)] {
+            assert_eq!(Tab::from_key(key), Some(tab), "key {key}");
+            assert_eq!(tab.key(), key);
+        }
+        // The new tab is addressable from the config file, and narrow names stay distinguishable.
+        assert_eq!(Tab::from_id("media"), Some(Tab::Media));
+        let mut short: Vec<&str> = Tab::ALL.iter().map(|t| t.name(true)).collect();
+        short.sort(); let total = short.len(); short.dedup();
+        assert_eq!(short.len(), total, "two-letter tab names collide: {short:?}");
+
+        // S1: Spotify occupies the upper section and YouTube the section directly below it.
+        let s = sample();
+        let lines = on(&s, Tab::Media, 42);
+        let spotify = lines.iter().position(|l| l.contains("Spotify")).expect("spotify section");
+        let youtube = lines.iter().position(|l| l.contains("YouTube")).expect("youtube section");
+        assert!(spotify < youtube, "Spotify must sit above YouTube: {lines:#?}");
+        find(&lines, "sin autorizar");
+        find(&lines, "developer.spotify.com");
+        find(&lines, "sin reproducción");
+        assert!(lines.iter().all(|l| l.width() <= 42), "no line may overflow 42 columns: {lines:#?}");
+
+        // The bar shows the new tab, and clicking its name selects it.
+        let f = frame(&s, 60, 0);
+        let (x, y) = at(&f, "MEDIA");
+        assert_eq!(click(&f, x, y), Some(Action::Tab(Tab::Media)));
+        assert_eq!(click(&f, at(&frame(&s, 60, 0), CONFIG_ICON).0, y), Some(Action::Tab(Tab::Config)));
+    }
+    #[test]
+    fn clock_and_seek_bar_are_width_exact() {
+        assert_eq!(clock(0.0), "0:00");
+        assert_eq!(clock(83.9), "1:23");
+        assert_eq!(clock(-5.0), "0:00", "a negative position is drawn as zero");
+        assert_eq!(clock(f64::NAN), "0:00");
+        assert_eq!(clock(3725.0), "1:02:05");
+        assert_eq!(plain(&seek_bar(0.0, 4)), "●┄┄┄");
+        assert_eq!(plain(&seek_bar(0.5, 5)), "━━●┄┄");
+        assert_eq!(plain(&seek_bar(1.0, 4)), "━━━●");
+        assert!(seek_bar(0.5, 0).is_empty(), "no bar in a zero-width pane");
+        for inner in 1..60 { assert_eq!(seek_bar(0.37, inner).iter().map(|g| g.text.width()).sum::<usize>(), inner); }
+    }
+    #[test]
+    fn youtube_transport_and_every_seek_column_click_their_own_cell() {
+        let mut s = sample();
+        s.ui.tab = Tab::Media;
+        s.media.youtube = crate::media::Youtube { state: "reproduciendo".into(), title: Some("Daft Punk - Around The World".into()),
+            position: 30.0, duration: 242.0, playing: true,
+            queue: vec![crate::media::Video { id: "a".into(), title: "A".into() }, crate::media::Video { id: "b".into(), title: "B".into() }], index: 0 };
+        let f = frame(&s, 42, 0);
+        let (x, y) = at(&f, "◀◀"); assert_eq!(click(&f, x, y), Some(Action::PrevTrack));
+        let (x, y) = at(&f, "❚❚"); assert_eq!(click(&f, x, y), Some(Action::PlayPause));
+        let (x, y) = at(&f, "▶▶"); assert_eq!(click(&f, x, y), Some(Action::NextTrack));
+        // S5: the bar seeks where it is clicked, and its marker sits at position/duration.
+        let (mark, bar) = at(&f, "●");
+        // The card is two columns narrower than the frame, and its inner text starts at column 3.
+        let inner = 42 - 2 - 4; let start = 3;
+        assert_eq!(click(&f, start, bar), Some(Action::Seek(0.0)));
+        assert_eq!(click(&f, start + inner - 1, bar), Some(Action::Seek(1.0)), "the last column is the end");
+        match click(&f, mark, bar) { Some(Action::Seek(frac)) => assert!((frac - 30.0 / 242.0).abs() < 0.02, "marker at {frac}"), other => panic!("no seek at the marker: {other:?}") }
+        assert!(plain(&f.lines[bar + 1]).contains("0:30 / 4:02"), "the elapsed and total time are shown: {:?}", plain(&f.lines[bar + 1]));
+        at(&f, "1/2"); // queue position
+    }
+    #[test]
+    fn youtube_search_box_is_modal_and_submits_exactly_one_play_command() {
+        let mut s = sample();
+        apply(&mut s, Event::Ui(Action::Search)); assert_eq!(s.ui.prompt.as_deref(), Some(""));
+        for c in "daft punk".chars() { apply(&mut s, Event::Key(Key::Char(c))); }
+        assert_eq!(s.ui.prompt.as_deref(), Some("daft punk"));
+        assert!(!s.quit, "q is text while the search box is open"); assert_eq!(s.ui.tab, Tab::Main, "tab keys are text too");
+        apply(&mut s, Event::Key(Key::Back)); apply(&mut s, Event::Key(Key::Char('k')));
+        apply(&mut s, Event::Key(Key::Enter));
+        assert_eq!(s.ui.prompt, None);
+        assert_eq!(s.ui.media_cmd, Some(MediaCmd::Play("daft punk".into())));
+        // Esc closes without playing, and an empty query never reaches the engine.
+        s.ui.media_cmd = None;
+        apply(&mut s, Event::Ui(Action::Search)); apply(&mut s, Event::Key(Key::Char('x'))); apply(&mut s, Event::Key(Key::Esc));
+        assert!(s.ui.prompt.is_none() && s.ui.media_cmd.is_none(), "Esc closes and plays nothing");
+        apply(&mut s, Event::Ui(Action::Search)); apply(&mut s, Event::Key(Key::Enter));
+        assert_eq!(s.ui.media_cmd, None, "an empty query is not a search");
+    }
+    #[test]
+    fn plain_controls_preserve_states_layout_and_actions() {
+        for online in [false, true] { for mute in [false, true] { for deaf in [false, true] {
+            let mut s = sample();
+            s.ui.config = Config::from_json(&serde_json::json!({"plain_controls": true}));
+            s.voice = Voice { online, mute, deaf };
+            let labels = [if mute || deaf { "MUTE" } else { "MIC" }, if deaf { "DEAF" } else { "HP" }, "APP", "CAP"];
+            for width in [32, 42, 60] {
+                let f = frame(&s, width, 0);
+                let (_, y) = at(&f, labels[0]);
+                assert_eq!(y, f.tab_row + 2);
+                assert_eq!(at(&f, "Status").1, y + 1);
+                assert!(f.lines[y].iter().all(|g| g.text.is_ascii()), "controls must not need private-use glyphs");
+                for (i, action) in [Action::VoiceMute, Action::VoiceDeaf, Action::VoiceOpen, Action::Screenshot].into_iter().enumerate() {
+                    let (x, row) = at(&f, labels[i]); assert_eq!(row, y);
+                    let slot = x - (5 - labels[i].width()) / 2;
+                    for col in slot - 1..slot + 6 { assert_eq!(click(&f, col, y), Some(action.clone())); }
+                    let active = if i == 0 { mute || deaf } else { deaf };
+                    let expected = if i == 3 { Tone::Secondary } else if !online { Tone::Dim } else if i == 2 { Tone::Secondary } else if active { Tone::Coral } else { Tone::Mint };
+                    let g = f.lines[y].iter().find(|g| g.text == labels[i]).unwrap();
+                    assert_eq!((g.tone, g.bold), (expected, false));
+                }
+                assert!(f.lines.iter().all(|l| width_of(l) <= usize::from(width)));
+            }
+            let narrow = render_lines(&s, 28);
+            assert!(!narrow.iter().any(|l| l.contains("CAP")));
+            assert!(narrow.iter().any(|l| l.contains("APP")));
+            for (action, command) in [(Action::VoiceMute, Some(VoiceCmd::Mute)), (Action::VoiceDeaf, Some(VoiceCmd::Deaf)), (Action::VoiceOpen, Some(VoiceCmd::Open)), (Action::Screenshot, None)] {
+                s.ui.voice_cmd = None; s.ui.screenshot = false;
+                assert!(apply(&mut s, Event::Ui(action)));
+                assert_eq!(s.ui.voice_cmd, command);
+                assert_eq!(s.ui.screenshot, command.is_none());
+                assert!(!s.ui.save && !s.ui.open_picker);
+            }
+        }}}
     }
     #[test]
     fn nerd_font_controls_preserve_states_colors_and_clicks() {
@@ -906,17 +1124,17 @@ mod tests {
         assert_eq!(l[2].find('G').unwrap(), 1 + (58 - 12) / 2, "centered in the padded rail");
         // Wide: `[ MAIN ]` active, other tabs by name (no numbers), CONFIG is the gear, git sync badge, gaps spread evenly.
         let tabs = &l[4]; assert!(tabs.starts_with(" [ MAIN ]") && tabs.contains("GIT ▲1") && tabs.trim_end().ends_with('⛭'), "{tabs:?}");
-        assert_eq!(tabs.split_whitespace().collect::<Vec<_>>(), ["[", "MAIN", "]", "GIT", "▲1", "PROF", "MEM", "TREE", "⛭"]);
+        assert_eq!(tabs.split_whitespace().collect::<Vec<_>>(), ["[", "MAIN", "]", "GIT", "▲1", "PROF", "MEM", "TREE", "MEDIA", "⛭"]);
         assert_eq!(tabs.width(), 59); assert!(l[5].trim().chars().all(|c| c == '─') && l[5].width() == 59); assert!(l[6].contains(MIC_ICON), "MAIN: icons right under the divider");
-        for t in [Tab::Git, Tab::Prof, Tab::Mem, Tab::Tree, Tab::Config] { let mut o = s.clone(); o.ui.tab = t; let f = frame(&o, 60, 0); assert!(f.lines[f.tab_row + 2].is_empty() || plain(&f.lines[f.tab_row + 2]).trim().is_empty(), "{t:?} keeps its blank line"); }
+        for t in [Tab::Git, Tab::Prof, Tab::Mem, Tab::Tree, Tab::Media, Tab::Config] { let mut o = s.clone(); o.ui.tab = t; let f = frame(&o, 60, 0); assert!(f.lines[f.tab_row + 2].is_empty() || plain(&f.lines[f.tab_row + 2]).trim().is_empty(), "{t:?} keeps its blank line"); }
         // Under 44 columns: compact `[MAIN]`; hidden tabs leave no gap.
         let bar = |s: &State, w: u16| render_lines(s, w)[4].split_whitespace().map(String::from).collect::<Vec<_>>();
-        assert_eq!(bar(&s, 42), ["[MAIN]", "GIT", "▲1", "PROF", "MEM", "TREE", "⛭"]); assert_eq!(bar(&s, 37), bar(&s, 42), "the real 37-col pane keeps full names");
-        s.git.ahead_behind = None; s.ui.config.hidden = vec![Tab::Tree]; assert_eq!(bar(&s, 42), ["[MAIN]", "GIT", "PROF", "MEM", "⛭"]);
+        assert_eq!(bar(&s, 42), ["[MAIN]", "GIT", "▲1", "PROF", "MEM", "TREE", "MEDIA", "⛭"]); assert_eq!(bar(&s, 37), bar(&s, 42), "the real 37-col pane keeps full names");
+        s.git.ahead_behind = None; s.ui.config.hidden = vec![Tab::Tree]; assert_eq!(bar(&s, 42), ["[MAIN]", "GIT", "PROF", "MEM", "MEDIA", "⛭"]);
         assert!(!render_lines(&s, 42)[4].chars().any(|c| c.is_ascii_digit()), "no tab numbers");
         s.git.ahead_behind = Some((1, 0)); s.ui.config.hidden.clear();
         // Too narrow for the names: two-letter names, still one per tab and clickable.
-        assert_eq!(bar(&s, 24), ["[MA]", "GI", "▲1", "PR", "ME", "TR", "⛭"]);
+        assert_eq!(bar(&s, 30), ["[MA]", "GI", "▲1", "PR", "ME", "TR", "MD", "⛭"]);
         s.ui.tab = Tab::Config; assert_eq!(bar(&s, 42).last().unwrap(), "[⛭]"); s.ui.tab = Tab::Main;
         // S11: CONFIG tab is the gearbox `⛭`, banner and card titles the power mark `⌁`; both purple, 1 column, no `⚙` left.
         let f = frame(&s, 42, 0); let icon = |c: char| f.lines.iter().flatten().filter(|g| g.text.contains(c)).cloned().collect::<Vec<_>>();
@@ -1008,8 +1226,33 @@ mod tests {
         let mut s = sample();
         let a = |n: &str, m: &str, t: &str| Agent { name: n.into(), model: m.into(), thinking: t.into() };
         s.roster = Some(Roster { model: "cpamc/gpt-6.1-sol".into(), thinking: "medium".into(), total: 6, done: 5, active: 1, current: Some("gentle-ai-worker · build".into()),
-            agents: vec![a("gentle-ai-explore", "cpamc/gpt-6.1-sol", "medium"), a("jd-judge-a", "x/claude-opus-high", "high"), a("my-helper", "y/long-model-name-v2", "xhigh"), a("review-risk", "", "")] });
+            agents: vec![a("gentle-ai-explore", "cpamc/gpt-6.1-sol", "medium"), a("jd-judge-a", "x/claude-opus-high", "high"), a("my-helper", "y/long-model-name-v2", "xhigh"), a("review-risk", "", "")], ..Roster::default() });
         s
+    }
+    #[test]
+    fn prof_host_falls_back_to_session_defaults_without_orchestrator() {
+        let mut s=roster_sample();
+        s.roster=Some(configured_roster(s.roster.take().unwrap(),Some(&serde_json::json!({
+            "review-refuter":{"model":"canonical/profile-refuter"}
+        })),"/gentle:profiles · global"));
+        let prof=on(&s,Tab::Prof,60);
+        let host=find(&prof,"🎯 host / orquestador");
+        assert!(host.contains("gpt-6.1-sol (medium)"),"un perfil sin orchestrator conserva el host de la sesión: {host}");
+        find(&prof,"profile-refuter");
+    }
+    #[test]
+    fn canonical_prof_does_not_change_main_host_fallback() {
+        let mut s=roster_sample(); s.session.model.clear(); s.session.thinking.clear();
+        let before=on(&s,Tab::Main,60);
+        s.roster=Some(configured_roster(s.roster.take().unwrap(),Some(&serde_json::json!({
+            "orchestrator":{"model":"canonical/profile-host","thinking":"high"},
+            "review-refuter":{"model":"canonical/profile-refuter"}
+        })),"/gentle:profiles · global"));
+        assert_eq!(on(&s,Tab::Main,60),before,"PROF must not rewrite STATUS host fallback");
+        let prof=on(&s,Tab::Prof,60); find(&prof,"/gentle:profiles · global");
+        find(&prof,"profile-host (high)"); find(&prof,"profile-refuter");
+        assert!(!prof.iter().any(|l|l.contains("long-model-name-v2") || l.contains("claude-opus")));
+        find(&prof,"5/6 · 1 en curso");
     }
     #[test]
     fn prof_tab_lists_host_and_subagents() {
@@ -1195,7 +1438,7 @@ mod tests {
         apply(&mut s, Event::Ui(wheel(&f, f.tab_row, true).unwrap())); assert_eq!(s.ui.tab, Tab::Tree);
         apply(&mut s, Event::Ui(Action::Cycle(-1))); apply(&mut s, Event::Ui(Action::Cycle(-1))); assert_eq!(s.ui.tab, Tab::Prof);
         apply(&mut s, Event::Ui(Action::Tab(Tab::Main))); apply(&mut s, Event::Ui(Action::Cycle(-1))); assert_eq!(s.ui.tab, Tab::Config, "wraps");
-        for (c, t) in [('2', Tab::Git), ('5', Tab::Tree), ('6', Tab::Config), ('1', Tab::Main)] { apply(&mut s, Event::Key(Key::Char(c))); assert_eq!(s.ui.tab, t); }
+        for (c, t) in [('2', Tab::Git), ('5', Tab::Tree), ('6', Tab::Media), ('7', Tab::Config), ('1', Tab::Main)] { apply(&mut s, Event::Key(Key::Char(c))); assert_eq!(s.ui.tab, t); }
         apply(&mut s, Event::Key(Key::Char('r'))); assert!(s.refresh); apply(&mut s, Event::Key(Key::Char('q'))); assert!(s.quit);
     }
     #[test]
@@ -1220,13 +1463,13 @@ mod tests {
         assert!(plain(f.lines.last().unwrap()).trim_start().starts_with('╚'));
         // Hits follow the scrolled rows.
         let (x, y) = at(&f, "salir"); assert!(y < 20); let _ = x;
-        apply(&mut s, Event::Ui(wheel(&f, 15, false).unwrap())); assert_eq!(s.ui.scroll[5], f.max_scroll - 3);
+        apply(&mut s, Event::Ui(wheel(&f, 15, false).unwrap())); assert_eq!(s.ui.scroll[Tab::Config.index()], f.max_scroll - 3);
         // Other tabs keep their own offset.
         apply(&mut s, Event::Key(Key::Char('1'))); assert_eq!(frame(&s, 42, 20).scroll, 0);
     }
     #[test]
     fn config_hides_tabs_and_sets_the_name() {
-        let mut s = sample(); apply(&mut s, Event::Key(Key::Char('6')));
+        let mut s = sample(); apply(&mut s, Event::Key(Key::Char('7')));
         let f = frame(&s, 42, 0); let (x, y) = at(&f, "[✓] TREE"); let a = click(&f, x, y).unwrap();
         assert_eq!(a, Action::Hide(Tab::Tree)); apply(&mut s, Event::Ui(a)); assert!(s.ui.save);
         let l = render_lines(&s, 42); assert!(!l[4].contains("TREE")); assert!(find(&l, "[ ] TREE").contains("oculta"));

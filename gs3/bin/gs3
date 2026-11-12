@@ -5,6 +5,10 @@
 #                keeps focus on gs2, closes the sidecar when gs2 exits.
 # Outside herdr: creates a herdr workspace for $PWD, runs gs3 inside it, attaches.
 # Telemetry: explicitly loads its session bridge; --gs3-herdr-* flags are reserved.
+# PROF: the sidecar inherits no Pi environment, so the routing homes present here are
+#       forwarded to it (absolute only): GENTLE_PI_CONFIG_HOME, GENTLE_SHELL_CONFIG_HOME,
+#       GENTLE_PI_AGENT_HOME, PI_CODING_AGENT_DIR. A bundled <prefix>/agent + <prefix>/config
+#       is derived by the HUD itself.
 #
 # Overrides (mainly for testing):
 #   GS3_SHELL  command for the big pane   (macOS: gentle-shell; Linux: gentle-shell2, then pi)
@@ -30,7 +34,7 @@ die() { printf 'gs3: %s\n' "$*" >&2; exit 1; }
 
 case "${1:-}" in
   -h|--help)
-    sed -n '2,15p' "$SELF" | sed 's/^# \{0,1\}//'
+    sed -n '2,19p' "$SELF" | sed 's/^# \{0,1\}//'
     exit 0 ;;
 esac
 
@@ -55,6 +59,18 @@ find_hud() {
 
 quote_args() { local out="" a; for a in "$@"; do out+=" $(printf '%q' "$a")"; done; printf '%s' "$out"; }
 
+# Routing homes the sidecar reads for PROF: only the explicit absolute ones.
+routing_env() {
+  local out="" name value
+  for name in GENTLE_PI_CONFIG_HOME GENTLE_SHELL_CONFIG_HOME GENTLE_PI_AGENT_HOME PI_CODING_AGENT_DIR; do
+    value="${!name:-}"
+    [ -n "$value" ] || continue
+    case "$value" in /*) ;; *) continue ;; esac
+    out+="$name=$(printf '%q' "$value") "
+  done
+  printf '%s' "$out"
+}
+
 inside_herdr() {
   local me="${HERDR_PANE_ID:?}" hud bridge socket
   # Bind telemetry explicitly: Gentle Shell intentionally rebuilds Pi's environment.
@@ -71,8 +87,9 @@ inside_herdr() {
     if [ -n "$HUD_PANE" ]; then
       # The HUD never creates directories: pass --config only when its folder exists.
       local cfg=""; [ -d "$(dirname "$CONFIG")" ] && cfg=" --config $(printf '%q' "$CONFIG")"
+      local routing; routing="$(routing_env)"
       "$HERDR" pane run "$HUD_PANE" \
-        "GS3_SHELL=$(printf '%q' "$SHELL_CMD") GS3_HERDR=$(printf '%q' "$HERDR") exec $(printf '%q' "$hud") --pane $(printf '%q' "$me") --cwd $(printf '%q' "$PWD")$cfg" >/dev/null \
+        "${routing}GS3_SHELL=$(printf '%q' "$SHELL_CMD") GS3_HERDR=$(printf '%q' "$HERDR") exec $(printf '%q' "$hud") --pane $(printf '%q' "$me") --cwd $(printf '%q' "$PWD")$cfg" >/dev/null \
         || printf 'gs3: could not start sidecar in %s\n' "$HUD_PANE" >&2
       # Close the sidecar whenever gs2 ends (normal exit, Ctrl-C, terminal hangup).
       trap '"$HERDR" pane close "$HUD_PANE" >/dev/null 2>&1' EXIT

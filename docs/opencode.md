@@ -15,7 +15,7 @@ Con OpenCode en un panel de herdr, **la mitad de la barra funcionaría casi sin 
 | **CONFIG** | No | Debería funcionar |
 | **MAIN**: estado `idle/working/blocked` | Sí, vía herdr | Funciona si la integración de herdr informa el estado |
 | **MAIN**: tokens, contexto, costo, tareas, modelo | **Sí: lee el JSONL de sesión de Pi** | **Hay que escribir un lector nuevo** |
-| **MEM**: tools, MCP · **PROF** | **Sí** (sesión de Pi, `settings.json`, `agents/*.md`) | **Hay que escribir un lector nuevo** |
+| **MEM**: tools, MCP · **PROF** | **Sí** (sesión de Pi; PROF: routing canónico de `/gentle:profiles` en `models.json`, MD solo para nombres) | **Hay que escribir un lector nuevo** |
 | Botón del modelo (`F9`) | Sí: depende de la extensión model-picker de Pi | No aplica: es una extensión de Pi |
 | Voz y captura | No | Igual que en Linux |
 

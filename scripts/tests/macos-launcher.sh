@@ -4,7 +4,14 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 mock="$(mktemp -d /tmp/gs3-launcher-test.XXXXXX)"
 trap 'rm -rf "$mock"' EXIT
-printf '#!/bin/sh\ncase "$1 $2" in "pane split") printf "{\\"result\\":{\\"pane\\":{\\"pane_id\\":\\"hud\\"}}}\\n";; esac\n' > "$mock/herdr"
+cat > "$mock/herdr" <<HDR
+#!/bin/sh
+case "\$1 \$2" in
+  "pane split") printf '{"result":{"pane":{"pane_id":"hud"}}}\n' ;;
+  "pane run") printf '%s\n' "\$*" >> "$mock/panerun" ;;
+  *) exit 0 ;;
+esac
+HDR
 printf '#!/bin/sh\nprintf "gentle-shell:%%s\\n" "$*"\n' > "$mock/gentle-shell"
 printf '#!/bin/sh\nprintf "pi:%%s\\n" "$*"\n' > "$mock/pi"
 chmod +x "$mock/herdr" "$mock/gentle-shell" "$mock/pi"
@@ -18,4 +25,23 @@ printf '#!/bin/sh\nprintf "gentle-shell2:%%s\\n" "$*"\n' > "$mock/gentle-shell2"
 chmod +x "$mock/uname" "$mock/gentle-shell2"
 result="$(env -u GS3_SHELL HERDR_ENV=1 HERDR_PANE_ID=main GS3_HUD=/usr/bin/true PATH="$mock:/usr/bin:/bin" /bin/bash "$repo/gs3/bin/gs3" 'two words')"
 [ "$result" = "gentle-shell2:$expected" ] || { printf 'Linux foreground agent changed: %s\n' "$result" >&2; exit 1; }
-printf 'macOS defaults to Gentle Shell; Linux and explicit overrides remain supported\n'
+# A: Gentle Shell rebuilds Pi's environment, so the sidecar pane inherits no routing
+# home; gs3 forwards the explicit absolute ones and never invents or forwards a relative one.
+pane_run() { cat "$mock/panerun" 2>/dev/null || true; }
+rm -f "$mock/panerun"
+env -u GS3_SHELL HERDR_ENV=1 HERDR_PANE_ID=main GS3_HUD=/usr/bin/true PATH="$mock:/usr/bin:/bin" \
+  GENTLE_PI_CONFIG_HOME=/fixture/config GENTLE_SHELL_CONFIG_HOME=/fixture/shell-config \
+  GENTLE_PI_AGENT_HOME=/fixture/agent PI_CODING_AGENT_DIR=/fixture/agent \
+  /bin/bash "$repo/gs3/bin/gs3" >/dev/null
+for want in 'GENTLE_PI_CONFIG_HOME=/fixture/config' 'GENTLE_SHELL_CONFIG_HOME=/fixture/shell-config' 'GENTLE_PI_AGENT_HOME=/fixture/agent' 'PI_CODING_AGENT_DIR=/fixture/agent'; do
+  case "$(pane_run)" in *"$want"*) ;; *) printf 'sidecar missed routing home: %s\n' "$want" >&2; exit 1 ;; esac
+done
+rm -f "$mock/panerun"
+env -u GS3_SHELL HERDR_ENV=1 HERDR_PANE_ID=main GS3_HUD=/usr/bin/true PATH="$mock:/usr/bin:/bin" \
+  GENTLE_SHELL_CONFIG_HOME=relative/home /bin/bash "$repo/gs3/bin/gs3" >/dev/null
+case "$(pane_run)" in *relative/home*) printf 'sidecar accepted a relative routing home\n' >&2; exit 1 ;; esac
+rm -f "$mock/panerun"
+env -u GS3_SHELL -u GENTLE_PI_CONFIG_HOME -u GENTLE_SHELL_CONFIG_HOME -u GENTLE_PI_AGENT_HOME -u PI_CODING_AGENT_DIR \
+  HERDR_ENV=1 HERDR_PANE_ID=main GS3_HUD=/usr/bin/true PATH="$mock:/usr/bin:/bin" /bin/bash "$repo/gs3/bin/gs3" >/dev/null
+case "$(pane_run)" in *GENTLE_PI_CONFIG_HOME*|*GENTLE_SHELL_CONFIG_HOME*|*GENTLE_PI_AGENT_HOME*|*PI_CODING_AGENT_DIR*) printf 'sidecar invented a routing home\n' >&2; exit 1 ;; esac
+printf 'macOS defaults to Gentle Shell; Linux and explicit overrides remain supported; routing homes forwarded to the sidecar\n'

@@ -1,6 +1,7 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use crate::ui::{self, Ui};
+use crate::media::{Media, Youtube};
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -215,7 +216,7 @@ pub struct Tree { pub project:String, pub open:Vec<String>, pub nodes:Vec<TreeNo
 pub struct TreeNode { pub name:String, pub rel:String, pub dir:bool, pub count:usize, pub children:Vec<TreeNode> }
 /// PROF roster: host defaults (`settings.json`), subagents (`agents/*.md`) and their task history.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>, pub total:usize, pub done:usize, pub active:usize, pub current:Option<String> }
+pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>, pub total:usize, pub done:usize, pub active:usize, pub current:Option<String>, pub profile_source:String, pub configured_host:Option<Agent> }
 /// One subagent: model/thinking from its frontmatter (`model`, `effort`/`thinking`), else its latest task, else the host.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Agent { pub name:String, pub model:String, pub thinking:String }
@@ -237,7 +238,26 @@ pub fn roster(settings:&Value,agents:&[(String,String)],tasks:&[Value])->Roster 
     list.sort_by(|a,b|a.name.cmp(&b.name));
     let live=|t:&&&Value|matches!(text(t,"status"),"running"|"queued"|"pending"|"waiting"|"starting");
     let current=tasks.iter().rev().find(live).map(|t|format!("{} · {}",text(t,"agent"),text(t,"label")));
-    Roster{model,thinking,agents:list,total:tasks.len(),done:tasks.iter().filter(|t|text(t,"status")=="completed").count(),active:tasks.iter().filter(live).count(),current}
+    Roster{model,thinking,agents:list,total:tasks.len(),done:tasks.iter().filter(|t|text(t,"status")=="completed").count(),active:tasks.iter().filter(live).count(),current,..Roster::default()}
+}
+/// Global configured assignments from `/gentle:profiles`, never task/MD model guesses.
+/// Keep the host defaults above unchanged: STATUS also consumes them.
+pub fn configured_roster(mut r:Roster, value:Option<&Value>, source:&str)->Roster {
+    let safe = |s:&str, max:usize, tilde:bool| !s.is_empty() && s.len()<=max && s.chars().all(|c|c.is_ascii_alphanumeric() || "._:@/+%-".contains(c) || (tilde && c=='~'));
+    let mut agents:std::collections::BTreeMap<String,Agent>=r.agents.iter().filter(|a|safe(&a.name,128,false)).map(|a|(a.name.clone(),Agent{name:a.name.clone(),..Agent::default()})).collect();
+    r.profile_source=source.into(); r.configured_host=None;
+    if let Some(entries)=value.and_then(Value::as_object) {
+        for (name,v) in entries {
+            if !safe(name,128,false) || !(v.is_object() || v.is_string()) {continue}
+            let raw=v.as_str().or_else(||v["model"].as_str()).unwrap_or("").trim();
+            if v.is_string() && !safe(raw,256,true) {continue}
+            let model=if safe(raw,256,true) {raw.into()} else {String::new()};
+            let thinking=v.get("thinking").filter(|v|!v.is_null()).or_else(||v.get("effort")).and_then(Value::as_str).map(str::trim).filter(|s|matches!(*s,"off"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max")).unwrap_or("").into();
+            let a=Agent{name:name.clone(),model,thinking};
+            if name=="orchestrator" {r.configured_host=Some(a);} else {agents.insert(name.clone(),a);}
+        }
+    }
+    r.agents=agents.into_values().collect(); r
 }
 /// One configured MCP server: only its name and transport, never its config values.
 #[derive(Clone, Debug, PartialEq)]
@@ -267,14 +287,16 @@ pub struct State {
     pub tree:Option<Tree>,
     /// GIT tab inspector (selected branch diff / file diff), fetched on demand.
     pub detail:Detail,
+    /// MEDIA tab: Spotify audio (upper section) and YouTube video (lower section).
+    pub media:Media,
     pub quit:bool, pub refresh:bool, pub read_session:bool,
     /// Rail navigation and CONFIG (tabs, collapsed cards, scroll, name).
     pub ui:Ui,
 }
 impl State {
-    pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),tree:None,detail:Detail::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
+    pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),tree:None,detail:Detail::default(),media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
 }
-pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Tree(Tree), Detail(Detail), Ui(ui::Action), Key(ui::Key) }
+pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Tree(Tree), Detail(Detail), Media(Youtube), Ui(ui::Action), Key(ui::Key) }
 pub fn apply(s:&mut State,e:Event)->bool {
     let old=s.clone();
     match e {
@@ -300,6 +322,7 @@ pub fn apply(s:&mut State,e:Event)->bool {
         // Like Detail: only the scan of the current open set is kept.
         Event::Tree(t) if t.open==s.ui.tree_open => s.tree=Some(t),
         Event::Detail(d) if (&d.branch,&d.file)==(&s.ui.git_branch,&s.ui.git_file) => s.detail=d,
+        Event::Media(y) => s.media.youtube=y,
         Event::Ui(a)=>{
             let (branch,file)=(s.ui.git_branch.clone(),s.ui.git_file.clone()); ui::act(&mut s.ui,a);
             // A new selection never shows the previous answer.
@@ -531,6 +554,27 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
         assert_eq!(a("jd-judge-a"),Agent{name:"jd-judge-a".into(),model:"cpamc/m-new".into(),thinking:"xhigh".into()});
         assert_eq!(a("review-risk"),Agent{name:"review-risk".into(),model:"cpamc/gpt-6.1-sol".into(),thinking:"medium".into()});
         assert_eq!(roster(&json!({}),&[],&[]),Roster::default());
+    }
+    #[test]
+    fn profiles_use_only_canonical_assignments_and_preserve_host_counts() {
+        let original=roster(&json!({"defaultProvider":"base","defaultModel":"host","defaultThinkingLevel":"medium"}),
+            &[("worker".into(),"---\nname: worker\nmodel: stale/md\n---".into())],
+            &[json!({"agent":"worker","model":"stale/task","status":"completed"})]);
+        let values=json!({"orchestrator":{"model":" canonical/host ","thinking":"high"},
+            "worker":{"model":"canonical/worker","thinking":null,"effort":"xhigh","token":"SENSITIVE"},
+            "review-refuter":"canonical/refuter","review-validator":{},
+            "bad\u{1b}role":"canonical/nope","unsafe":{"model":"bad\nmodel","thinking":"invalid"}});
+        let r=configured_roster(original.clone(),Some(&values),"/gentle:profiles · global");
+        assert_eq!((&r.model,&r.thinking,r.total,r.done,r.active,&r.current),(&original.model,&original.thinking,original.total,original.done,original.active,&original.current));
+        assert_eq!(r.configured_host.unwrap(),Agent{name:"orchestrator".into(),model:"canonical/host".into(),thinking:"high".into()});
+        let a=|name:&str|r.agents.iter().find(|a|a.name==name).unwrap();
+        assert_eq!((a("worker").model.as_str(),a("worker").thinking.as_str()),("canonical/worker","xhigh"));
+        assert_eq!(a("review-refuter").model,"canonical/refuter");
+        assert_eq!(a("review-validator").model,""); assert_eq!(a("unsafe").model,"");
+        assert!(!r.agents.iter().any(|a|a.name=="orchestrator" || a.name.contains('\u{1b}')));
+        let absent=configured_roster(original,None,"profiles: no disponible");
+        assert_eq!(absent.agents,vec![Agent{name:"worker".into(),..Agent::default()}]);
+        assert_eq!(absent.configured_host,None);
     }
     #[test]
     fn mcp_names_only_and_kind() {

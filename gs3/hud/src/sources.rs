@@ -1,9 +1,11 @@
 mod screenshot;
 mod stack;
 mod voice;
+mod media;
 pub use stack::stack;
 pub use screenshot::screenshot;
 pub use voice::voice;
+pub use media::media;
 use crate::core::*;
 use anyhow::{anyhow, Context, Result};
 use notify::{RecursiveMode, Watcher};
@@ -162,14 +164,47 @@ pub fn engram(cwd:&Path)->Engram {
     }
     e.project=project; e
 }
-/// PROF roster from the session's agent dir: `settings.json` (default model keys only), `agents/*.md`, `gentle-agents/tasks/*.json`.
+/// Resolve the configured store: explicit routing homes, the standard Pi home, or the
+/// bundled layout of the linked agent home. Never inspects another user's store.
+fn profile_models_path(agent:&Path)->Option<PathBuf> {
+    let owner=std::env::var_os("GENTLE_PI_AGENT_HOME").filter(|v|!v.is_empty()).or_else(||std::env::var_os("PI_CODING_AGENT_DIR").filter(|v|!v.is_empty()));
+    if owner.is_some_and(|p|Path::new(&p)!=agent) {return None}
+    // The launcher hands these homes to the agent process only, so the sidecar reads them
+    // from its own environment (gs3 forwards them); an override still wins over any default.
+    for key in ["GENTLE_PI_CONFIG_HOME","GENTLE_SHELL_CONFIG_HOME"] {
+        if let Some(p)=std::env::var_os(key).filter(|v|!v.is_empty()).map(PathBuf::from) {
+            return p.is_absolute().then(||p.join("models.json"))
+        }
+    }
+    let home=dirs::home_dir()?;
+    if agent==home.join(".pi/agent") {return Some(home.join(".pi/gentle-ai/models.json"))}
+    bundled_models(agent)
+}
+/// A bundled prefix owns both folders, `<prefix>/agent` and `<prefix>/config`: the store is
+/// read only when that file exists, so a custom home never borrows another installation's.
+fn bundled_models(agent:&Path)->Option<PathBuf> {
+    if agent.file_name()?!="agent" {return None}
+    let store=agent.parent()?.join("config/models.json");
+    store.is_file().then_some(store)
+}
+/// Read the complete canonical routing object; never follow a file symlink.
+fn profile_models(path:Option<PathBuf>)->(Option<Value>, &'static str) {
+    let Some(path)=path else {return (None,"profiles: ruta desconocida")};
+    let metadata=match fs::symlink_metadata(&path) {Ok(m)=>m,Err(_)=>return(None,"profiles: no disponible")};
+    if !metadata.is_file() {return(None,"profiles: archivo inválido")}
+    let value=fs::read(path).ok()
+        .and_then(|b|serde_json::from_slice::<Value>(&b).ok()).filter(Value::is_object);
+    if value.is_some() {(value,"/gentle:profiles · global")} else {(None,"profiles: JSON inválido")}
+}
+/// PROF uses canonical configured routing; MD supplies names, tasks supply counts only.
 pub fn roster_of(session:&Path)->Option<Roster> {
     let dir=agent_dir(&session.to_string_lossy())?;
     let settings:Value=fs::read(dir.join("settings.json")).ok().and_then(|b|serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
     let files=|sub:&str,ext:&str|->Vec<PathBuf> {let mut v:Vec<PathBuf>=fs::read_dir(dir.join(sub)).into_iter().flatten().flatten().map(|e|e.path()).filter(|p|p.extension().is_some_and(|x|x==ext)).collect(); v.sort(); v};
     let agents:Vec<(String,String)>=files("agents","md").into_iter().take(64).filter_map(|p|Some((p.file_stem()?.to_string_lossy().into_owned(),fs::read_to_string(&p).ok()?))).collect();
     let tasks:Vec<Value>=files("gentle-agents/tasks","json").into_iter().rev().take(200).filter_map(|p|serde_json::from_slice::<Value>(&fs::read(p).ok()?).ok()).map(|v|v["task"].clone()).filter(|t|t.is_object()).collect();
-    (settings.is_object()||!agents.is_empty()).then(||roster(&settings,&agents,&tasks))
+    let (models,source)=profile_models(profile_models_path(&dir));
+    Some(configured_roster(roster(&settings,&agents,&tasks),models.as_ref(),source))
 }
 /// MCP servers configured for the session's Pi agent dir (`mcp.json`); names only.
 pub fn mcp(session:&Path)->Option<Vec<Mcp>> {
@@ -484,6 +519,18 @@ mod tests {
         fs::remove_file(agent.join("cpamc-models-cache.json")).unwrap();
         let mut t=Tail::default(); read_tail(&session,&mut t).unwrap(); assert_eq!(t.session.limit,Some(370000));
         fs::remove_dir_all(&agent).unwrap();
+    }
+    #[test]
+    fn bundled_store_is_derived_only_when_it_exists() {
+        let dir=std::env::temp_dir().join(format!("gs3-bundled-{}",std::process::id())); let _=fs::remove_dir_all(&dir);
+        let agent=dir.join("prefix/agent"); fs::create_dir_all(&agent).unwrap();
+        // A custom home is not read from a guessed store that does not exist.
+        assert_eq!(bundled_models(&agent),None);
+        fs::create_dir_all(dir.join("prefix/config")).unwrap();
+        fs::write(dir.join("prefix/config/models.json"),"{}").unwrap();
+        assert_eq!(bundled_models(&agent),Some(dir.join("prefix/config/models.json")));
+        assert_eq!(bundled_models(&dir),None,"a prefix without its own agent home is not a bundle");
+        fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn git_snapshot_and_detail_read_a_real_repo() {
