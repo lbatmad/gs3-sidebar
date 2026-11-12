@@ -62,20 +62,20 @@ instead of showing them as current. A token
 about to expire, or a 401 from the API, is renewed from the stored refresh token and the call is
 retried once; nothing is refreshed while no call needs it.
 
-Spotify Premium playback starts only on an explicit `▶ iniciar dispositivo` click. The HUD starts
+Spotify Premium playback starts only on an explicit `▶ dispositivo` click. The HUD starts
 `librespot` as `gs3` with the rodio backend — unless a device already registered under that name, which
 is adopted instead of duplicated —; on first login the card shows its OAuth URL in the state
 and wrapped lines to open manually. The private `~/.config/gs3/librespot` cache directory is 0700;
 when credentials exist, subsequent starts reuse them without `--enable-oauth`, and that file is
 tightened to 0600 as soon as it appears: librespot creates it with the ambient umask. The card resolves the
-device, offers `▶ reproducir lista` and `❚❚ pausar`, and clicking a track plays its playlist position.
-Unavailable rows explain whether the device or playlist is missing; `↻ buscar dispositivo` retries.
-With a device ready, `🔍 buscar tema` opens a modal: `Enter` submits one search, `Esc` cancels,
+device, offers `▶ reproducir lista` or `❚❚ pausar` according to playback state, and clicking a track plays its playlist position.
+Play is disabled without a ready device and nonempty selected playlist; `↻ dispositivo` retries.
+With a device ready, `🔍 buscar` opens a modal: `Enter` submits one search, `Esc` cancels,
 and typing does not switch tabs. `/search?type=track&limit=10` returns up to ten real results;
-a click plays the selected track on that device. The card says `buscar · falta dispositivo` when
+a click plays the selected track on that device. The card says `sin dispositivo` when
 unavailable and `sin resultados` for an empty reply. Search and track playback use the same curl
 and token-renewal paths as playlist operations. Cover art remains pending.
-The card shows the current title and artist, previous/next, pause/resume and a per-column clickable seek bar with elapsed and total time. Below the transport there are three more controls, each drawn from what `/me/player` reports: a ten-cell `vol` bar where every cell sets that percentage with one click, `⇄ aleatorio` (on/off) and `⟲ repetir` (no/lista/tema, cycling `off`→`context`→`track`). They are read once as soon as the device is known, so a fresh card never claims a state nobody read, and the track `/me/player` names by id is marked with `▶` inside `⌁ Pistas`. After an explicit play or resume, `/me/player` is polled about once per second while playing; polling stops on pause or an empty response. `librespot` uses the same tool search order as YouTube. No device is started and no Spotify request is made on startup or `--once`.
+The card shows the current title and artist, previous/next, pause/resume and a per-column clickable seek bar with elapsed and total time. The compact control block's third row reflects `/me/player`: a ten-cell `vol` bar with adjacent percentage, where every cell sets that percentage with one click, `⇄ sí|no` and `⟲ no|lista|tema` (cycling `off`→`context`→`track`). They are read once as soon as the device is known, so a fresh card never claims a state nobody read, and the track `/me/player` names by id is marked with `▶` inside `⌁ Pistas`. After an explicit play or resume, `/me/player` is polled about once per second while playing; polling stops on pause or an empty response. `librespot` uses the same tool search order as YouTube. No device is started and no Spotify request is made on startup or `--once`.
 
 Spotify cover art uses the kitty graphics protocol: the playing album takes precedence over the open playlist. On URL changes the engine downloads and converts off the UI thread, using private temporary files (0600) in `~/.config/gs3/covers` (0700). Missing art, curl, sips or a failed conversion leaves the ordinary text layout with no reserved image space. Cover images are removed when leaving MEDIA or exiting; no cover is fetched on startup or in `--once`.
 

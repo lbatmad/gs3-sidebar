@@ -912,23 +912,32 @@ fn spotify_card(s: &State, w: usize, show_cover: bool) -> Card {
         c.hits.push((row, 2, 12, Action::SpotifyAuthorize));
         return c;
     }
+    let ready = sp.running && sp.device_id.is_some();
     let row = c.rows.len();
-    c.row(vec![seg(if sp.running { "↻ buscar dispositivo" } else { "▶ iniciar dispositivo" }, Pink)], vec![]);
-    c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyStart));
+    let mut left = vec![seg(if sp.running { "↻ dispositivo" } else { "▶ dispositivo" }, Pink)];
+    let device_end = width_of(&left);
+    let search_start = if s.ui.spotify_prompt.is_none() {
+        left.push(seg(" · ", Muted));
+        let start = width_of(&left);
+        left.push(seg("🔍 buscar", if ready { Pink } else { Dim }));
+        Some(start)
+    } else { None };
+    let search_end = width_of(&left);
+    let hint = if !ready && search_start.is_some() { vec![seg("sin dispositivo", Muted)] } else { vec![] };
+    let available = w.saturating_sub(4).saturating_sub(if hint.is_empty() { 0 } else { width_of(&fit(hint.clone(), w.saturating_sub(4))) + 1 });
+    c.row(left, hint);
+    if device_end.min(available) > 0 { c.hits.push((row, 2, 2 + device_end.min(available), Action::SpotifyStart)); }
+    if let Some(start) = search_start { if ready && start < available { c.hits.push((row, 2 + start, 2 + search_end.min(available), Action::SpotifySearch)); } }
     if let Some(url) = &sp.oauth_url {
         let width = w.saturating_sub(4).clamp(1, 30);
         let chars: Vec<char> = url.chars().collect();
         for chunk in chars.chunks(width) { c.row(vec![seg(chunk.iter().collect::<String>(), Text)], vec![]); }
     }
-    let ready = sp.running && sp.device_id.is_some();
     if let Some(buf) = &s.ui.spotify_prompt {
         // The hint owns its own row: sharing it with the input cut long queries at half the inner width.
         c.row(vec![seg("> ", PinkBright), seg(buf.clone(), Text), bold("▏", PinkBright)], vec![]);
         c.row(vec![seg("Enter busca · Esc cancela", Dim)], vec![]);
     } else {
-        let row = c.rows.len();
-        c.row(vec![seg(if ready { "🔍 buscar tema" } else { "buscar · falta dispositivo" }, if ready { Pink } else { Dim })], vec![]);
-        if ready { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifySearch)); }
         if sp.search_done && sp.results.is_empty() { c.row(vec![seg("sin resultados", Dim)], vec![]); }
         for (index, track) in sp.results.iter().enumerate() {
             let row = c.rows.len();
@@ -938,25 +947,29 @@ fn spotify_card(s: &State, w: usize, show_cover: bool) -> Card {
     }
     let playable = ready && sp.selected.and_then(|i| sp.playlists.get(i)).is_some() && !sp.tracks.is_empty();
     let row = c.rows.len();
-    c.row(vec![seg(if playable { "▶ reproducir lista" } else if !ready { "reproducir · falta dispositivo" } else { "reproducir · abrí una lista" }, if playable { Pink } else { Dim })], vec![]);
-    if playable { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyPlay(0))); }
-    let row = c.rows.len();
-    c.row(vec![seg(if ready { "❚❚ pausar" } else { "pausar · falta dispositivo" }, if ready { Pink } else { Dim })], vec![]);
-    if ready { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyPause)); }
-    // S12: the three controls the card was missing. Each row writes the state the account really has,
-    // so a toggle the human made on the phone is never contradicted here.
+    let pausing = ready && sp.playing;
+    c.row(vec![seg(if pausing { "❚❚ pausar" } else { "▶ reproducir lista" }, if pausing || playable { Pink } else { Dim })], vec![]);
+    if pausing || playable { c.hits.push((row, 2, w.saturating_sub(2), if pausing { Action::SpotifyPause } else { Action::SpotifyPlay(0) })); }
     let row = c.rows.len();
     let loudness = sp.volume.map(|v| format!("{v}%")).unwrap_or_else(|| "—".into());
     let mut left = vec![seg("vol ", Muted)];
+    let volume_start = width_of(&left);
     left.extend(volume_bar(sp.volume));
-    c.row(left, vec![seg(loudness, Muted)]);
-    if ready { for cell in 0..VOLUME_CELLS { c.hits.push((row, 2 + 4 + cell, 3 + 4 + cell, Action::SpotifyVolume(volume_percent(cell)))); } }
-    let row = c.rows.len();
-    c.row(vec![seg(format!("⇄ aleatorio · {}", if sp.shuffle { "sí" } else { "no" }), if ready { Pink } else { Dim })], vec![]);
-    if ready { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyShuffle(!sp.shuffle))); }
-    let row = c.rows.len();
-    c.row(vec![seg(format!("⟲ repetir · {}", sp.repeat.label()), if ready { Pink } else { Dim })], vec![]);
-    if ready { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyRepeat(sp.repeat.cycle()))); }
+    left.push(seg(format!(" {loudness}   "), Muted));
+    let shuffle_start = width_of(&left);
+    left.push(seg(format!("⇄ {}", if sp.shuffle { "sí" } else { "no" }), if ready { Pink } else { Dim }));
+    let shuffle_end = width_of(&left);
+    left.push(seg("   ", Muted));
+    let repeat_start = width_of(&left);
+    left.push(seg(format!("⟲ {}", sp.repeat.label()), if ready { Pink } else { Dim }));
+    let repeat_end = width_of(&left);
+    c.row(left, vec![]);
+    let inner = w.saturating_sub(4);
+    if ready {
+        for cell in 0..VOLUME_CELLS { if volume_start + cell < inner { c.hits.push((row, 2 + volume_start + cell, 3 + volume_start + cell, Action::SpotifyVolume(volume_percent(cell)))); } }
+        if shuffle_start < inner { c.hits.push((row, 2 + shuffle_start, 2 + shuffle_end.min(inner), Action::SpotifyShuffle(!sp.shuffle))); }
+        if repeat_start < inner { c.hits.push((row, 2 + repeat_start, 2 + repeat_end.min(inner), Action::SpotifyRepeat(sp.repeat.cycle()))); }
+    }
     if let Some(title) = &sp.title {
         c.row(vec![seg(title, Text)], vec![seg(&sp.artist, Muted)]);
         let row = c.rows.len();
@@ -1158,20 +1171,6 @@ mod tests {
         s
     }
     #[test]
-    fn scrolling_the_spotify_card_leaves_no_cover_sized_hole() {
-        let mut s = sample(); s.ui.tab = Tab::Media;
-        s.media.spotify.cover_url = Some("https://example.test/image".into());
-        s.media.spotify.cover_png = Some(vec![1]);
-        s.ui.scroll[Tab::Media.index()] = 9;
-        let scrolled = frame(&s, 42, 20);
-        assert_eq!(scrolled.cover_pos, None);
-        // The six reserved rows must go with the picture: the body has to be exactly the one a card
-        // without a cover has, or the reader gets a blank block that promises an image it never shows.
-        s.media.spotify.cover_png = None;
-        assert_eq!(scrolled.max_scroll, frame(&s, 42, 20).max_scroll);
-    }
-
-    #[test]
     fn both_search_boxes_put_the_hint_below_so_the_query_keeps_the_width() {
         let query = "around the world daft punk";
         let mut s = sample();
@@ -1276,12 +1275,47 @@ mod tests {
         s.ui.tab = Tab::Main;
         assert_eq!(frame(&s, 42, 30).cover_pos, None);
     }
+
+    #[test]
+    fn scrolling_the_spotify_card_leaves_no_cover_sized_hole() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        s.media.spotify.cover_url = Some("https://example.test/image".into());
+        s.media.spotify.cover_png = Some(vec![1]);
+        s.ui.scroll[Tab::Media.index()] = 9;
+        let scrolled = frame(&s, 42, 20);
+        assert_eq!(scrolled.cover_pos, None);
+        // The six reserved rows must go with the picture: the body has to be exactly the one a card
+        // without a cover has, or the reader gets a blank block that promises an image it never shows.
+        s.media.spotify.cover_png = None;
+        assert_eq!(scrolled.max_scroll, frame(&s, 42, 20).max_scroll);
+    }
+    #[test]
+    fn spotify_compact_controls_have_independent_hits() {
+        let mut s = sample(); long_playlist(&mut s, 1);
+        s.media.spotify.volume = None;
+        let c = spotify_card(&s, 46, false);
+        let lines: Vec<String> = c.rows.iter().map(|r| plain(r)).collect();
+        assert!(lines[1].contains("↻ dispositivo · 🔍 buscar"), "{:?}", lines);
+        assert!(lines[2].contains("▶ reproducir lista"));
+        assert!(lines[3].contains("vol ▱▱▱▱▱▱▱▱▱▱ —   ⇄ no   ⟲ no"));
+        assert!(lines.iter().all(|l| !l.contains("aleatorio") && !l.contains("repetir ·") && !l.contains("pausar")));
+        let f = frame(&s, 48, 0);
+        for (label, action) in [("↻ dispositivo", Action::SpotifyStart), ("🔍 buscar", Action::SpotifySearch), ("⇄", Action::SpotifyShuffle(true)), ("⟲", Action::SpotifyRepeat(s.media.spotify.repeat.cycle()))] {
+            let (x, y) = at(&f, label); assert_eq!(click(&f, x, y), Some(action));
+        }
+        let (x, y) = at(&f, "vol ");
+        for cell in 0..VOLUME_CELLS { assert_eq!(click(&f, x + 4 + cell, y), Some(Action::SpotifyVolume(volume_percent(cell)))); }
+        s.media.spotify.running = false; s.media.spotify.device_id = None;
+        let f = frame(&s, 48, 0); at(&f, "sin dispositivo");
+        for label in ["🔍 buscar", "vol ", "⇄", "⟲"] { let (x,y) = at(&f, label); assert_eq!(click(&f, x + usize::from(label == "vol ") * 4, y), None); }
+        for w in 8..46 { assert!(spotify_card(&s, w, false).rows.iter().all(|r| width_of(r) <= w)); }
+    }
     #[test]
     fn spotify_search_prompt_and_result_actions() {
         let mut s = sample(); s.ui.tab = Tab::Media; s.media.spotify.linked = true;
-        let f = frame(&s, 42, 0); let (x, y) = at(&f, "buscar · falta dispositivo"); assert_eq!(click(&f, x, y), None);
+        let f = frame(&s, 48, 0); let (x, y) = at(&f, "🔍 buscar"); assert_eq!(click(&f, x, y), None);
         s.media.spotify.running = true; s.media.spotify.device_id = Some("dev".into());
-        let f = frame(&s, 42, 0); let (x, y) = at(&f, "buscar tema");
+        let f = frame(&s, 42, 0); let (x, y) = at(&f, "🔍 buscar");
         assert_eq!(click(&f, x, y), Some(Action::SpotifySearch));
         apply(&mut s, Event::Ui(Action::SpotifySearch));
         for ch in "q17".chars() { apply(&mut s, Event::Key(Key::Char(ch))); }
@@ -1415,17 +1449,19 @@ mod tests {
     fn spotify_playback_rows_explain_prerequisites_and_map_commands() {
         let mut s = sample(); s.ui.tab = Tab::Media; s.media.spotify.linked = true;
         let f = frame(&s, 42, 0);
-        at(&f, "iniciar dispositivo"); at(&f, "falta dispositivo");
-        let (x, y) = at(&f, "iniciar dispositivo");
+        at(&f, "▶ dispositivo"); at(&f, "sin dispositivo");
+        let (x, y) = at(&f, "▶ dispositivo");
         assert_eq!(click(&f, x, y), Some(Action::SpotifyStart));
         apply(&mut s, Event::Ui(Action::SpotifyStart)); assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Start));
         s.media.spotify.running = true; s.media.spotify.device_id = Some("dev".into());
-        let f = frame(&s, 42, 0); at(&f, "abrí una lista");
+        let f = frame(&s, 42, 0); let (x, y) = at(&f, "reproducir lista"); assert_eq!(click(&f, x, y), None);
         s.media.spotify.playlists.push(crate::media::Playlist { id: "p".into(), name: "Rock".into(), cover: None });
         s.media.spotify.selected = Some(0); s.media.spotify.tracks.push(crate::media::Track { id: "t1".into(), title: "Tema".into(), artist: "Artista".into(), position: 0 });
         let f = frame(&s, 42, 0);
         let (x, y) = at(&f, "reproducir lista"); assert_eq!(click(&f, x, y), Some(Action::SpotifyPlay(0)));
         apply(&mut s, Event::Ui(Action::SpotifyPlay(0))); assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Play(0)));
+        s.media.spotify.playing = true;
+        let f = frame(&s, 42, 0);
         let (x, y) = at(&f, "pausar"); assert_eq!(click(&f, x, y), Some(Action::SpotifyPause));
         apply(&mut s, Event::Ui(Action::SpotifyPause)); assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Pause));
         let (x, y) = at(&f, "Tema"); assert_eq!(click(&f, x, y), Some(Action::SpotifyPlay(0)));
@@ -2101,10 +2137,10 @@ mod tests {
         let mut s = sample(); s.ui.tab = Tab::Media;
         s.media.spotify = crate::media::Spotify { state: "reproduciendo".into(), linked: true, running: true, device_id: Some("d".into()), shuffle: true, repeat: crate::media::Repeat::Context, ..Default::default() };
         let f = frame(&s, 42, 0);
-        at(&f, "aleatorio · sí"); at(&f, "repetir · lista");
-        let (x, row) = at(&f, "aleatorio");
+        at(&f, "⇄ sí"); at(&f, "⟲ lista");
+        let (x, row) = at(&f, "⇄");
         assert_eq!(click(&f, x, row), Some(Action::SpotifyShuffle(false)));
-        let (x, row) = at(&f, "repetir");
+        let (x, row) = at(&f, "⟲");
         assert_eq!(click(&f, x, row), Some(Action::SpotifyRepeat(crate::media::Repeat::Track)));
         apply(&mut s, Event::Ui(Action::SpotifyShuffle(false)));
         assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Shuffle(false)));

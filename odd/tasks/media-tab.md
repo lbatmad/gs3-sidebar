@@ -42,6 +42,8 @@ The YouTube video must appear below the search box, inside the YouTube card's ar
 S12. User refinement request: "la primera opción, sumale que quede resaltado el tema que se está escuchando en la lista de temas". Option 1 as presented and chosen: "Controles que faltan: volumen, shuffle, repeat — La card no tiene ninguno. Serían tres endpoints más (PUT /me/player/volume, /shuffle, /repeat) y sus filas clickeables con estado visible."
 The Spotify card gains a clickable volume control, a shuffle toggle and a repeat toggle, each showing the state the account really has, and `⌁ Pistas` marks the row of the track that is playing now.
 
+S14. User: "podes hacer que los controles de spotify ocupen la menor cantidad de lineas posibles? sin romper la estética", with a screenshot of the seven control rows. When asked how compact, the human chose "3 filas, etiquetas cortas" over four rows with full words: the control block is three rows (device + `🔍 buscar`; one play/pause button that shows what `/me/player` reports; `vol` with its percentage followed by `⇄ sí|no` and `⟲ no|lista|tema`), each control keeping its own hitbox.
+
 ## Tasks
 
 T13 | S14 | parent: the Spotify control block from seven rows to three — device and `🔍 buscar` sharing one row with disjoint hitboxes, `▶ reproducir lista` / `❚❚ pausar` becoming one state-aware button, and `vol … 99%   ⇄ no   ⟲ no` sharing the third row with hits computed from the segment widths | done by code and unit tests: 138 passed, 2 ignored; the new test pins the three rows verbatim, each hitbox, the state-aware button both ways, the `sin dispositivo` hint with no actionable hits, and no overflow from 8 to 46 columns. Live on the rail at 46 columns: `▶ dispositivo · 🔍 buscar · sin dispositivo` / `▶ reproducir lista` / `vol ▱▱▱▱▱▱▱▱▱▱ —   ⇄ no   ⟲ no`, and after opening a 69-track playlist the Pistas window still read `4-13/69` | commit: pending
@@ -323,14 +325,3 @@ note was checked against the card: the overflow test sweeps 8-46 columns and the
 `fit`, so the narrowing was a test-fixture fix, not a hidden regression. 138 tests passed, 2 ignored.
 Live on the real rail at 46 columns and at the ready state, then with the 69-track playlist open to
 confirm Pistas still scrolled (`4-13/69`).
-
-
-L46. Human, with a screenshot of the MEDIA card: "dejo de mostrarse la portada por Spotify". The picture
-was still being fetched and the card still reserved its six rows: the card was merely *scrolled*, which
-the frame had always used to withhold the placement (`scroll <= 1`), but the reservation was decided
-inside `spotify_card` from `cover::ready` alone, so the block stayed behind as an empty hole. Scrolling
-became reachable in practice only with L45, which put the volume, shuffle and repeat rows below the
-tracks on a card that no longer fits one screen. Reservation and placement are now one decision, taken
-in `frame()` from the wheel's scroll and the viewport before the cards are built, and the card receives
-it as a parameter. RED: the new `scrolling_the_spotify_card_leaves_no_cover_sized_hole` failed on
-`max_scroll` 7 against 1, exactly the six rows. 131 tests passed, 2 ignored.
