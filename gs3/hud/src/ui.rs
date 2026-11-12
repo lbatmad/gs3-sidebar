@@ -39,7 +39,7 @@ pub struct Ui {
     pub open_picker: bool,
     pub voice_cmd: Option<VoiceCmd>,
     /// MEDIA: the YouTube search box while it is open, and the command the engine consumes off the render path.
-    pub prompt: Option<String>, pub media_cmd: Option<MediaCmd>, pub spotify_cmd: Option<SpotifyCmd>,
+    pub prompt: Option<String>, pub spotify_prompt: Option<String>, pub media_cmd: Option<MediaCmd>, pub spotify_cmd: Option<SpotifyCmd>,
     /// Explicit click on the Flameshot icon; main consumes this intent off the render path.
     pub screenshot: bool,
 }
@@ -62,11 +62,12 @@ pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, Scrol
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
     Search, PlayPause, PrevTrack, NextTrack, Seek(f64),
     /// MEDIA · Spotify: consent in the browser, renew the stored token, list playlists, open one.
-    SpotifyAuthorize, SpotifyRefresh, SpotifyPlaylists, SelectPlaylist(String), SpotifyStart, SpotifyPlay(usize), SpotifyPause, SpotifyResume, SpotifyNext, SpotifyPrevious, SpotifySeek(f64) }
+    SpotifyAuthorize, SpotifyRefresh, SpotifyPlaylists, SelectPlaylist(String), SpotifySearch, SpotifyPlayResult(usize), SpotifyStart, SpotifyPlay(usize), SpotifyPause, SpotifyResume, SpotifyNext, SpotifyPrevious, SpotifySeek(f64) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Key { Char(char), Back, Enter, Esc }
 
 pub fn act(ui: &mut Ui, a: Action) {
+    if matches!(a, Action::Search) { ui.spotify_prompt = None; }
     match a {
         Action::Tab(t) if ui.config.visible(t) => { if ui.tab != t { ui.editing = None; } ui.tab = t; }
         Action::Cycle(d) => {
@@ -97,6 +98,8 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::SpotifyRefresh => ui.spotify_cmd = Some(SpotifyCmd::Refresh),
         Action::SpotifyPlaylists => ui.spotify_cmd = Some(SpotifyCmd::Playlists),
         Action::SelectPlaylist(id) => ui.spotify_cmd = Some(SpotifyCmd::Select(id)),
+        Action::SpotifySearch => { ui.prompt = None; ui.spotify_prompt = Some(String::new()); }
+        Action::SpotifyPlayResult(row) => ui.spotify_cmd = Some(SpotifyCmd::PlayResult(row)),
         Action::SpotifyStart => ui.spotify_cmd = Some(SpotifyCmd::Start),
         Action::SpotifyPlay(row) => ui.spotify_cmd = Some(SpotifyCmd::Play(row)),
         Action::SpotifyPause => ui.spotify_cmd = Some(SpotifyCmd::Pause),
@@ -125,6 +128,17 @@ pub fn key(s: &mut State, k: Key) {
             Key::Back => { buf.pop(); }
             Key::Enter => { s.ui.config.name = clean_name(buf); s.ui.editing = None; s.ui.save = true; }
             Key::Esc => s.ui.editing = None,
+            _ => {}
+        }
+        return;
+    }
+    // Spotify search is separate so the YouTube modal keeps its existing behavior.
+    if let Some(buf) = &mut s.ui.spotify_prompt {
+        match k {
+            Key::Char(c) if !c.is_control() && buf.chars().count() < 120 => buf.push(c),
+            Key::Back => { buf.pop(); }
+            Key::Enter => { let query = buf.trim().to_string(); s.ui.spotify_prompt = None; if !query.is_empty() { s.ui.spotify_cmd = Some(SpotifyCmd::Search(query)); } }
+            Key::Esc => s.ui.spotify_prompt = None,
             _ => {}
         }
         return;
@@ -840,6 +854,19 @@ fn spotify_card(s: &State, w: usize) -> Card {
         for chunk in chars.chunks(width) { c.row(vec![seg(chunk.iter().collect::<String>(), Text)], vec![]); }
     }
     let ready = sp.running && sp.device_id.is_some();
+    if let Some(buf) = &s.ui.spotify_prompt {
+        c.row(vec![seg("> ", PinkBright), seg(buf.clone(), Text), bold("▏", PinkBright)], vec![seg("Enter busca · Esc cancela", Dim)]);
+    } else {
+        let row = c.rows.len();
+        c.row(vec![seg(if ready { "🔍 buscar tema" } else { "buscar · falta dispositivo" }, if ready { Pink } else { Dim })], vec![]);
+        if ready { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifySearch)); }
+        if sp.search_done && sp.results.is_empty() { c.row(vec![seg("sin resultados", Dim)], vec![]); }
+        for (index, track) in sp.results.iter().enumerate() {
+            let row = c.rows.len();
+            c.row(vec![seg(format!("{:>2}. ", index + 1), Dim), seg(&track.title, Text)], vec![seg(&track.artist, Muted)]);
+            if ready { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyPlayResult(index))); }
+        }
+    }
     let playable = ready && sp.selected.and_then(|i| sp.playlists.get(i)).is_some() && !sp.tracks.is_empty();
     let row = c.rows.len();
     c.row(vec![seg(if playable { "▶ reproducir lista" } else if !ready { "reproducir · falta dispositivo" } else { "reproducir · abrí una lista" }, if playable { Pink } else { Dim })], vec![]);
@@ -1003,6 +1030,27 @@ mod tests {
         s.engram = Engram { project: "repo".into(), count: Some(7), online: true, ..Engram::default() };
         s.mcp = Some(vec![Mcp { name: "engram".into(), local: true }]);
         s
+    }
+    #[test]
+    fn spotify_search_prompt_and_result_actions() {
+        let mut s = sample(); s.ui.tab = Tab::Media; s.media.spotify.linked = true;
+        let f = frame(&s, 42, 0); let (x, y) = at(&f, "buscar · falta dispositivo"); assert_eq!(click(&f, x, y), None);
+        s.media.spotify.running = true; s.media.spotify.device_id = Some("dev".into());
+        let f = frame(&s, 42, 0); let (x, y) = at(&f, "buscar tema");
+        assert_eq!(click(&f, x, y), Some(Action::SpotifySearch));
+        apply(&mut s, Event::Ui(Action::SpotifySearch));
+        for ch in "q17".chars() { apply(&mut s, Event::Key(Key::Char(ch))); }
+        assert_eq!(s.ui.spotify_prompt.as_deref(), Some("q17")); assert_eq!(s.ui.tab, Tab::Media); assert!(!s.quit);
+        let f = frame(&s, 42, 0); at(&f, "> q17▏");
+        apply(&mut s, Event::Key(Key::Enter)); assert_eq!(s.ui.spotify_prompt, None); assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Search("q17".into())));
+        s.ui.spotify_cmd = None; apply(&mut s, Event::Ui(Action::SpotifySearch)); apply(&mut s, Event::Key(Key::Esc)); assert!(s.ui.spotify_prompt.is_none() && s.ui.spotify_cmd.is_none());
+        apply(&mut s, Event::Ui(Action::SpotifySearch)); apply(&mut s, Event::Key(Key::Enter)); assert!(s.ui.spotify_cmd.is_none());
+        s.media.spotify.search_done = true;
+        let f = frame(&s, 42, 0); at(&f, "sin resultados");
+        s.media.spotify.results = (0..10).map(|i| crate::media::SearchTrack { id: format!("id{i}"), title: format!("Resultado {i}"), artist: "Artista".into() }).collect();
+        let f = frame(&s, 42, 0);
+        for i in 0..10 { let (x,y) = at(&f, &format!("Resultado {i}")); assert_eq!(click(&f, x, y), Some(Action::SpotifyPlayResult(i))); }
+        apply(&mut s, Event::Ui(Action::SpotifyPlayResult(9))); assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::PlayResult(9)));
     }
     #[test]
     fn spotify_transport_and_seek_columns() {

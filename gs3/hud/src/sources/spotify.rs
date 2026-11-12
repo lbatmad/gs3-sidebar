@@ -10,7 +10,7 @@
 //! `http://127.0.0.1:8899/callback` and must be registered exactly like that in the app.
 
 use crate::core::Event;
-use crate::media::{Playlist, Spotify, SpotifyCmd, Track, REDIRECT};
+use crate::media::{Playlist, SearchTrack, Spotify, SpotifyCmd, Track, REDIRECT};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -420,6 +420,19 @@ fn play_body(playlist: &str, row: usize, device: &str) -> Value {
     json!({"context_uri": format!("spotify:playlist:{playlist}"), "offset": {"position": row}, "position_ms": 0, "device_id": device})
 }
 
+fn track_play_body(id: &str, device: &str) -> Value { json!({"uris": [format!("spotify:track:{id}")], "device_id": device}) }
+
+fn search_url(query: &str) -> String { format!("{API}/search?type=track&limit={TRACKS}&q={}", encode(query)) }
+
+fn search_tracks(v: &Value) -> Vec<SearchTrack> {
+    v["tracks"]["items"].as_array().into_iter().flatten().filter_map(|item| {
+        let id = item["id"].as_str().unwrap_or_default().trim();
+        let title = item["name"].as_str().unwrap_or_default().trim();
+        let artist = item["artists"][0]["name"].as_str().unwrap_or_default().trim();
+        (!id.is_empty() && !title.is_empty()).then(|| SearchTrack { id: id.into(), title: title.into(), artist: artist.into() })
+    }).take(TRACKS).collect()
+}
+
 /// The interactive login URL librespot prints. Pure, so the line format is pinned without a process.
 fn login_url(line: &str) -> Option<String> {
     let start = line.find("https://accounts.spotify.com/")?;
@@ -553,6 +566,21 @@ fn handle(state: &mut Spotify, path: &Path, cmd: SpotifyCmd) {
         }
         SpotifyCmd::Playlists => { state.linked = true; list_playlists(state, path) }
         SpotifyCmd::Select(id) => { state.linked = true; select_playlist(state, &id, path) }
+        SpotifyCmd::Search(query) => {
+            state.results.clear(); state.search_done = false;
+            if state.device_id.is_none() { state.state = "falta dispositivo".into(); }
+            else { match api(&search_url(&query), path) {
+                Ok(v) => { state.results = search_tracks(&v); state.search_done = true; state.state = if state.results.is_empty() { "sin resultados".into() } else { format!("{} resultados", state.results.len()) }; }
+                Err(e) => state.state = e,
+            } }
+        }
+        SpotifyCmd::PlayResult(row) => {
+            let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| {
+                let track = state.results.get(row).ok_or_else(|| "pista no disponible".to_string())?;
+                api_put(&format!("{API}/me/player/play?device_id={}", encode(device)), path, Some(&track_play_body(&track.id, device)))
+            });
+            match result { Ok(()) => { state.playing = true; state.state = "reproduciendo".into(); }, Err(e) => state.state = e }
+        }
         SpotifyCmd::Play(row) => {
             let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| {
                 let playlist = state.selected.and_then(|i| state.playlists.get(i)).ok_or_else(|| "abrí una lista".to_string())?;
@@ -706,7 +734,7 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
                 }
                 Ok(cmd) => {
                     if matches!(cmd, SpotifyCmd::Authorize) { state.state = "esperando el navegador".into(); publish(&tx, &state); }
-                    let starts_playback = matches!(cmd, SpotifyCmd::Play(_) | SpotifyCmd::Resume);
+                    let starts_playback = matches!(cmd, SpotifyCmd::Play(_) | SpotifyCmd::PlayResult(_) | SpotifyCmd::Resume);
                     handle(&mut state, file, cmd);
                     if starts_playback && state.playing { activated = true; idle = 0; last_poll = Instant::now(); }
                     publish(&tx, &state);
@@ -724,6 +752,23 @@ mod tests {
     use super::*;
 
     fn hex(bytes: &[u8]) -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() }
+
+    #[test]
+    fn search_url_encodes_query() {
+        assert_eq!(search_url("café & rock?"), format!("{API}/search?type=track&limit=10&q=caf%C3%A9%20%26%20rock%3F"));
+    }
+    #[test]
+    fn search_reply_filters_and_caps() {
+        let mut items = vec![json!(null), json!({"id":"x"}), json!({"name":"x"}), json!({"id":"", "name":"x"})];
+        items.extend((0..12).map(|i| json!({"id":format!("id{i}"),"name":format!("Tema {i}"),"artists":[{"name":"Artista"}]})));
+        let found = search_tracks(&json!({"tracks":{"items":items}}));
+        assert_eq!(found.len(), 10); assert_eq!((&found[0].id, &found[0].title, &found[0].artist), (&"id0".into(), &"Tema 0".into(), &"Artista".into()));
+        assert_eq!(found[9].id, "id9"); assert!(search_tracks(&json!({})).is_empty()); assert!(search_tracks(&json!({"tracks":{"items":[]}})).is_empty());
+    }
+    #[test]
+    fn track_play_body_names_uri_and_device() {
+        assert_eq!(track_play_body("abc", "dev"), json!({"uris":["spotify:track:abc"],"device_id":"dev"}));
+    }
 
     #[test]
     fn player_reply_parses_and_clears_progress() {

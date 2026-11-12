@@ -74,6 +74,7 @@ La pestaña no reproduce nada por sí misma: la barra es el panel de control y e
 | **Barra de progreso** | `━` lo escuchado, `●` la posición, `┄` lo que falta, y debajo `m:ss / m:ss`. Cada columna es un blanco de clic propio: el salto va a la posición de esa columna. |
 | **Ventana del vídeo** | El vídeo se ve en una ventana de `mpv` aparte, nunca dentro de la barra. El control viaja por el socket JSON de `mpv`, así que no hace falta enfocar esa ventana. |
 
+- En Spotify, con el dispositivo listo, `🔍 buscar tema` abre el cuadro: escribí la búsqueda y pulsá `Enter` para pedir hasta diez resultados; `Esc` cancela. Un clic en un resultado lo reproduce en ese dispositivo. Sin dispositivo aparece `buscar · falta dispositivo`; sin coincidencias, `sin resultados`.
 - Transporte con clic: `◀◀` anterior, `❚❚` / `▶` pausa o reanuda, `▶▶` siguiente.
 - Al terminar un vídeo la barra pasa al siguiente de la cola; al final de la cola vuelve a pedir recomendaciones y salta la que acaba de terminar. Si no aparece ninguna nueva: `sin nuevas recomendaciones`. La cola admite hasta 24 vídeos y el estado del reproductor se consulta cada 500 ms.
 - El archivo privado `~/.config/gs3/spotify.json` (0600) guarda el `client_id` y los tokens; la barra no los muestra ni los copia a ningún otro lado. El intercambio del token usa `curl`, que debe estar en el `PATH`: si falta, la tarjeta lo informa.

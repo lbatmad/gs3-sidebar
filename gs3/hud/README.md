@@ -70,6 +70,11 @@ when credentials exist, subsequent starts reuse them without `--enable-oauth`, a
 tightened to 0600 as soon as it appears: librespot creates it with the ambient umask. The card resolves the
 device, offers `▶ reproducir lista` and `❚❚ pausar`, and clicking a track plays its playlist position.
 Unavailable rows explain whether the device or playlist is missing; `↻ buscar dispositivo` retries.
+With a device ready, `🔍 buscar tema` opens a modal: `Enter` submits one search, `Esc` cancels,
+and typing does not switch tabs. `/search?type=track&limit=10` returns up to ten real results;
+a click plays the selected track on that device. The card says `buscar · falta dispositivo` when
+unavailable and `sin resultados` for an empty reply. Search and track playback use the same curl
+and token-renewal paths as playlist operations. Cover art remains pending.
 The card shows the current title and artist, previous/next, pause/resume and a per-column clickable seek bar with elapsed and total time. After an explicit play or resume, `/me/player` is polled about once per second while playing; polling stops on pause or an empty response. `librespot` uses the same tool search order as YouTube. No device is started and no Spotify request is made on startup or `--once`.
 
 MEDIA delegates playback instead of drawing it: Spotify audio belongs to `librespot` and YouTube
