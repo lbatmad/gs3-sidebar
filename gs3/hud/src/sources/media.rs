@@ -18,12 +18,32 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
+
+/// Opt-in trace for the video window (`GS3_HUD_DEBUG=1`), appended to `$TMPDIR/gs3-hud-<pid>-debug.log`.
+/// The visibility rule mixes four inputs that no unit test can observe, so a report of "the video
+/// disappeared" is only diagnosable from what the engine actually decided.
+fn trace(args: std::fmt::Arguments) {
+    if std::env::var_os("GS3_HUD_DEBUG").is_none() { return }
+    let path = std::env::temp_dir().join(format!("gs3-hud-{}-debug.log", std::process::id()));
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let _ = writeln!(file, "{ms} {args}");
+    }
+}
+macro_rules! trace { ($($arg:tt)*) => { trace(format_args!($($arg)*)) } }
 use std::thread;
 use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(500);
 /// The visibility tick: the window must follow focus quickly, and reading an atomic costs nothing.
 const TICK: Duration = Duration::from_millis(80);
+/// How many consecutive ticks the video block has to stay missing before a playing window is hidden.
+/// A closing modal redraws one frame without the block, and hiding for that minimizes the window while
+/// mpv is still resolving its URL, which is exactly when the window is born in the wrong state.
+const HIDE_TICKS: u8 = 5;
+/// How often the window state is read back. The property drifts after it is set: mpv creates the window
+/// only once the URL resolves, so a minimize that arrived before that survives the later deminiaturize.
+const VERIFY: Duration = Duration::from_millis(400);
 const QUEUE_MAX: usize = 24;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -159,6 +179,69 @@ hit ? String(hit.kCGWindowOwnerPID|0) : "";"#);
     String::from_utf8_lossy(&out.stdout).trim().parse::<i64>().ok()
 }
 
+/// The window cannot be moved at runtime, so a block that changed while the video is on screen means a
+/// new player at the same video and position. `used` is the block the running player was started for,
+/// not where it landed: a player that was built while the card sat at `want` needs no further rebuild,
+/// even if the placement itself failed. `want` is where the card is now.
+fn needs_move(used: Option<CellRect>, want: Option<CellRect>, visible: bool) -> bool {
+    visible && want.is_some() && used != want
+}
+
+/// Rebuild the player on the same video and position when the block moved, because mpv cannot be
+/// moved once its window exists (measured: `set_property geometry` answers success and does nothing).
+/// Debounced: a scroll in progress would otherwise restart the video on every tick.
+fn move_window(player: &mut Option<Player>, y: &mut Youtube, card: Option<CellRect>, visible: bool, moved_at: &mut Option<Instant>, socket: &std::path::Path) {
+    let Some(p) = player.as_mut() else { *moved_at = None; return };
+    if !needs_move(p.geom, card, visible) { *moved_at = None; return }
+    let since = moved_at.get_or_insert_with(Instant::now);
+    if since.elapsed() < Duration::from_millis(300) { return }
+    *moved_at = None;
+    let used = p.geom;
+    // Record the block this rebuild is for before anything can fail. A return path that left the old
+    // value behind rebuilds again on the next tick, and a rebuild every tick killed and respawned mpv
+    // in a loop that took the keyboard away from the rail: the whole sidebar looked frozen.
+    p.geom = card;
+    let Some(id) = y.queue.get(y.index).map(|v| v.id.clone()) else { return };
+    let position = y.position;
+    let layout = std::env::var("HERDR_PANE_ID").ok().and_then(|pane| super::request(socket, "pane.layout", json!({"pane_id": pane})).ok().and_then(|v| parse_layout(&v, &pane)));
+    let geometry = placement(window_rect(), layout, card);
+    trace!("move: used={used:?} want={card:?} geometry={:?}", geometry.as_deref().ok());
+    drop(player.take());
+    let Some(mut fresh) = Player::start(geometry.as_deref().ok(), card) else { y.state = "mpv no encontrado".into(); return };
+    if fresh.load(&id) {
+        if position > 0.5 { fresh.call(&["seek", &format!("{position:.3}"), "absolute"]); }
+        *player = Some(fresh);
+    } else { y.state = "no se pudo recolocar el video".into() }
+}
+
+/// Whether the window may be on screen right now. Showing is immediate; hiding waits until the block has
+/// been gone for a few consecutive ticks, because one frame without it is a redraw, not the card leaving.
+fn follow(missing: &mut u8, raw: bool) -> bool {
+    if raw { *missing = 0; return true }
+    *missing = missing.saturating_add(1);
+    *missing < HIDE_TICKS
+}
+
+/// Tell the player whether its window may be on screen, and keep it there: the wanted state is written
+/// once, but mpv's window state is read back on a slower cadence and re-asserted whenever it drifted.
+/// A one-shot confirmation is not enough (a window created seconds later, or a minimize that lands
+/// while the URL is still resolving, answers success and then disagrees), and the failure mode is the
+/// worst one: the video vanishes while its audio keeps playing.
+fn apply_visibility(p: &mut Player, shown: &mut Option<(u32, bool)>, visible: bool, verify: bool) {
+    let key = (p.child.id(), visible);
+    let want = window_value(visible);
+    if *shown == Some(key) {
+        if !verify { return }
+        let actual = p.call(&["get_property", "window-minimized"]).and_then(|reply| reply["data"].as_bool());
+        if actual == Some(want) { return }
+        trace!("visibility drifted pid={} want={want} actual={actual:?}", key.0);
+    }
+    if p.set_bool("window-minimized", want).is_none() { return }
+    let got = p.call(&["get_property", "window-minimized"]).and_then(|reply| reply["data"].as_bool());
+    trace!("visibility want_visible={visible} pid={} asked={want} confirmed={got:?}", key.0);
+    if got == Some(want) { *shown = Some(key); } else { *shown = None }
+}
+
 /// The value mpv's `window-minimized` takes for the requested visibility.
 fn window_value(visible: bool) -> bool { !visible }
 
@@ -246,10 +329,12 @@ fn refill_index(list: &[Video], finished: &str) -> Option<usize> {
 }
 
 /// One `mpv` process and its IPC socket. Dropping it stops the player.
-struct Player { child: Child, out: UnixStream, inp: BufReader<UnixStream>, id: u64, eof: EofGuard }
+struct Player { child: Child, out: UnixStream, inp: BufReader<UnixStream>, id: u64, eof: EofGuard, geom: Option<CellRect> }
 
 impl Player {
-    fn start(geometry: Option<&str>) -> Option<Player> {
+    /// `geom` is the block this player is being started for and is required, so no caller can build a
+    /// player that has forgotten it and then be rebuilt forever by the follower.
+    fn start(geometry: Option<&str>, geom: Option<CellRect>) -> Option<Player> {
         let mpv = find_tool("mpv")?;
         let sock = std::env::temp_dir().join(format!("gs3-hud-{}-mpv.sock", std::process::id()));
         let _ = std::fs::remove_file(&sock);
@@ -268,7 +353,8 @@ impl Player {
         let out = connected?;
         out.set_read_timeout(Some(REQUEST_TIMEOUT)).ok()?;
         let inp = BufReader::new(out.try_clone().ok()?);
-        Some(Player { child, out, inp, id: 0, eof: EofGuard::default() })
+        trace!("start: pid={} geometry={geometry:?} follows={geom:?}", child.id());
+        Some(Player { child, out, inp, id: 0, eof: EofGuard::default(), geom })
     }
 
     /// Send one JSON IPC command and wait for the reply carrying its `request_id`.
@@ -348,6 +434,7 @@ fn advance(player: &mut Player, y: &mut Youtube, step: isize) {
 
 fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &std::path::Path) {
     if let MediaCmd::Play(query, card) = &cmd {
+        trace!("play query={query} card={card:?} player_exists={}", player.is_some());
         if let Some(player) = player.as_mut() { player.eof = EofGuard::Waiting; }
         y.state = format!("buscando {query}");
         match queue(query) {
@@ -357,7 +444,9 @@ fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &
                     let layout = std::env::var("HERDR_PANE_ID").ok().and_then(|id| super::request(socket, "pane.layout", json!({"pane_id":id})).ok().and_then(|v| parse_layout(&v, &id)));
                     let result = placement(window_rect(), layout, *card);
                     fallback = result.as_ref().err().copied();
-                    *player = Player::start(result.as_deref().ok());
+                    trace!("place at play: geometry={:?} fallback={fallback:?}", result.as_deref().ok());
+                    *player = Player::start(result.as_deref().ok(), *card);
+                    trace!("player at play: {:?}", player.as_ref().map(|p| p.child.id()));
                 }
                 let Some(player) = player.as_mut() else { y.state = "mpv no encontrado".into(); return };
                 y.queue = list; y.index = 0; y.state = fallback.map(|reason| format!("sin geometría: {reason}")).unwrap_or_else(|| "reproduciendo".into());
@@ -371,10 +460,10 @@ fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &
         }
         return;
     }
-    if let MediaCmd::CardVisible(_) = cmd { return }
+    if let MediaCmd::CardRect(_) = cmd { return }
     let Some(player) = player.as_mut() else { y.state = "mpv no encontrado".into(); return };
     match cmd {
-        MediaCmd::CardVisible(_) => unreachable!("handled above"),
+        MediaCmd::CardRect(_) => unreachable!("handled above"),
         MediaCmd::Toggle => { player.call(&["cycle", "pause"]); }
         MediaCmd::Next => advance(player, y, 1),
         MediaCmd::Prev => advance(player, y, -1),
@@ -425,17 +514,22 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
         let mut player: Option<Player> = None;
         let mut sent = youtube.clone();
         let mut ours: Option<i64> = None;
-        let mut shown: Option<bool> = None;
+        // The window's visibility is per process: a rebuilt or newly started player has to be told again.
+        let mut shown: Option<(u32, bool)> = None;
         let mut watch: Option<(Child, Arc<AtomicI64>)> = None;
         let mut last_poll = Instant::now();
-        let mut card = true;
+        let mut card: Option<CellRect> = None;
+        let mut moved_at: Option<Instant> = None;
+        let mut missing_ticks: u8 = 0;
+        let mut last_verify = Instant::now();
         let mut tab: Option<String> = None;
         let mut front_tab: Option<String> = None;
         let mut last_tab = Instant::now();
+        let mut last_sig: Option<(Option<i64>, Option<i64>, Option<String>, Option<String>, bool, bool)> = None;
         let _ = tx.send(Event::Media(youtube.clone()));
         loop {
             match cmd_rx.recv_timeout(TICK) {
-                Ok(cmd) => { if let MediaCmd::CardVisible(v) = cmd { card = v; } else { handle(&mut player, &mut youtube, cmd, &socket) } },
+                Ok(cmd) => { if let MediaCmd::CardRect(rect) = cmd { card = rect; trace!("card {card:?}"); } else { handle(&mut player, &mut youtube, cmd, &socket) } },
                 Err(RecvTimeoutError::Timeout) => if last_poll.elapsed() >= POLL { last_poll = Instant::now(); poll(&mut player, &mut youtube) },
                 // The rail is gone: dropping the player stops mpv with it.
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -453,9 +547,15 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
                     front_tab = focused_tab(&socket);
                 }
                 let same_tab = match (&tab, &front_tab) { (Some(a), Some(b)) => a == b, _ => true };
-                let now = visible_now(front, ours, Some(p.child.id()), same_tab, card);
-                if shown != Some(now) { shown = Some(now); p.set_bool("window-minimized", window_value(now)); }
-            } else { shown = None; if let Some((mut c, _)) = watch.take() { let _ = c.kill(); let _ = c.wait(); } }
+                let raw = visible_now(front, ours, Some(p.child.id()), same_tab, card.is_some());
+                let now = follow(&mut missing_ticks, raw);
+                let sig = (front, ours, tab.clone(), front_tab.clone(), card.is_some(), now);
+                if last_sig.as_ref() != Some(&sig) { last_sig = Some(sig); trace!("state player={} front={front:?} ours={ours:?} own_tab={tab:?} front_tab={front_tab:?} card={} raw={raw} now={now}", p.child.id(), card.is_some()); }
+                let verify = last_verify.elapsed() >= VERIFY;
+                if verify { last_verify = Instant::now(); }
+                apply_visibility(p, &mut shown, now, verify);
+                move_window(&mut player, &mut youtube, card, now, &mut moved_at, &socket);
+            } else { shown = None; moved_at = None; missing_ticks = 0; if let Some((mut c, _)) = watch.take() { let _ = c.kill(); let _ = c.wait(); } }
             if youtube != sent { sent = youtube.clone(); if tx.send(Event::Media(youtube.clone())).is_err() { break } }
         }
     });
@@ -505,6 +605,34 @@ mod tests {
         assert!(placement(Some((0,0,100,100)), None, Some(r)).is_err());
         assert!(placement(Some((0,0,100,100)), Some((r,r)), None).is_err());
         assert!(placement(Some((0,0,100,100)), Some((r,r)), Some(r)).is_ok());
+    }
+
+    #[test]
+    fn hiding_waits_for_the_block_to_stay_gone() {
+        let mut missing = 0u8;
+        assert!(follow(&mut missing, true), "a block on screen means the window is on screen");
+        assert!(follow(&mut missing, false), "one frame without the block is a redraw, not the card leaving");
+        assert!(follow(&mut missing, true), "the block came back");
+        assert_eq!(missing, 0, "and the count resets");
+        let mut last = true;
+        for _ in 0..HIDE_TICKS { last = follow(&mut missing, false); }
+        assert!(!last, "the block stayed gone, so the window goes with it");
+        assert!(follow(&mut missing, true), "showing never waits");
+    }
+
+    #[test]
+    fn a_block_that_moved_asks_for_a_new_player() {
+        let a = CellRect::new(3, 20, 40, 10);
+        let b = CellRect::new(3, 24, 40, 10);
+        assert!(needs_move(Some(a), Some(b), true), "the card scrolled and the window cannot follow");
+        assert!(!needs_move(Some(a), Some(a), true), "same block, nothing to do");
+        assert!(!needs_move(Some(a), Some(b), false), "a hidden window does not need to move yet");
+        assert!(!needs_move(None, None, true));
+        // A player is recorded for the block it was built for, whether or not the placement worked.
+        // Recording where it landed, or nothing at all, asked for a new player on every tick: an endless
+        // kill-and-respawn of mpv that stole the keyboard from the rail and left the sidebar frozen.
+        assert!(!needs_move(Some(b), Some(b), true), "the rebuild already followed this block");
+        assert!(!needs_move(Some(b), Some(b), false));
     }
 
     #[test]

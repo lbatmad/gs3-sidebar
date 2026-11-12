@@ -89,7 +89,12 @@ playlist: `yt-dlp --flat-playlist` enumerates the seed and its recommendations (
 entry is loaded by id, and a finished video advances exactly once, refilling from the same mix at
 the end. YouTube progress is polled every 500 ms; its seek bar maps one click per column. Spotify
 also writes the private librespot cache; the HUD's settings file and private Discord token remain
-other writes, and mpv may create its temporary IPC socket.
+other writes, and mpv may create its temporary IPC socket. The video window's visibility is verified
+against mpv (`get_property window-minimized`) about twice a second, because the value can drift after it
+is set: mpv creates the window only once the URL resolves, so a minimize that arrives before that
+survives the later deminiaturize and the video would vanish while its audio kept playing. Setting
+`GS3_HUD_DEBUG=1` appends the engine's decisions to `$TMPDIR/gs3-hud-<pid>-debug.log`, which is the only
+way to tell a focus rule apart from a lost window state.
 
 The context limit comes from `<agent dir>/cpamc-models-cache.json` (what Pi registers
 at runtime), then `models-store.json`. Token counts are abbreviated like the reference (`33.7k`, `179k`, `1.0M`).

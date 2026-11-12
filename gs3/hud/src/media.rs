@@ -106,9 +106,9 @@ pub enum MediaCmd {
     Prev,
     /// Absolute position as a fraction of the current duration (0.0–1.0), from a click on the bar.
     Seek(f64),
-    /// Whether the rail is showing the video block at all: another tab, a collapsed or scrolled-out
-    /// card means the window must not be on screen either.
-    CardVisible(bool),
+    /// Where the rail is drawing the video block, or `None` when it is not on screen at all: another
+    /// tab, a collapsed card or one scrolled out of view. The window follows this rectangle.
+    CardRect(Option<CellRect>),
     /// Search this text, then queue the best match with its recommendations and start it.
     Play(String, Option<CellRect>),
 }

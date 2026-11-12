@@ -75,7 +75,7 @@ fn main()->Result<()> {
     sources::herdr(a.socket,a.pane,data_tx);
     let mut draw=true; let mut last:Option<ui::Frame>=None;
     let mut transmitted: Option<String> = None;
-    let mut sent_card: Option<bool> = None;
+    let mut sent_card: Option<Option<crate::media::CellRect>> = None;
     loop {
         if let Some(cmd)=state.ui.voice_cmd.take() {let _=voice.send(cmd);}
         if let Some(mut cmd)=state.ui.media_cmd.take() {
@@ -103,8 +103,8 @@ fn main()->Result<()> {
         })?;
         // The video window may only exist while the rail is actually showing its block: another tab of
         // the rail, a collapsed card or one scrolled out of view all mean "not on screen".
-        let card = last.as_ref().map_or(true, |f| f.youtube_rect.is_some());
-        if sent_card != Some(card) { sent_card = Some(card); state.ui.media_cmd = Some(media::MediaCmd::CardVisible(card)); }
+        let card = last.as_ref().and_then(|f| f.youtube_rect);
+        if sent_card != Some(card) { sent_card = Some(card); state.ui.media_cmd = Some(media::MediaCmd::CardRect(card)); }
         if let (Some((x,y)), Some(url), Some(bytes)) = (last.as_ref().and_then(|f|f.cover_pos), current, state.media.spotify.cover_png.as_deref()) {
             let mut out = io::stdout().lock();
             if transmitted.is_none() {
