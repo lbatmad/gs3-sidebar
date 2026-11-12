@@ -23,13 +23,12 @@ const POLL: Duration = Duration::from_millis(500);
 const QUEUE_MAX: usize = 24;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Parse the position and size returned by System Events, rejecting incomplete rectangles.
-fn parse_window_rect(reply: &str) -> Option<(i64, i64, i64, i64)> {
-    let values: Vec<i64> = reply.trim().split(',').map(|part| part.trim().parse()).collect::<Result<_, _>>().ok()?;
-    match values.as_slice() {
-        [x, y, width, height] if *width > 0 && *height > 0 => Some((*x, *y, *width, *height)),
-        _ => None,
-    }
+/// Parse the bounds CoreGraphics reports for a window, rejecting anything incomplete.
+fn parse_window_json(reply: &str) -> Option<(i64, i64, i64, i64)> {
+    let value: Value = serde_json::from_str(reply.trim()).ok()?;
+    let n = |key: &str| value[key].as_f64().map(|f| f as i64);
+    let (x, y, width, height) = (n("X")?, n("Y")?, n("Width")?, n("Height")?);
+    (width > 0 && height > 0).then_some((x, y, width, height))
 }
 
 fn parse_layout(reply: &Value, id: &str) -> Option<(CellRect, CellRect)> {
@@ -66,21 +65,45 @@ fn geometry(win: (i64,i64,i64,i64), area: CellRect, pane: CellRect, card: CellRe
 fn placement(window: Option<(i64,i64,i64,i64)>, layout: Option<(CellRect,CellRect)>, card: Option<CellRect>) -> Result<String, &'static str> {
     let card = card.ok_or("sin área visible de YouTube")?;
     let (area,pane) = layout.ok_or("sin ubicación del panel")?;
-    let window = window.ok_or("sin ubicación de ventana; revisar Accesibilidad")?;
+    let window = window.ok_or("sin ubicación de ventana del terminal")?;
     geometry(window, area, pane, card).ok_or("área de video inválida")
 }
 
 fn mpv_args(socket: &str, geometry: Option<&str>) -> Vec<String> {
     let mut args = vec!["--idle=yes".into(), "--no-terminal".into(), "--msg-level=all=error".into(), "--keep-open=yes".into(), "--title=gs3 media".into(), format!("--input-ipc-server={socket}"), "--border=no".into(), "--osc=no".into(), "--ontop".into()];
-    if let Some(g) = geometry { args.push(format!("--geometry={g}")); }
+    // `whole` because the rectangle we compute comes from CoreGraphics, which reports absolute screen
+    // coordinates: with mpv's default `visible` calculation the window lands a menu bar lower.
+    if let Some(g) = geometry { args.push(format!("--geometry={g}")); args.push("--macos-geometry-calculation=whole".into()); }
     args
 }
 
+/// This rail's process chain, nearest first. The window belongs to the terminal app at the top, not
+/// to the pane, and `--pane` names the agent pane, so neither is a substitute.
+fn ancestors() -> Vec<i64> {
+    let mut chain = Vec::new();
+    let mut pid = i64::from(std::process::id());
+    for _ in 0..10 {
+        chain.push(pid);
+        let parent = Command::new("ps").args(["-o", "ppid=", "-p", &pid.to_string()]).output().ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<i64>().ok());
+        match parent { Some(p) if p > 1 => pid = p, _ => break }
+    }
+    chain
+}
+
+/// The terminal window's screen rectangle, read through CoreGraphics in JXA. This is the piece that
+/// used to need Accessibility: only a window's *title* is protected, its bounds are not, so asking for
+/// geometry costs no permission and works from a detached herdr server.
 fn window_rect() -> Option<(i64,i64,i64,i64)> {
-    let script = "tell application \"System Events\" to tell first application process whose frontmost is true to get {position, size} of front window";
-    let out = Command::new("osascript").args(["-e", script]).output().ok()?;
+    let owners = serde_json::to_string(&ancestors()).ok()?;
+    let script = format!(r#"ObjC.import("CoreGraphics");
+const owners = {owners};
+const list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));
+const hit = list.find(w => (w.kCGWindowLayer|0) === 0 && owners.includes(w.kCGWindowOwnerPID|0) && (w.kCGWindowBounds.Width|0) > 100);
+JSON.stringify(hit ? hit.kCGWindowBounds : null);"#);
+    let out = Command::new("osascript").args(["-l", "JavaScript", "-e", &script]).output().ok()?;
     if !out.status.success() { return None }
-    parse_window_rect(std::str::from_utf8(&out.stdout).ok()?)
+    parse_window_json(&String::from_utf8_lossy(&out.stdout))
 }
 
 /// A Homebrew installation is not always on the PATH the rail inherits from its launcher.
@@ -351,18 +374,24 @@ mod tests {
     fn mpv_arguments_keep_playback_flags_with_optional_geometry() {
         let args = mpv_args("/tmp/mpv.sock", None);
         assert_eq!(args, vec!["--idle=yes", "--no-terminal", "--msg-level=all=error", "--keep-open=yes", "--title=gs3 media", "--input-ipc-server=/tmp/mpv.sock", "--border=no", "--osc=no", "--ontop"]);
-        let mut expected = args; expected.push("--geometry=100x50+1+2".into());
+        // The geometry we compute is in screen coordinates, so mpv must treat it as such: with the
+        // default `visible` calculation it shifts the window down by the menu bar (measured: 25 px).
+        let mut expected = args; expected.push("--geometry=100x50+1+2".into()); expected.push("--macos-geometry-calculation=whole".into());
         assert_eq!(mpv_args("/tmp/mpv.sock", Some("100x50+1+2")), expected);
+        assert!(!mpv_args("/tmp/mpv.sock", None).iter().any(|a| a.starts_with("--macos-geometry")));
     }
 
     #[test]
-    fn window_rect_parser_accepts_two_pairs_and_rejects_invalid_output() {
-        assert_eq!(parse_window_rect("10, 20, 800, 600\n"), Some((10, 20, 800, 600)));
-        assert_eq!(parse_window_rect("-30, 20, 801, 601"), Some((-30, 20, 801, 601)));
-        assert_eq!(parse_window_rect("10, 20"), None);
-        assert_eq!(parse_window_rect("garbage"), None);
-        assert_eq!(parse_window_rect("10, 20, 0, 600"), None);
-        assert_eq!(parse_window_rect("10, 20, 800, 600, 9"), None);
+    fn window_rect_parser_reads_coregraphics_bounds_and_rejects_the_rest() {
+        // The shape CoreGraphics returns, read without any Accessibility or Automation grant: only a
+        // window's title is protected, its geometry is not.
+        assert_eq!(parse_window_json(r#"{"X":0,"Height":1055,"Y":25,"Width":1920}"#), Some((0, 25, 1920, 1055)));
+        assert_eq!(parse_window_json(r#"{"X":-1920,"Height":1000,"Y":-30,"Width":1920}"#), Some((-1920, -30, 1920, 1000)));
+        assert_eq!(parse_window_json("null"), None, "no window of ours is on screen");
+        assert_eq!(parse_window_json(r#"{"X":0,"Y":25,"Width":0,"Height":1055}"#), None);
+        assert_eq!(parse_window_json(r#"{"X":0,"Y":25}"#), None);
+        assert_eq!(parse_window_json("garbage"), None);
+        assert_eq!(parse_window_json(""), None);
     }
 
     #[test]

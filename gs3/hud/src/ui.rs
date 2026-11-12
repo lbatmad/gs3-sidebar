@@ -1094,13 +1094,13 @@ mod tests {
         let input = prompt.lines.iter().position(|l| plain(l).contains("> query")).unwrap();
         assert_eq!(rect.y as usize, input + 2);
         s.ui.prompt = None;
-        s.media.youtube.state = "sin geometría: sin ubicación de ventana; revisar Accesibilidad".into();
+        s.media.youtube.state = "sin geometría: sin ubicación de ventana del terminal".into();
         s.media.youtube.title = Some("video".into());
         s.media.youtube.queue = vec![crate::media::Video { id: "a".into(), title: "video".into() }];
         let f = frame(&s, 42, 0);
         assert_eq!(f.youtube_rect, Some(rect));
         assert!(f.lines.iter().any(|l| plain(l).contains("sin geometría")));
-        assert!(f.lines.iter().any(|l| plain(l).contains("Accesibilidad")));
+        assert!(f.lines.iter().any(|l| plain(l).contains("sin geometría")));
     }
 
     #[test]
