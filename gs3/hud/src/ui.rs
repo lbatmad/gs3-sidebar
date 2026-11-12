@@ -338,11 +338,10 @@ const PAD: usize = 1;
 /// the closest a 42-46 column card gets to 16:9, so the video has almost nothing left to crop and the
 /// window lands inside the frame instead of over it.
 const VIDEO_ROWS: usize = 12;
-/// Horizontal insets preserve the proportions chosen by the human. The preferred vertical inset
-/// is clamped to the rows actually reserved, keeping all ten video rows inside the block.
+/// Horizontal insets preserve the proportions chosen by the human; vertically the picture is centred
+/// in the rows the card reserves, so it crowds neither the search row above nor the title below.
 const VIDEO_INSET_PCT: usize = 16;
 const VIDEO_RIGHT_PCT: usize = 2;
-const VIDEO_INSET_Y: usize = 3;
 const VIDEO_ROWS_TALL: usize = 10;
 struct Body { lines: Vec<Vec<Seg>>, hits: Vec<Hit>, glued: bool, lists: Vec<ListWindow>, video: Option<std::ops::Range<usize>> }
 impl Body {
@@ -453,7 +452,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     let youtube_rect = video.filter(|r| cw > 4 && r.start >= scroll && r.end <= scroll + view).map(|r| {
         let inner = cw.saturating_sub(2); let left = inner * VIDEO_INSET_PCT / 100; let right = inner * VIDEO_RIGHT_PCT / 100;
         let height = VIDEO_ROWS_TALL.min(r.len());
-        let inset = VIDEO_INSET_Y.min(r.len() - height);
+        let inset = (r.len() - height) / 2;
         crate::media::CellRect::new((PAD + 1 + left) as u32, (top_rows + r.start + inset - scroll) as u32, inner.saturating_sub(left + right) as u32, height as u32)
     });
     Frame { lines, hits, tab_row, scroll, max_scroll, cover_pos, youtube_rect, lists }
@@ -1148,9 +1147,10 @@ fn videos_card(s: &State, w: usize) -> Option<Card> {
     use Tone::*;
     let y = &s.media.youtube; if y.videos.is_empty() || s.ui.prompt.is_some() { return None }
     let max = y.videos.len().saturating_sub(TRACK_ROWS); let first = s.ui.video_scroll.min(max); let last = (first + TRACK_ROWS).min(y.videos.len());
-    let mut c = Card::new("videos", mark("Videos", Pink), w);
+    let mut c = Card::new("videos", mark(if y.from_playlist { "Videos" } else { "Sugeridos" }, Pink), w);
     if max > 0 { c.extra = vec![(seg(format!("{}-{}/{} ", first + 1, last, y.videos.len()), Dim), None)]; }
-    let playing = if y.from_playlist { y.queue.get(y.index).map(|v| v.id.as_str()) } else { None };
+    // Both sources end up in `queue`, so the row being heard is the one the queue points at.
+    let playing = y.queue.get(y.index).map(|v| v.id.as_str());
     for (i, v) in y.videos.iter().enumerate().take(last).skip(first) {
         let active = playing == Some(v.id.as_str());
         let mut left = Vec::new(); if active { left.push(seg("▶ ", PinkBright)); }
@@ -1290,7 +1290,8 @@ mod tests {
         let b = check(&frame(&s, 42, 0));
         assert_eq!(b.0 - a.0, (b.1 - a.1) as usize);
         assert_eq!(b.0 - a.0, 6);
-        assert_eq!((a.1, b.1), (22, 28));
+        // Centred in the twelve reserved rows: the ten-row picture leaves one row above and one below.
+        assert_eq!((a.1, b.1), (21, 27));
         s.ui.config.collapsed.push("spotify".into());
         let collapsed = check(&frame(&s, 42, 0));
         assert!(collapsed.0 < b.0);
@@ -1327,7 +1328,7 @@ mod tests {
         let prompt = frame(&s, 42, 0);
         let rect = prompt.youtube_rect.expect("video area");
         let input = prompt.lines.iter().position(|l| plain(l).contains("> query")).unwrap();
-        assert_eq!(rect.y as usize, input + 2 + VIDEO_INSET_Y.min(VIDEO_ROWS - VIDEO_ROWS_TALL), "the video sits inside the reserved rows");
+        assert_eq!(rect.y as usize, input + 2 + (VIDEO_ROWS - VIDEO_ROWS_TALL) / 2, "the video is centred in the reserved rows");
         s.ui.prompt = None;
         s.media.youtube.state = "sin geometría: sin ubicación de ventana del terminal".into();
         s.media.youtube.title = Some("video".into());
@@ -1573,7 +1574,11 @@ mod tests {
         let (x,y) = at(&f, "Video 12"); assert_eq!(click(&f,x,y), Some(Action::YtPlayVideo(11)));
         s.media.youtube.queue = vec![s.media.youtube.videos[11].clone()]; s.media.youtube.from_playlist = true;
         let f = frame(&s, 46, 0); assert!(plain(&f.lines[at(&f, "Video 12").1]).contains("▶"));
-        s.media.youtube.from_playlist = false; let f = frame(&s, 46, 0); assert!(!plain(&f.lines[at(&f, "Video 12").1]).contains("▶"));
+        // A mix (`buscar`) lists its own recommendations and marks the same way; only the title
+        // changes, because the source is different.
+        s.media.youtube.from_playlist = false; let f = frame(&s, 46, 0);
+        assert!(plain(&f.lines[at(&f, "Video 12").1]).contains("▶"), "the mark follows the queue in both sources");
+        assert!(f.lines.iter().any(|l| plain(l).contains("⌁ Sugeridos")), "a mix names its source");
         s.ui.video_scroll = 9; act(&mut s.ui, Action::YtOpenPlaylist("p2".into())); assert_eq!(s.ui.video_scroll, 0);
     }
     #[test]

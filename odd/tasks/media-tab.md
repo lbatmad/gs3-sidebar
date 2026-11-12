@@ -47,7 +47,12 @@ S14. User: "podes hacer que los controles de spotify ocupen la menor cantidad de
 S15. User: "con esta libreria se puede hacer lo mismo que en youtube? buscar listas, dejar play y que siga con el siguiente tema, si es una lista mostrar la lista de videos", and on scope: "quiero las listas publicas, pero buscarlas por nombre, no por id".
 The YouTube section gains the same shape Spotify already has: a search box that finds public playlists **by name** (not by URL or id), the selected playlist's videos listed in the card with the same ten-row window the wheel scrolls, a click on a row starting playback at that entry, and the existing auto-advance continuing through the rest of the playlist. Public playlists only: no cookies, no stored secret. At the end of a playlist playback stops; the recommendations mix stays the behavior for a single-track search.
 
+S16. User: "en la parte de media-youtube, en buscar, se puede mostrar los siguientes 10 temas que sugiere Youtube?".
+A track search now lists its own recommendations: the card shows the seed plus the RD mix it just queued, in the same ten-row window with the wheel, the range and the playing row marked, titled `Sugeridos` so the source is never guessed. A click plays that entry and the mix keeps its own end behavior (ask YouTube for another mix); `from_playlist` decides that, never the click.
+
 ## Tasks
+
+T15 | S16 | parent: the search's queue feeds the list card (`videos = queue`), a row click no longer forces `from_playlist`, and the playing mark follows the queue in both sources | done and live-verified: a search for `november rain` renders `⌁ Sugeridos 1-10/24` with `▶` on the first row; 147 tests green, 2 ignored | commit: pending
 
 T14 | S15 | parent: public playlist search by name (`yt-dlp` over YouTube's playlist-filtered search results), the selected playlist's videos enumerated with `--flat-playlist` and capped, the `⌁ Videos` card with the S13 window/wheel machinery, a click starting at that row, and auto-advance inside the playlist without the RD refill | done by code and tests: 144 green, 2 ignored; one
 UI interaction test pins the boxes, the id-carrying rows, the ten-row window with `1-10/25`, the wheel
@@ -369,3 +374,20 @@ untouched; and `⌁ Videos` reuses S13's window machinery instead of a second me
 `ListWindow.videos` flag so the wheel knows which of the two lists it is over. Caps: 10 playlists per
 search, `LIST_CAP` 200 videos per list, both to keep one click from becoming an unbounded scrape. Live
 verification is in T14. Left uncommitted for the human.
+
+L53. Human: "en la parte de media-youtube, en buscar, se puede mostrar los siguientes 10 temas que
+sugiere Youtube?" — yes, and the machinery already existed: `⌁ Videos` was a window over a list, so the
+mix only needed to feed it. Three small changes: the search path copies its queue into `videos`,
+`PlayVideoAt` stops forcing `from_playlist` (a click must not turn a mix into a playlist, because that
+flag decides whether the end stops or asks YouTube for another mix), and the playing mark now compares
+the queue in both sources instead of only for playlists. The card is titled `Sugeridos` when it shows a
+mix and `Videos` when it shows a playlist, so the source is never a guess. One existing test pinned the
+old rule ("no mark when it is not a playlist") and was updated to pin the new one.
+
+L54. Human: "poné la pantalla del video un toque mas centrada, un poco mas al centro entre el buscar y
+el titulo del video". The window was anchored to the top of the reserved rows (`VIDEO_INSET_Y = 3`
+clamped to `12 - 10 = 2`), which left two rows above and none below. The inset now derives from the
+reservation itself, `(reserved - height) / 2`, so the ten-row picture carries one row above and one
+below and `VIDEO_INSET_Y` is gone. The test that pins the absolute rows moved from `(22, 28)` to
+`(21, 27)`; the property it really guards — the picture moves exactly as much as the search row — is
+unchanged. 147 tests green.

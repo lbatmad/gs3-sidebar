@@ -529,7 +529,9 @@ fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &
             if *row >= y.videos.len() { return }
             let fallback = ensure_player(player, socket, current_card);
             let Some(player) = player.as_mut() else { y.state = "mpv no encontrado".into(); return };
-            y.queue = y.videos.clone(); y.index = *row; y.from_playlist = true;
+            // `from_playlist` is not set here: it decides whether the end of the list stops or asks
+            // YouTube for another mix, and a row click must not change that.
+            y.queue = y.videos.clone(); y.index = *row;
             y.state = fallback.map(|reason| format!("sin geometría: {reason}")).unwrap_or_else(|| "reproduciendo".into());
             y.title = Some(y.queue[*row].title.clone()); y.position = 0.0; y.duration = 0.0;
             if !player.load(&y.queue[*row].id) { y.state = "no se pudo cargar el video".into(); y.playing = false; }
@@ -546,6 +548,9 @@ fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &
             Ok(list) if !list.is_empty() => {
                 let fallback = ensure_player(player, socket, *card);
                 let Some(player) = player.as_mut() else { y.state = "mpv no encontrado".into(); return };
+                // The mix is what the card lists, so `buscar` stops hiding its own recommendations:
+                // same entries, same order, and the card's rows are what plays next.
+                y.videos = list.clone();
                 y.queue = list; y.index = 0; y.from_playlist = false; y.state = fallback.map(|reason| format!("sin geometría: {reason}")).unwrap_or_else(|| "reproduciendo".into());
                 y.title = y.queue.first().map(|v| v.title.clone());
                 y.position = 0.0; y.duration = 0.0;
