@@ -27,6 +27,10 @@ pub struct Spotify {
     pub device_id: Option<String>,
     pub running: bool,
     pub playing: bool,
+    pub title: Option<String>,
+    pub artist: String,
+    pub position_ms: u64,
+    pub duration_ms: u64,
     pub oauth_url: Option<String>,
 }
 
@@ -50,6 +54,10 @@ pub enum SpotifyCmd {
     Start,
     Play(usize),
     Pause,
+    Resume,
+    Next,
+    Previous,
+    Seek(f64),
 }
 
 /// Lower section: YouTube search, transport and seek. The video is drawn by `mpv`, never here.
@@ -87,7 +95,7 @@ pub enum MediaCmd {
 
 impl Default for Spotify {
     fn default() -> Self {
-        Spotify { state: "falta el client_id".into(), linked: false, playlists: Vec::new(), selected: None, tracks: Vec::new(), device_id: None, running: false, playing: false, oauth_url: None }
+        Spotify { state: "falta el client_id".into(), linked: false, playlists: Vec::new(), selected: None, tracks: Vec::new(), device_id: None, running: false, playing: false, title: None, artist: String::new(), position_ms: 0, duration_ms: 0, oauth_url: None }
     }
 }
 

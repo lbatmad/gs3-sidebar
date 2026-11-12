@@ -62,7 +62,7 @@ pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, Scrol
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
     Search, PlayPause, PrevTrack, NextTrack, Seek(f64),
     /// MEDIA · Spotify: consent in the browser, renew the stored token, list playlists, open one.
-    SpotifyAuthorize, SpotifyRefresh, SpotifyPlaylists, SelectPlaylist(String), SpotifyStart, SpotifyPlay(usize), SpotifyPause }
+    SpotifyAuthorize, SpotifyRefresh, SpotifyPlaylists, SelectPlaylist(String), SpotifyStart, SpotifyPlay(usize), SpotifyPause, SpotifyResume, SpotifyNext, SpotifyPrevious, SpotifySeek(f64) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Key { Char(char), Back, Enter, Esc }
 
@@ -100,6 +100,10 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::SpotifyStart => ui.spotify_cmd = Some(SpotifyCmd::Start),
         Action::SpotifyPlay(row) => ui.spotify_cmd = Some(SpotifyCmd::Play(row)),
         Action::SpotifyPause => ui.spotify_cmd = Some(SpotifyCmd::Pause),
+        Action::SpotifyResume => ui.spotify_cmd = Some(SpotifyCmd::Resume),
+        Action::SpotifyNext => ui.spotify_cmd = Some(SpotifyCmd::Next),
+        Action::SpotifyPrevious => ui.spotify_cmd = Some(SpotifyCmd::Previous),
+        Action::SpotifySeek(fraction) => ui.spotify_cmd = Some(SpotifyCmd::Seek(fraction)),
         Action::Edit => ui.editing = Some(ui.config.name.clone()),
         Action::ScrollTo(n) => ui.scroll[ui.tab.index()] = n,
         Action::GitView(v) => ui.git_view = v,
@@ -843,6 +847,24 @@ fn spotify_card(s: &State, w: usize) -> Card {
     let row = c.rows.len();
     c.row(vec![seg(if ready { "❚❚ pausar" } else { "pausar · falta dispositivo" }, if ready { Pink } else { Dim })], vec![]);
     if ready { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyPause)); }
+    if let Some(title) = &sp.title {
+        c.row(vec![seg(title, Text)], vec![seg(&sp.artist, Muted)]);
+        let row = c.rows.len();
+        c.row(vec![seg("◀◀   ", Muted), seg(if sp.playing { "❚❚" } else { "▶" }, PinkBright), seg("   ▶▶", Muted)], vec![]);
+        if ready {
+            c.hits.push((row, 2, 4, Action::SpotifyPrevious));
+            c.hits.push((row, 7, 8, if sp.playing { Action::SpotifyPause } else { Action::SpotifyResume }));
+            c.hits.push((row, 11, 13, Action::SpotifyNext));
+        }
+        let inner = w.saturating_sub(4);
+        let fraction = if sp.duration_ms > 0 { (sp.position_ms as f64 / sp.duration_ms as f64).clamp(0.0, 1.0) } else { 0.0 };
+        let row = c.rows.len(); c.row(seek_bar(fraction, inner), vec![]);
+        if ready && sp.duration_ms > 0 && inner > 0 {
+            let last = inner.saturating_sub(1).max(1);
+            for k in 0..inner { c.hits.push((row, 2 + k, 3 + k, Action::SpotifySeek(k as f64 / last as f64))); }
+        }
+        c.row(vec![seg(format!("{} / {}", clock(sp.position_ms as f64 / 1000.0), clock(sp.duration_ms as f64 / 1000.0)), Muted)], vec![seg(&sp.state, Dim)]);
+    }
     for (index, playlist) in sp.playlists.iter().enumerate() {
         let picked = sp.selected == Some(index);
         let row = c.rows.len();
@@ -981,6 +1003,27 @@ mod tests {
         s.engram = Engram { project: "repo".into(), count: Some(7), online: true, ..Engram::default() };
         s.mcp = Some(vec![Mcp { name: "engram".into(), local: true }]);
         s
+    }
+    #[test]
+    fn spotify_transport_and_seek_columns() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        s.media.spotify.linked = true; s.media.spotify.running = true; s.media.spotify.device_id = Some("dev".into());
+        s.media.spotify.title = Some("Tema único".into()); s.media.spotify.artist = "Artista".into();
+        s.media.spotify.playing = true; s.media.spotify.position_ms = 30_000; s.media.spotify.duration_ms = 120_000;
+        let f = frame(&s, 42, 0);
+        let (x, y) = at(&f, "◀◀"); assert_eq!(click(&f, x, y), Some(Action::SpotifyPrevious));
+        let (x, y) = at(&f, "❚❚   "); assert_eq!(click(&f, x, y), Some(Action::SpotifyPause));
+        let (x, y) = at(&f, "▶▶"); assert_eq!(click(&f, x, y), Some(Action::SpotifyNext));
+        let (_, bar) = at(&f, "━━━"); let inner = 42 - 2 - 4;
+        for k in 0..inner { assert_eq!(click(&f, 3 + k, bar), Some(Action::SpotifySeek(k as f64 / (inner - 1) as f64))); }
+        at(&f, "0:30 / 2:00"); at(&f, "Tema único"); at(&f, "Artista");
+    }
+    #[test]
+    fn spotify_transport_actions_map_to_commands() {
+        let mut s = sample();
+        for (action, cmd) in [(Action::SpotifyNext, SpotifyCmd::Next), (Action::SpotifyPrevious, SpotifyCmd::Previous), (Action::SpotifySeek(0.25), SpotifyCmd::Seek(0.25))] {
+            apply(&mut s, Event::Ui(action)); assert_eq!(s.ui.spotify_cmd, Some(cmd));
+        }
     }
     #[test]
     fn media_tab_sits_before_config_and_keeps_spotify_above_youtube() {

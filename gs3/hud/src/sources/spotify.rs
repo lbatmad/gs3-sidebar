@@ -164,6 +164,9 @@ pub fn code_challenge(verifier: &str) -> String { b64url(&sha256(verifier.as_byt
 /// RFC 7636 allows 43–128 characters; 32 random bytes give exactly 43.
 fn code_verifier() -> Result<String, String> { Ok(b64url(&random_bytes(32)?)) }
 
+/// Convert a seek-bar fraction to a bounded Spotify position in milliseconds.
+fn seek_ms(fraction: f64, duration_ms: u64) -> u64 { (fraction.clamp(0.0, 1.0) * duration_ms as f64) as u64 }
+
 fn encode(value: &str) -> String {
     value
         .bytes()
@@ -325,6 +328,8 @@ fn get_json(url: &str, token: &str) -> Result<Value, String> {
         .output()
         .map_err(|e| format!("curl no encontrado: {e}"))?;
     let body = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() { return Err(format!("curl falló: {}", String::from_utf8_lossy(&out.stderr).trim())) }
+    if body.trim().is_empty() { return Ok(Value::Null) }
     let value: Value = serde_json::from_str(&body).map_err(|_| format!("respuesta inesperada de Spotify: {}", body.chars().take(120).collect::<String>()))?;
     if value["error"]["status"].as_u64() == Some(401) { return Err(UNAUTHORIZED.into()) }
     if !out.status.success() || !value["error"].is_null() { return Err(reason(&value)) }
@@ -332,9 +337,11 @@ fn get_json(url: &str, token: &str) -> Result<Value, String> {
 }
 
 /// Spotify returns an empty body on a successful PUT, so inspect the HTTP status separately.
-fn put_json(url: &str, token: &str, body: Option<&Value>) -> Result<(), String> {
+fn put_json(url: &str, token: &str, body: Option<&Value>) -> Result<(), String> { request_json("PUT", url, token, body) }
+fn post_json(url: &str, token: &str) -> Result<(), String> { request_json("POST", url, token, None) }
+fn request_json(method: &str, url: &str, token: &str, body: Option<&Value>) -> Result<(), String> {
     let mut cmd = Command::new("curl");
-    cmd.args(["--silent", "--show-error", "--max-time", "20", "--request", "PUT", "--url", url, "--header", &format!("Authorization: Bearer {token}"), "--write-out", "\n%{http_code}"]);
+    cmd.args(["--silent", "--show-error", "--max-time", "20", "--request", method, "--url", url, "--header", &format!("Authorization: Bearer {token}"), "--write-out", "\n%{http_code}"]);
     if let Some(body) = body { cmd.args(["--header", "Content-Type: application/json", "--data", &body.to_string()]); }
     let out = cmd.output().map_err(|e| format!("curl no encontrado: {e}"))?;
     if !out.status.success() { return Err(format!("curl falló: {}", String::from_utf8_lossy(&out.stderr).trim())) }
@@ -351,6 +358,15 @@ fn api_put(url: &str, file: &Path, body: Option<&Value>) -> Result<(), String> {
     if !creds.fresh(unix_now()) { creds = renew(file, &creds)? }
     match put_json(url, &creds.access_token, body) {
         Err(e) if e == UNAUTHORIZED => { let fresh = renew(file, &creds)?; put_json(url, &fresh.access_token, body) }
+        other => other,
+    }
+}
+
+fn api_post(url: &str, file: &Path) -> Result<(), String> {
+    let mut creds = load(file).ok_or_else(|| "falta el client_id".to_string())?;
+    if !creds.fresh(unix_now()) { creds = renew(file, &creds)? }
+    match post_json(url, &creds.access_token) {
+        Err(e) if e == UNAUTHORIZED => { let fresh = renew(file, &creds)?; post_json(url, &fresh.access_token) }
         other => other,
     }
 }
@@ -482,6 +498,29 @@ fn select_playlist(state: &mut Spotify, id: &str, file: &Path) {
     }
 }
 
+/// How many idle replies in a row are tolerated before the poll stops for good. Spotify needs a
+/// moment to report a play it just accepted, and a single `is_playing: false` in that gap used to end
+/// the poll for the whole session, freezing the card on `en pausa`.
+const IDLE_LIMIT: u32 = 3;
+
+fn next_idle_streak(playing: bool, previous: u32) -> u32 {
+    if playing { 0 } else { previous.saturating_add(1) }
+}
+
+fn should_poll(activated: bool, idle: u32) -> bool { activated && idle < IDLE_LIMIT }
+
+fn player_reply(state: &mut Spotify, reply: &Value) {
+    state.playing = reply["is_playing"].as_bool().unwrap_or(false);
+    let item = &reply["item"];
+    state.title = item["name"].as_str().map(str::to_owned);
+    state.artist = item["artists"][0]["name"].as_str().unwrap_or_default().to_string();
+    state.position_ms = if item.is_null() { 0 } else { reply["progress_ms"].as_u64().unwrap_or(0) };
+    state.duration_ms = item["duration_ms"].as_u64().unwrap_or(0);
+    // An idle reply carries no item: it is the absence of an event, so the last line the action wrote
+    // stays. Only a reply that names a track may narrate the state.
+    if !item.is_null() { state.state = if state.playing { "reproduciendo" } else { "en pausa" }.into() }
+}
+
 fn handle(state: &mut Spotify, path: &Path, cmd: SpotifyCmd) {
     let stored = load(path);
     match cmd {
@@ -513,6 +552,19 @@ fn handle(state: &mut Spotify, path: &Path, cmd: SpotifyCmd) {
         SpotifyCmd::Pause => {
             let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| api_put(&format!("{API}/me/player/pause?device_id={}", encode(device)), path, None));
             match result { Ok(()) => { state.playing = false; state.state = "en pausa".into(); }, Err(e) => state.state = e }
+        }
+        SpotifyCmd::Resume => {
+            let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| api_put(&format!("{API}/me/player/play?device_id={}", encode(device)), path, None));
+            match result { Ok(()) => { state.playing = true; state.state = "reproduciendo".into(); }, Err(e) => state.state = e }
+        }
+        SpotifyCmd::Next | SpotifyCmd::Previous => {
+            let endpoint = if matches!(cmd, SpotifyCmd::Next) { "next" } else { "previous" };
+            let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| api_post(&format!("{API}/me/player/{endpoint}?device_id={}", encode(device)), path));
+            if let Err(e) = result { state.state = e; }
+        }
+        SpotifyCmd::Seek(fraction) => {
+            let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| api_put(&format!("{API}/me/player/seek?position_ms={}&device_id={}", seek_ms(fraction, state.duration_ms), encode(device)), path, None));
+            if let Err(e) = result { state.state = e; }
         }
         // The engine intercepts Start before this function; a state line is still safer here than a
         // panic that would freeze the rail if a future action ever routed it this way.
@@ -595,6 +647,9 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
         let mut player: Option<Librespot> = None;
         let mut cache: Option<PathBuf> = None;
         let mut discover = false;
+        let mut activated = false;
+        let mut idle: u32 = 0;
+        let mut last_poll = Instant::now();
         loop {
             if let Ok(url) = url_rx.try_recv() { state.oauth_url = Some(url.clone()); state.state = url; publish(&tx, &state); }
             if player.as_mut().is_some_and(|p| p.0.try_wait().ok().flatten().is_some()) {
@@ -610,6 +665,19 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
                 }
                 publish(&tx, &state);
             }
+            if should_poll(activated, idle) && last_poll.elapsed() >= Duration::from_secs(1) {
+                last_poll = Instant::now();
+                match api(&format!("{API}/me/player"), file) {
+                    Ok(reply) => {
+                        player_reply(&mut state, &reply);
+                        idle = next_idle_streak(state.playing, idle);
+                        if idle >= IDLE_LIMIT { activated = false }
+                    }
+                    // A failed poll keeps the last known track and line; it only counts towards stopping.
+                    Err(_) => { idle = next_idle_streak(false, idle); if idle >= IDLE_LIMIT { activated = false } }
+                }
+                publish(&tx, &state);
+            }
             match cmd_rx.recv_timeout(POLL) {
                 Ok(SpotifyCmd::Start) => {
                     if player.is_none() {
@@ -622,7 +690,10 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
                 }
                 Ok(cmd) => {
                     if matches!(cmd, SpotifyCmd::Authorize) { state.state = "esperando el navegador".into(); publish(&tx, &state); }
-                    handle(&mut state, file, cmd); publish(&tx, &state);
+                    let starts_playback = matches!(cmd, SpotifyCmd::Play(_) | SpotifyCmd::Resume);
+                    handle(&mut state, file, cmd);
+                    if starts_playback && state.playing { activated = true; idle = 0; last_poll = Instant::now(); }
+                    publish(&tx, &state);
                 }
                 Err(RecvTimeoutError::Timeout) => (),
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -637,6 +708,36 @@ mod tests {
     use super::*;
 
     fn hex(bytes: &[u8]) -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() }
+
+    #[test]
+    fn player_reply_parses_and_clears_progress() {
+        let mut state = Spotify::default();
+        player_reply(&mut state, &json!({"is_playing":true,"progress_ms":1234,"device":{"name":"gs3"},"item":{"name":"Tema","artists":[{"name":"Artista"}],"duration_ms":60000}}));
+        assert_eq!((state.playing, state.title.as_deref(), state.artist.as_str(), state.position_ms, state.duration_ms), (true, Some("Tema"), "Artista", 1234, 60000));
+        player_reply(&mut state, &json!({"is_playing":false,"progress_ms":2000,"item":{"name":"Otro","artists":[]}}));
+        assert_eq!((state.playing, state.title.as_deref(), state.artist.as_str(), state.position_ms, state.duration_ms), (false, Some("Otro"), "", 2000, 0));
+        state.state = "dispositivo gs3 listo".into();
+        player_reply(&mut state, &json!({"is_playing":false,"item":null}));
+        assert_eq!((state.playing, state.title.as_deref(), state.artist.as_str(), state.position_ms, state.duration_ms), (false, None, "", 0, 0));
+        assert_eq!(state.state, "dispositivo gs3 listo", "an idle reply is not an event: it must not overwrite the last line");
+    }
+    #[test]
+    fn polling_rides_out_the_gap_between_a_play_and_the_first_reply() {
+        // Spotify needs a moment to report new playback, so a single `is_playing: false` right after a
+        // play must not stop the poll for good. Three idle replies in a row do.
+        assert!(should_poll(true, 0)); assert!(should_poll(true, 2));
+        assert!(!should_poll(true, 3)); assert!(!should_poll(false, 0));
+        assert_eq!(next_idle_streak(true, 7), 0);
+        assert_eq!(next_idle_streak(false, 2), 3);
+        assert_eq!(next_idle_streak(false, u32::MAX), u32::MAX, "saturating");
+    }
+    #[test]
+    fn seek_fraction_maps_to_milliseconds_and_clamps() {
+        assert_eq!(seek_ms(0.5, 200_000), 100_000);
+        assert_eq!(seek_ms(-1.0, 200_000), 0);
+        assert_eq!(seek_ms(2.0, 200_000), 200_000);
+        assert_eq!(seek_ms(0.5, 0), 0);
+    }
 
     #[test]
     fn extracts_librespot_login_url() {
