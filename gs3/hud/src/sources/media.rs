@@ -15,11 +15,15 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(500);
+/// The visibility tick: the window must follow focus quickly, and reading an atomic costs nothing.
+const TICK: Duration = Duration::from_millis(80);
 const QUEUE_MAX: usize = 24;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -80,6 +84,27 @@ fn visible_now(frontmost: Option<i64>, ours: Option<i64>, player: Option<u32>) -
     }
 }
 
+/// A single long-lived helper reporting the active application as it changes, so the rail reacts in
+/// about a tenth of a second instead of spawning one `osascript` per check. Returns the child (kept
+/// alive as long as a player exists) and the shared value.
+fn spawn_focus_watch() -> Option<(Child, Arc<AtomicI64>)> {
+    let script = r#"ObjC.import("AppKit");
+var last = -1;
+while (true) {
+  var pid = Number($.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier);
+  if (pid !== last) { last = pid; console.log(String(pid)); }
+  $.NSThread.sleepForTimeInterval(0.1);
+}"#;
+    let mut child = Command::new("osascript").args(["-l", "JavaScript", "-e", script]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let shared = Arc::new(AtomicI64::new(-1));
+    let sink = Arc::clone(&shared);
+    let stdout = child.stdout.take()?;
+    thread::spawn(move || for line in BufReader::new(stdout).lines() {
+        match line { Ok(line) => if let Some(pid) = parse_pid(&line) { sink.store(pid, Ordering::Relaxed) }, Err(_) => break }
+    });
+    Some((child, shared))
+}
+
 /// The active application, asked to the window server's own notion of activation. A window-list
 /// heuristic cannot answer this: an always-on-top player is a window of *our* session but not the
 /// active app, and `--ontop` raises it to a layer of its own (measured: layer 3, not 0).
@@ -87,7 +112,12 @@ fn frontmost_pid() -> Option<i64> {
     let script = r#"ObjC.import("AppKit");
 String($.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier);"#;
     let out = Command::new("osascript").args(["-l", "JavaScript", "-e", script]).output().ok()?;
-    String::from_utf8_lossy(&out.stdout).trim().parse::<i64>().ok()
+    parse_pid(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// A pid from the helper's line, or nothing when the line is not one.
+fn parse_pid(line: &str) -> Option<i64> {
+    line.trim().parse::<i64>().ok().filter(|p| *p > 0)
 }
 
 /// The app that owns this rail's window: the terminal at the top of the process chain.
@@ -373,12 +403,13 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
         let mut sent = youtube.clone();
         let mut ours: Option<i64> = None;
         let mut shown: Option<bool> = None;
-        let mut last_focus = Instant::now();
+        let mut watch: Option<(Child, Arc<AtomicI64>)> = None;
+        let mut last_poll = Instant::now();
         let _ = tx.send(Event::Media(youtube.clone()));
         loop {
-            match cmd_rx.recv_timeout(POLL) {
+            match cmd_rx.recv_timeout(TICK) {
                 Ok(cmd) => handle(&mut player, &mut youtube, cmd, &socket),
-                Err(RecvTimeoutError::Timeout) => poll(&mut player, &mut youtube),
+                Err(RecvTimeoutError::Timeout) => if last_poll.elapsed() >= POLL { last_poll = Instant::now(); poll(&mut player, &mut youtube) },
                 // The rail is gone: dropping the player stops mpv with it.
                 Err(RecvTimeoutError::Disconnected) => break,
             }
@@ -386,13 +417,12 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
             // front. Polled about once a second and only while a player is alive: the check costs one
             // osascript call, which is cheap compared with an always-visible window over other apps.
             if let Some(p) = player.as_mut() {
-                if last_focus.elapsed() >= Duration::from_millis(1200) {
-                    last_focus = Instant::now();
-                    if ours.is_none() { ours = terminal_pid() }
-                    let now = visible_now(frontmost_pid(), ours, Some(p.child.id()));
-                    if shown != Some(now) { shown = Some(now); p.set_bool("window-minimized", window_value(now)); }
-                }
-            } else { shown = None }
+                if watch.is_none() { watch = spawn_focus_watch() }
+                if ours.is_none() { ours = terminal_pid() }
+                let front = match &watch { Some((_, shared)) => match shared.load(Ordering::Relaxed) { -1 => frontmost_pid(), pid => Some(pid) }, None => frontmost_pid() };
+                let now = visible_now(front, ours, Some(p.child.id()));
+                if shown != Some(now) { shown = Some(now); p.set_bool("window-minimized", window_value(now)); }
+            } else { shown = None; if let Some((mut c, _)) = watch.take() { let _ = c.kill(); let _ = c.wait(); } }
             if youtube != sent { sent = youtube.clone(); if tx.send(Event::Media(youtube.clone())).is_err() { break } }
         }
     });
@@ -442,6 +472,15 @@ mod tests {
         assert!(placement(Some((0,0,100,100)), None, Some(r)).is_err());
         assert!(placement(Some((0,0,100,100)), Some((r,r)), None).is_err());
         assert!(placement(Some((0,0,100,100)), Some((r,r)), Some(r)).is_ok());
+    }
+
+    #[test]
+    fn the_focus_helper_line_is_a_pid_or_nothing() {
+        assert_eq!(parse_pid("1034"), Some(1034));
+        assert_eq!(parse_pid("1034\n"), Some(1034));
+        assert_eq!(parse_pid("-1"), None, "the helper's starting value is not an app");
+        assert_eq!(parse_pid(""), None);
+        assert_eq!(parse_pid("No application"), None);
     }
 
     #[test]

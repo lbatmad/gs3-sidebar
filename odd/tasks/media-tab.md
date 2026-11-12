@@ -196,6 +196,8 @@ L38. The human: "no pierde el foco el reproductor, ni cambiando de ventana ni de
 
 Live, with the video playing: start `minimized = false`; Discord activated `minimized = true`; back to Ghostty `minimized = false`. `--macos-app-activation-policy=accessory` was added so the player does not steal activation, and the rule treats the player itself as "ours" rather than as another app. 118 tests passed, 2 ignored.
 
+L39. Human: "hace el ocultamiento y aparicion mas rapidos". The old path spawned one `osascript` per 1.2 s check, so hiding could lag a second and a half and cost a process each time. Now a single long-lived helper (`NSWorkspace` in JXA, printing the active pid whenever it changes, sleeping 100 ms between looks) writes into an atomic that the engine reads on every tick; the tick dropped from 500 ms to 80 ms and mpv's own polling stayed at 500 ms behind a timestamp. Measured from the outside, activating Discord and polling mpv's `window-minimized` every 30 ms: hidden in **174 ms**, shown again in **140 ms**, against roughly 1200–1500 ms before. The helper is killed with the player, and if it dies the engine falls back to the one-shot query. 119 tests passed, 2 ignored.
+
 ## Delivery
 
 Slice boundary: commit `0457e04` closes the previously prepared rail work, and the next commit is the
