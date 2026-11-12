@@ -75,6 +75,7 @@ fn main()->Result<()> {
     sources::herdr(a.socket,a.pane,data_tx);
     let mut draw=true; let mut last:Option<ui::Frame>=None;
     let mut transmitted: Option<String> = None;
+    let mut sent_card: Option<bool> = None;
     loop {
         if let Some(cmd)=state.ui.voice_cmd.take() {let _=voice.send(cmd);}
         if let Some(mut cmd)=state.ui.media_cmd.take() {
@@ -100,6 +101,10 @@ fn main()->Result<()> {
             let lines:Vec<Line>=frame.lines.iter().map(|l|Line::from(l.iter().map(|g|{let (r,gr,b)=g.tone.rgb(); let st=Style::default().fg(Color::Rgb(r,gr,b)); Span::styled(g.text.clone(),if g.bold {st.add_modifier(Modifier::BOLD)} else {st})}).collect::<Vec<_>>())).collect();
             f.render_widget(Paragraph::new(lines),area); last=Some(frame);
         })?;
+        // The video window may only exist while the rail is actually showing its block: another tab of
+        // the rail, a collapsed card or one scrolled out of view all mean "not on screen".
+        let card = last.as_ref().map_or(true, |f| f.youtube_rect.is_some());
+        if sent_card != Some(card) { sent_card = Some(card); state.ui.media_cmd = Some(media::MediaCmd::CardVisible(card)); }
         if let (Some((x,y)), Some(url), Some(bytes)) = (last.as_ref().and_then(|f|f.cover_pos), current, state.media.spotify.cover_png.as_deref()) {
             let mut out = io::stdout().lock();
             if transmitted.is_none() {

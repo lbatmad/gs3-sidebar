@@ -75,9 +75,10 @@ fn placement(window: Option<(i64,i64,i64,i64)>, layout: Option<(CellRect,CellRec
 
 /// The window belongs to the app that is in front, and only to it: this rail's video is always on top,
 /// so it must hide as soon as anything else comes forward. Pure, so the rule is pinned without a GUI.
-fn visible_now(frontmost: Option<i64>, ours: Option<i64>, player: Option<u32>, on_our_tab: bool) -> bool {
-    // Another herdr tab means the rail is not on screen, so the video must not be either.
-    if !on_our_tab { return false }
+fn visible_now(frontmost: Option<i64>, ours: Option<i64>, player: Option<u32>, on_our_tab: bool, card: bool) -> bool {
+    // Another herdr tab, or another tab of the rail itself, means the card is not on screen, so the
+    // video must not be either.
+    if !on_our_tab || !card { return false }
     match (frontmost, ours) {
         // The player belongs to this rail: when it takes focus (mpv raises its own window) the video
         // is the thing being watched, so it stays. Anything else in front hides it.
@@ -89,7 +90,7 @@ fn visible_now(frontmost: Option<i64>, ours: Option<i64>, player: Option<u32>, o
 /// One request over herdr's socket: the rail's own tab and the tab in front, so the video can follow
 /// tab switches and not only app focus.
 fn herdr_query(path: &std::path::Path, method: &str, params: Value) -> Option<Value> {
-    let mut stream = UnixStream::connect(path).ok()?;
+    let stream = UnixStream::connect(path).ok()?;
     stream.set_read_timeout(Some(REQUEST_TIMEOUT)).ok()?;
     let mut out = stream.try_clone().ok()?;
     out.write_all(json!({"id": "visibility", "method": method, "params": params}).to_string().as_bytes()).ok()?;
@@ -370,14 +371,10 @@ fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &
         }
         return;
     }
-    if let MediaCmd::Window(visible) = cmd {
-        // A player that is not there yet has nothing to hide, and must not report an error for it.
-        if let Some(player) = player.as_mut() { player.set_bool("window-minimized", window_value(visible)); }
-        return;
-    }
+    if let MediaCmd::CardVisible(_) = cmd { return }
     let Some(player) = player.as_mut() else { y.state = "mpv no encontrado".into(); return };
     match cmd {
-        MediaCmd::Window(_) => unreachable!("handled above"),
+        MediaCmd::CardVisible(_) => unreachable!("handled above"),
         MediaCmd::Toggle => { player.call(&["cycle", "pause"]); }
         MediaCmd::Next => advance(player, y, 1),
         MediaCmd::Prev => advance(player, y, -1),
@@ -431,13 +428,14 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
         let mut shown: Option<bool> = None;
         let mut watch: Option<(Child, Arc<AtomicI64>)> = None;
         let mut last_poll = Instant::now();
+        let mut card = true;
         let mut tab: Option<String> = None;
         let mut front_tab: Option<String> = None;
         let mut last_tab = Instant::now();
         let _ = tx.send(Event::Media(youtube.clone()));
         loop {
             match cmd_rx.recv_timeout(TICK) {
-                Ok(cmd) => handle(&mut player, &mut youtube, cmd, &socket),
+                Ok(cmd) => { if let MediaCmd::CardVisible(v) = cmd { card = v; } else { handle(&mut player, &mut youtube, cmd, &socket) } },
                 Err(RecvTimeoutError::Timeout) => if last_poll.elapsed() >= POLL { last_poll = Instant::now(); poll(&mut player, &mut youtube) },
                 // The rail is gone: dropping the player stops mpv with it.
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -455,7 +453,7 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
                     front_tab = focused_tab(&socket);
                 }
                 let same_tab = match (&tab, &front_tab) { (Some(a), Some(b)) => a == b, _ => true };
-                let now = visible_now(front, ours, Some(p.child.id()), same_tab);
+                let now = visible_now(front, ours, Some(p.child.id()), same_tab, card);
                 if shown != Some(now) { shown = Some(now); p.set_bool("window-minimized", window_value(now)); }
             } else { shown = None; if let Some((mut c, _)) = watch.take() { let _ = c.kill(); let _ = c.wait(); } }
             if youtube != sent { sent = youtube.clone(); if tx.send(Event::Media(youtube.clone())).is_err() { break } }
@@ -520,13 +518,15 @@ mod tests {
 
     #[test]
     fn the_window_shows_only_while_our_terminal_is_in_front() {
-        assert!(visible_now(Some(7), Some(7), None, true));
-        assert!(!visible_now(Some(9), Some(7), None, true), "another app in front hides the video");
-        assert!(visible_now(None, Some(7), None, true), "an unreadable frontmost app must not hide the video");
-        assert!(visible_now(Some(7), None, None, true), "nor must an unknown terminal");
-        assert!(visible_now(Some(9), Some(7), Some(9), true), "our own player taking focus is not another app");
-        assert!(!visible_now(Some(9), Some(7), Some(8), true));
-        assert!(!visible_now(Some(7), Some(7), None, false), "another herdr tab hides the video");
+        assert!(visible_now(Some(7), Some(7), None, true, true));
+        assert!(!visible_now(Some(9), Some(7), None, true, true), "another app in front hides the video");
+        assert!(visible_now(None, Some(7), None, true, true), "an unreadable frontmost app must not hide the video");
+        assert!(visible_now(Some(7), None, None, true, true), "nor must an unknown terminal");
+        assert!(visible_now(Some(9), Some(7), Some(9), true, true), "our own player taking focus is not another app");
+        assert!(!visible_now(Some(9), Some(7), Some(8), true, true));
+        assert!(!visible_now(Some(7), Some(7), None, false, true), "another herdr tab hides the video");
+        assert!(!visible_now(Some(7), Some(7), None, true, false), "another tab of the rail hides the video");
+        assert!(visible_now(Some(7), Some(7), None, true, true));
     }
 
     #[test]

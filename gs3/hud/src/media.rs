@@ -106,9 +106,9 @@ pub enum MediaCmd {
     Prev,
     /// Absolute position as a fraction of the current duration (0.0–1.0), from a click on the bar.
     Seek(f64),
-    /// Show or hide the video window. The rail hides it when its terminal loses focus, so an
-    /// always-on-top player cannot sit over other applications.
-    Window(bool),
+    /// Whether the rail is showing the video block at all: another tab, a collapsed or scrolled-out
+    /// card means the window must not be on screen either.
+    CardVisible(bool),
     /// Search this text, then queue the best match with its recommendations and start it.
     Play(String, Option<CellRect>),
 }

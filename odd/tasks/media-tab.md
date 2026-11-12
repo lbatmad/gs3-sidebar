@@ -200,6 +200,10 @@ L39. Human: "hace el ocultamiento y aparicion mas rapidos". The old path spawned
 
 L40. Human: "al hacer click en el chat desaparece el video, pero no desaparece cuando se cambia entre las distintas solapas". Both halves came from the terminal focus events added in L38: herdr reports focus *per pane*, so clicking the Pi pane told the HUD pane it had lost focus and the video vanished, while switching herdr tabs changed nothing the HUD could see. Those arms are gone; visibility is now `app in front` AND `the rail's own tab is the focused one`, the second read from herdr's `session.snapshot` every 150 ms with the rail's tab cached from `pane.get`. Live: on our tab `minimized = false`; after `tab focus w2:t19`, `true`; back on `w2:t1R`, `false` again. 119 tests passed, 2 ignored.
 
+L41. Human, with a screenshot of the rail on PROF: "me referia a las solapas de la barra derecha, si cambias de solapa, el video sigue arriba de todo". So the missing condition was the rail's own tab, not herdr's. The frame already knows it: `youtube_rect` is `Some` only when the MEDIA tab is selected, the card is expanded and the block fits the viewport, which is exactly "the video block is on screen". `main.rs` now compares that per frame and sends `MediaCmd::CardVisible(bool)` only when it changes; the engine folds it into the rule next to app focus and herdr tab, and `MediaCmd::Window` (the old focus-event command) was removed with its handler. 119 tests passed, 2 ignored.
+
+Live: on MEDIA `minimized = false`, on PROF `true`, back on MEDIA `false`. One caveat seen while measuring: the first reading after a video starts can be `true` because the card is still the search box, and with a long Spotify card above it the block can also scroll out of the viewport, which hides the video — that is T10's territory and is now honest behaviour rather than a bug: no block on screen, no window on screen.
+
 ## Delivery
 
 Slice boundary: commit `0457e04` closes the previously prepared rail work, and the next commit is the
