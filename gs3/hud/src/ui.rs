@@ -296,7 +296,27 @@ pub struct ListWindow { pub top: usize, pub height: usize, pub scroll: usize, pu
 pub struct Frame { pub lines: Vec<Vec<Seg>>, pub hits: Vec<Hit>, pub tab_row: usize, pub scroll: usize, pub max_scroll: usize, pub cover_pos: Option<(usize, usize)>, pub youtube_rect: Option<crate::media::CellRect>, pub lists: Vec<ListWindow> }
 /// The narrowest region under the cursor wins (a title toggle beats its whole row).
 pub fn click(f: &Frame, col: usize, row: usize) -> Option<Action> {
-    f.hits.iter().filter(|h| h.row == row && (h.x0..h.x1).contains(&col)).min_by_key(|h| h.x1 - h.x0).map(|h| h.action.clone())
+    let best = f.hits.iter().filter(|h| h.row == row && (h.x0..h.x1).contains(&col)).min_by_key(|h| h.x1 - h.x0);
+    // `GS3_HUD_DEBUG=1` records what answered a click and what else was on that row: a card whose
+    // whole-row fallback is wider than the control under the cursor made "the wrong action won" a
+    // guess until the candidates were written down.
+    if std::env::var_os("GS3_HUD_DEBUG").is_some() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("gs3-hud-{}-debug.log", std::process::id()));
+        if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let row_hits: Vec<String> = f_row_hits(f, row);
+            let _ = writeln!(log, "click col={col} row={row} winner={:?} row_hits=[{}]", best.map(|h| &h.action), row_hits.join(" | "));
+        }
+    }
+    best.map(|h| h.action.clone())
+}
+
+/// `(x0, x1, action)` for every hit on one screen row, widest first, for the click trace.
+fn f_row_hits(f: &Frame, row: usize) -> Vec<String> {
+    let mut v: Vec<(usize, String)> = f.hits.iter().filter(|h| h.row == row)
+        .map(|h| (h.x1 - h.x0, format!("{}..{} {:?}", h.x0, h.x1, h.action))).collect();
+    v.sort_by(|a, b| b.0.cmp(&a.0));
+    v.into_iter().map(|(_, s)| s).collect()
 }
 /// Wheel over the tab bar cycles tabs; a card that owns a longer list takes it over its own rows;
 /// anywhere else scrolls the body (clamped, 3 lines a step).
@@ -1110,7 +1130,10 @@ fn youtube_card(s: &State, w: usize) -> Card {
             c.row(vec![seg(format!("{} / {}", clock(y.position), clock(y.duration)), Muted)], vec![]);
             for line in wrap(&y.state, inner) { c.row(vec![seg(line, Dim)], vec![]); }
         } else {
-            c.row(vec![seg(format!("{} / {}", clock(y.position), clock(y.duration)), Muted)], vec![seg(&y.state, Dim)]);
+            // A paused player used to keep saying `reproduciendo`: the word came from the last command,
+            // not from what mpv reports, and it read as if pause had failed.
+            let state = if !y.playing && y.state == "reproduciendo" { "en pausa" } else { y.state.as_str() };
+            c.row(vec![seg(format!("{} / {}", clock(y.position), clock(y.duration)), Muted)], vec![seg(state, Dim)]);
         }
     } else {
         c.row(vec![seg("estado · ", Muted), seg(&y.state, Text)], vec![]);
