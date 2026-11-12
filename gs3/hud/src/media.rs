@@ -33,6 +33,12 @@ pub struct Spotify {
     pub artist: String,
     pub position_ms: u64,
     pub duration_ms: u64,
+    /// `device.volume_percent` from `/me/player`; `None` until a reply names a device.
+    pub volume: Option<u64>,
+    pub shuffle: bool,
+    pub repeat: Repeat,
+    /// The `item.id` that `/me/player` reports as playing now, so `⌁ Pistas` can mark its row.
+    pub playing_id: Option<String>,
     pub oauth_url: Option<String>,
     pub album_cover: Option<String>,
     pub cover_url: Option<String>,
@@ -43,10 +49,21 @@ pub struct Spotify {
 pub struct Playlist { pub id: String, pub name: String, pub cover: Option<String> }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Track { pub title: String, pub artist: String, pub position: usize }
-
+pub struct Track { pub id: String, pub title: String, pub artist: String, pub position: usize }
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchTrack { pub id: String, pub title: String, pub artist: String, pub cover: Option<String> }
+
+/// `/me/player` reports repeat as one of these three words; the card cycles them in the same order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Repeat { #[default] Off, Context, Track }
+impl Repeat {
+    pub fn parse(word: &str) -> Repeat { match word { "context" => Repeat::Context, "track" => Repeat::Track, _ => Repeat::Off } }
+    /// What `PUT /me/player/repeat?state=` receives.
+    pub fn state(self) -> &'static str { match self { Repeat::Off => "off", Repeat::Context => "context", Repeat::Track => "track" } }
+    pub fn cycle(self) -> Repeat { match self { Repeat::Off => Repeat::Context, Repeat::Context => Repeat::Track, Repeat::Track => Repeat::Off } }
+    /// The word the card shows; `off` would read as a failure, not as a choice.
+    pub fn label(self) -> &'static str { match self { Repeat::Off => "no", Repeat::Context => "lista", Repeat::Track => "tema" } }
+}
 
 /// What the rail asks the Spotify engine to do. Sent over a channel, never run on the render path.
 #[derive(Clone, Debug, PartialEq)]
@@ -68,6 +85,10 @@ pub enum SpotifyCmd {
     Next,
     Previous,
     Seek(f64),
+    /// Volume as a percentage, already clamped to 0–100 by the bar that produced the click.
+    Volume(u64),
+    Shuffle(bool),
+    Repeat(Repeat),
 }
 
 /// Lower section: YouTube search, transport and seek. The video is drawn by `mpv`, never here.
@@ -115,7 +136,7 @@ pub enum MediaCmd {
 
 impl Default for Spotify {
     fn default() -> Self {
-        Spotify { state: "falta el client_id".into(), linked: false, playlists: Vec::new(), selected: None, tracks: Vec::new(), results: Vec::new(), search_done: false, device_id: None, running: false, playing: false, title: None, artist: String::new(), position_ms: 0, duration_ms: 0, oauth_url: None, album_cover: None, cover_url: None, cover_png: None }
+        Spotify { state: "falta el client_id".into(), linked: false, playlists: Vec::new(), selected: None, tracks: Vec::new(), results: Vec::new(), search_done: false, device_id: None, running: false, playing: false, title: None, artist: String::new(), position_ms: 0, duration_ms: 0, volume: None, shuffle: false, repeat: Repeat::Off, playing_id: None, oauth_url: None, album_cover: None, cover_url: None, cover_png: None }
     }
 }
 

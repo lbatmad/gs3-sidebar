@@ -10,7 +10,7 @@
 //! `http://127.0.0.1:8899/callback` and must be registered exactly like that in the app.
 
 use crate::core::Event;
-use crate::media::{Playlist, SearchTrack, Spotify, SpotifyCmd, Track, REDIRECT};
+use crate::media::{Playlist, Repeat, SearchTrack, Spotify, SpotifyCmd, Track, REDIRECT};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -422,6 +422,13 @@ fn play_body(playlist: &str, row: usize, device: &str) -> Value {
 
 fn track_play_body(id: &str, device: &str) -> Value { json!({"uris": [format!("spotify:track:{id}")], "device_id": device}) }
 
+/// `PUT /me/player/volume`: the bar's cell, clamped, so no click can ask for 140%.
+fn volume_url(percent: u64, device: &str) -> String { format!("{API}/me/player/volume?volume_percent={}&device_id={}", percent.min(100), encode(device)) }
+/// `PUT /me/player/shuffle`.
+fn shuffle_url(state: bool, device: &str) -> String { format!("{API}/me/player/shuffle?state={}&device_id={}", state, encode(device)) }
+/// `PUT /me/player/repeat`.
+fn repeat_url(repeat: Repeat, device: &str) -> String { format!("{API}/me/player/repeat?state={}&device_id={}", repeat.state(), encode(device)) }
+
 fn search_url(query: &str) -> String { format!("{API}/search?type=track&limit={TRACKS}&q={}", encode(query)) }
 
 fn search_tracks(v: &Value) -> Vec<SearchTrack> {
@@ -471,7 +478,8 @@ fn tracks(v: &Value) -> Vec<Track> {
             let track = &row["item"];
             let title = track["name"].as_str().unwrap_or_default().trim();
             let artist = track["artists"][0]["name"].as_str().unwrap_or_default().trim();
-            (!title.is_empty()).then(|| Track { title: title.to_string(), artist: artist.to_string(), position })
+            let id = track["id"].as_str().unwrap_or_default().trim().to_string();
+            (!title.is_empty()).then(|| Track { id, title: title.to_string(), artist: artist.to_string(), position })
         })
         .take(TRACKS)
         .collect()
@@ -542,6 +550,12 @@ fn player_reply(state: &mut Spotify, reply: &Value) {
     state.artist = item["artists"][0]["name"].as_str().unwrap_or_default().to_string();
     state.position_ms = if item.is_null() { 0 } else { reply["progress_ms"].as_u64().unwrap_or(0) };
     state.duration_ms = item["duration_ms"].as_u64().unwrap_or(0);
+    state.playing_id = item["id"].as_str().map(str::to_owned);
+    // An idle reply carries no device: the last volume, shuffle and repeat stay, because they are the
+    // account's settings and nothing in the reply contradicts them.
+    if let Some(volume) = reply["device"]["volume_percent"].as_u64() { state.volume = Some(volume.min(100)) }
+    if let Some(shuffle) = reply["shuffle_state"].as_bool() { state.shuffle = shuffle }
+    if let Some(repeat) = reply["repeat_state"].as_str() { state.repeat = Repeat::parse(repeat) }
     // An idle reply carries no item: it is the absence of an event, so the last line the action wrote
     // stays. Only a reply that names a track may narrate the state.
     if !item.is_null() { state.state = if state.playing { "reproduciendo" } else { "en pausa" }.into() }
@@ -606,6 +620,18 @@ fn handle(state: &mut Spotify, path: &Path, cmd: SpotifyCmd) {
         SpotifyCmd::Seek(fraction) => {
             let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| api_put(&format!("{API}/me/player/seek?position_ms={}&device_id={}", seek_ms(fraction, state.duration_ms), encode(device)), path, None));
             if let Err(e) = result { state.state = e; }
+        }
+        SpotifyCmd::Volume(percent) => {
+            let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| api_put(&volume_url(percent, device), path, None));
+            match result { Ok(()) => state.volume = Some(percent.min(100)), Err(e) => state.state = e }
+        }
+        SpotifyCmd::Shuffle(on) => {
+            let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| api_put(&shuffle_url(on, device), path, None));
+            match result { Ok(()) => state.shuffle = on, Err(e) => state.state = e }
+        }
+        SpotifyCmd::Repeat(repeat) => {
+            let result = state.device_id.as_deref().ok_or_else(|| "falta dispositivo".to_string()).and_then(|device| api_put(&repeat_url(repeat, device), path, None));
+            match result { Ok(()) => state.repeat = repeat, Err(e) => state.state = e }
         }
         // The engine intercepts Start before this function; a state line is still safer here than a
         // panic that would freeze the rail if a future action ever routed it this way.
@@ -737,6 +763,9 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
         let mut player: Option<Librespot> = None;
         let mut cache: Option<PathBuf> = None;
         let mut discover = false;
+        // A device that just became known owes the card one read of the account's settings, so the
+        // volume, shuffle and repeat rows start from the truth instead of from their defaults.
+        let mut sync = false;
         let mut activated = false;
         let mut idle: u32 = 0;
         let mut last_poll = Instant::now();
@@ -750,10 +779,16 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
                 discover = false;
                 if let Some(dir) = cache.as_deref() { let _ = tighten_credentials(dir); } state.state = "buscando dispositivo gs3".into(); publish(&tx, &state);
                 match discover_with(|| api(&format!("{API}/me/player/devices"), file), || thread::sleep(POLL)) {
-                    Ok(id) => { state.device_id = Some(id); state.oauth_url = None; state.state = "dispositivo gs3 listo".into(); }
+                    Ok(id) => { state.device_id = Some(id); sync = true; state.oauth_url = None; state.state = "dispositivo gs3 listo".into(); }
                     Err(e) => state.state = e,
                 }
                 publish(&tx, &state);
+            }
+            if sync && state.device_id.is_some() {
+                sync = false;
+                // One read, not a poll: playback elsewhere is still the human's business (T11 keeps the
+                // 1 s poll tied to an explicit action), but the controls must not claim a state nobody read.
+                if let Ok(reply) = api(&format!("{API}/me/player"), file) { player_reply(&mut state, &reply); publish(&tx, &state); }
             }
             if should_poll(activated, idle) && last_poll.elapsed() >= Duration::from_secs(1) {
                 last_poll = Instant::now();
@@ -774,7 +809,7 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
                     if player.is_none() {
                         match start_decision(api(&format!("{API}/me/player/devices"), file)) {
                             // A device we do not own the handle of: adopt it rather than duplicate it.
-                            DeviceStart::Adopt(id) => { state.device_id = Some(id); state.running = true; state.state = "dispositivo gs3 adoptado".into(); }
+                            DeviceStart::Adopt(id) => { state.device_id = Some(id); sync = true; state.running = true; state.state = "dispositivo gs3 adoptado".into(); }
                             DeviceStart::Spawn => match start_device(file, url_tx.clone()) {
                                 Ok((child, dir)) => { player = Some(child); cache = Some(dir); state.running = true; state.state = "iniciando dispositivo gs3".into(); discover = true; }
                                 Err(e) => state.state = e,
@@ -1043,6 +1078,45 @@ mod tests {
         // and a 403 is the whole playlist card losing its rows to a one-word URL.
         assert_eq!(items_url("abc123"), format!("{API}/playlists/abc123/items?limit={TRACKS}"));
         assert!(!items_url("abc123").contains("/tracks"));
+    }
+
+    #[test]
+    fn a_playlist_row_keeps_the_track_id_the_rail_marks() {
+        let got = tracks(&json!({"items": [{"item": {"id": "tid1", "name": "Uno", "artists": [{"name": "A"}]}}]}));
+        assert_eq!(got[0].id, "tid1", "the card can only mark the playing row if the row knows its track");
+    }
+
+    #[test]
+    fn the_volume_request_carries_a_clamped_percentage_and_the_device() {
+        assert_eq!(volume_url(40, "dev"), format!("{API}/me/player/volume?volume_percent=40&device_id=dev"));
+        assert_eq!(volume_url(140, "dev"), volume_url(100, "dev"), "a click cannot ask for more than the maximum");
+    }
+
+    #[test]
+    fn shuffle_and_repeat_requests_carry_the_state_they_set() {
+        assert_eq!(shuffle_url(true, "dev"), format!("{API}/me/player/shuffle?state=true&device_id=dev"));
+        assert_eq!(shuffle_url(false, "dev"), format!("{API}/me/player/shuffle?state=false&device_id=dev"));
+        assert_eq!(repeat_url(Repeat::Context, "dev"), format!("{API}/me/player/repeat?state=context&device_id=dev"));
+        assert_eq!(repeat_url(Repeat::Off, "dev"), format!("{API}/me/player/repeat?state=off&device_id=dev"));
+    }
+
+    #[test]
+    fn a_repeat_click_cycles_through_the_three_states_the_api_documents() {
+        assert_eq!(Repeat::Off.cycle(), Repeat::Context);
+        assert_eq!(Repeat::Context.cycle(), Repeat::Track);
+        assert_eq!(Repeat::Track.cycle(), Repeat::Off);
+        assert_eq!(Repeat::parse("track"), Repeat::Track);
+        assert_eq!(Repeat::parse("nonsense"), Repeat::Off, "the poll never panics on a word the API adds");
+    }
+
+    #[test]
+    fn the_player_reply_carries_the_controls_and_the_playing_track() {
+        let mut state = Spotify::default();
+        player_reply(&mut state, &json!({"is_playing": true, "shuffle_state": true, "repeat_state": "track", "device": {"volume_percent": 37}, "item": {"id": "tid", "name": "Tema", "artists": [{"name": "Artista"}], "duration_ms": 60000}}));
+        assert_eq!((state.volume, state.shuffle, state.repeat, state.playing_id.as_deref()), (Some(37), true, Repeat::Track, Some("tid")));
+        // An idle reply names no track and no device volume: the last known controls must survive it.
+        player_reply(&mut state, &json!({"is_playing": false, "item": null}));
+        assert_eq!((state.volume, state.shuffle, state.repeat, state.playing_id.as_deref()), (Some(37), true, Repeat::Track, None));
     }
 
     fn mode(path: &Path) -> u32 {

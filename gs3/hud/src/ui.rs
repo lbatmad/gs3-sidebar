@@ -62,7 +62,7 @@ pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, Scrol
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
     Search, PlayPause, PrevTrack, NextTrack, Seek(f64),
     /// MEDIA · Spotify: consent in the browser, renew the stored token, list playlists, open one.
-    SpotifyAuthorize, SpotifyRefresh, SpotifyPlaylists, SelectPlaylist(String), SpotifySearch, SpotifyPlayResult(usize), SpotifyStart, SpotifyPlay(usize), SpotifyPause, SpotifyResume, SpotifyNext, SpotifyPrevious, SpotifySeek(f64) }
+    SpotifyAuthorize, SpotifyRefresh, SpotifyPlaylists, SelectPlaylist(String), SpotifySearch, SpotifyPlayResult(usize), SpotifyStart, SpotifyPlay(usize), SpotifyPause, SpotifyResume, SpotifyNext, SpotifyPrevious, SpotifySeek(f64), SpotifyVolume(u64), SpotifyShuffle(bool), SpotifyRepeat(crate::media::Repeat) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Key { Char(char), Back, Enter, Esc }
 
@@ -107,6 +107,9 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::SpotifyNext => ui.spotify_cmd = Some(SpotifyCmd::Next),
         Action::SpotifyPrevious => ui.spotify_cmd = Some(SpotifyCmd::Previous),
         Action::SpotifySeek(fraction) => ui.spotify_cmd = Some(SpotifyCmd::Seek(fraction)),
+        Action::SpotifyVolume(percent) => ui.spotify_cmd = Some(SpotifyCmd::Volume(percent)),
+        Action::SpotifyShuffle(on) => ui.spotify_cmd = Some(SpotifyCmd::Shuffle(on)),
+        Action::SpotifyRepeat(repeat) => ui.spotify_cmd = Some(SpotifyCmd::Repeat(repeat)),
         Action::Edit => ui.editing = Some(ui.config.name.clone()),
         Action::ScrollTo(n) => ui.scroll[ui.tab.index()] = n,
         Action::GitView(v) => ui.git_view = v,
@@ -903,6 +906,20 @@ fn spotify_card(s: &State, w: usize) -> Card {
     let row = c.rows.len();
     c.row(vec![seg(if ready { "❚❚ pausar" } else { "pausar · falta dispositivo" }, if ready { Pink } else { Dim })], vec![]);
     if ready { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyPause)); }
+    // S12: the three controls the card was missing. Each row writes the state the account really has,
+    // so a toggle the human made on the phone is never contradicted here.
+    let row = c.rows.len();
+    let loudness = sp.volume.map(|v| format!("{v}%")).unwrap_or_else(|| "—".into());
+    let mut left = vec![seg("vol ", Muted)];
+    left.extend(volume_bar(sp.volume));
+    c.row(left, vec![seg(loudness, Muted)]);
+    if ready { for cell in 0..VOLUME_CELLS { c.hits.push((row, 2 + 4 + cell, 3 + 4 + cell, Action::SpotifyVolume(volume_percent(cell)))); } }
+    let row = c.rows.len();
+    c.row(vec![seg(format!("⇄ aleatorio · {}", if sp.shuffle { "sí" } else { "no" }), if ready { Pink } else { Dim })], vec![]);
+    if ready { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyShuffle(!sp.shuffle))); }
+    let row = c.rows.len();
+    c.row(vec![seg(format!("⟲ repetir · {}", sp.repeat.label()), if ready { Pink } else { Dim })], vec![]);
+    if ready { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyRepeat(sp.repeat.cycle()))); }
     if let Some(title) = &sp.title {
         c.row(vec![seg(title, Text)], vec![seg(&sp.artist, Muted)]);
         let row = c.rows.len();
@@ -951,8 +968,12 @@ fn tracks_card(s: &State, w: usize) -> Option<Card> {
     if tracks.is_empty() { return None }
     let mut c = Card::new("pistas", mark("Pistas", Pink), w);
     for (index, track) in tracks.iter().enumerate() {
+        // S12: the row `/me/player` names by id is the one being heard. A track started from the search
+        // box is not in this list, so it marks nothing here.
+        let playing = s.media.spotify.playing_id.as_deref() == Some(track.id.as_str());
         let row = c.rows.len();
-        c.row(vec![seg(format!("{:>2}. ", index + 1), Dim), seg(&track.title, Text)], vec![seg(&track.artist, Muted)]);
+        let number = if playing { vec![seg("▶ ", PinkBright), seg(format!("{:>2}. ", index + 1), Mint), seg(&track.title, PinkBright)] } else { vec![seg(format!("{:>2}. ", index + 1), Dim), seg(&track.title, Text)] };
+        c.row(number, vec![seg(&track.artist, Muted)]);
         if s.media.spotify.running && s.media.spotify.device_id.is_some() { c.hits.push((row, 2, w.saturating_sub(2), Action::SpotifyPlay(index))); }
     }
     Some(c)
@@ -1012,6 +1033,17 @@ fn youtube_card(s: &State, w: usize) -> Card {
 fn clock(seconds: f64) -> String {
     let total = if seconds.is_finite() && seconds > 0.0 { seconds as u64 } else { 0 };
     if total >= 3600 { format!("{}:{:02}:{:02}", total / 3600, total % 3600 / 60, total % 60) } else { format!("{}:{:02}", total / 60, total % 60) }
+}
+
+/// The volume bar: ten cells, each one a percentage the account can take.
+const VOLUME_CELLS: usize = 10;
+/// The percentage a click on `cell` sets; the last cell is 100 and the first is silence.
+fn volume_percent(cell: usize) -> u64 { (cell.min(VOLUME_CELLS - 1) * 100 / (VOLUME_CELLS - 1)) as u64 }
+/// Filled cells for a percentage, rounded up so a quiet setting is never drawn as silence.
+fn volume_bar(volume: Option<u64>) -> Vec<Seg> {
+    use Tone::*;
+    let filled = volume.map(|v| ((v.min(100) as usize + 9) / 10).min(VOLUME_CELLS)).unwrap_or(0);
+    vec![seg("▰".repeat(filled), Mint), seg("▱".repeat(VOLUME_CELLS - filled), Dim)]
 }
 
 /// The seek bar itself: played `━`, the current position `●`, and the rest `┄`.
@@ -1327,7 +1359,7 @@ mod tests {
         s.media.spotify.running = true; s.media.spotify.device_id = Some("dev".into());
         let f = frame(&s, 42, 0); at(&f, "abrí una lista");
         s.media.spotify.playlists.push(crate::media::Playlist { id: "p".into(), name: "Rock".into(), cover: None });
-        s.media.spotify.selected = Some(0); s.media.spotify.tracks.push(crate::media::Track { title: "Tema".into(), artist: "Artista".into(), position: 0 });
+        s.media.spotify.selected = Some(0); s.media.spotify.tracks.push(crate::media::Track { id: "t1".into(), title: "Tema".into(), artist: "Artista".into(), position: 0 });
         let f = frame(&s, 42, 0);
         let (x, y) = at(&f, "reproducir lista"); assert_eq!(click(&f, x, y), Some(Action::SpotifyPlay(0)));
         apply(&mut s, Event::Ui(Action::SpotifyPlay(0))); assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Play(0)));
@@ -1366,7 +1398,7 @@ mod tests {
         let mut s = sample();
         s.ui.tab = Tab::Media;
         let playlist = |id: &str, name: &str| crate::media::Playlist { id: id.into(), name: name.into(), cover: None };
-        let track = |title: &str| crate::media::Track { title: title.into(), artist: "Daft Punk".into(), position: 0 };
+        let track = |title: &str| crate::media::Track { id: title.into(), title: title.into(), artist: "Daft Punk".into(), position: 0 };
         s.media.spotify = crate::media::Spotify {
             state: "2 listas".into(),
             linked: true,
@@ -1897,5 +1929,64 @@ mod tests {
         assert_eq!(s.ui.config.name.chars().count(), NAME_MAX);
         // Hiding every tab still leaves CONFIG; a config that hides MAIN starts elsewhere.
         let ui = Ui::new(Config { hidden: vec![Tab::Main, Tab::Git], ..Config::default() }, None); assert_eq!(ui.tab, Tab::Prof);
+    }
+    #[test]
+    fn the_volume_bar_maps_each_cell_to_the_percentage_it_sets() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        s.media.spotify = crate::media::Spotify { state: "reproduciendo".into(), linked: true, running: true, device_id: Some("d".into()), volume: Some(50), ..Default::default() };
+        let f = frame(&s, 42, 0);
+        let (x, row) = at(&f, "vol");
+        for cell in 0..VOLUME_CELLS { assert_eq!(f.hits.iter().filter(|h| h.row == row && (h.x0..h.x1).contains(&(x + 4 + cell))).min_by_key(|h| h.x1 - h.x0).map(|h| h.action.clone()), Some(Action::SpotifyVolume(volume_percent(cell))), "cell {cell} of {}", plain(&f.lines[row])); }
+        assert!(plain(&f.lines[row]).contains("50%"), "the bar states the volume the account reports: {:?}", plain(&f.lines[row]));
+        apply(&mut s, Event::Ui(Action::SpotifyVolume(volume_percent(7))));
+        assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Volume(volume_percent(7))));
+        // Without a device there is nothing to turn up: the bar is drawn but answers nothing.
+        s.media.spotify.running = false; s.media.spotify.device_id = None; s.ui.spotify_cmd = None;
+        let f = frame(&s, 42, 0);
+        let (x, row) = at(&f, "vol");
+        assert_eq!(click(&f, x + 4, row), None);
+    }
+    #[test]
+    fn shuffle_and_repeat_rows_send_the_state_that_follows_the_click() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        s.media.spotify = crate::media::Spotify { state: "reproduciendo".into(), linked: true, running: true, device_id: Some("d".into()), shuffle: true, repeat: crate::media::Repeat::Context, ..Default::default() };
+        let f = frame(&s, 42, 0);
+        at(&f, "aleatorio · sí"); at(&f, "repetir · lista");
+        let (x, row) = at(&f, "aleatorio");
+        assert_eq!(click(&f, x, row), Some(Action::SpotifyShuffle(false)));
+        let (x, row) = at(&f, "repetir");
+        assert_eq!(click(&f, x, row), Some(Action::SpotifyRepeat(crate::media::Repeat::Track)));
+        apply(&mut s, Event::Ui(Action::SpotifyShuffle(false)));
+        assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Shuffle(false)));
+        apply(&mut s, Event::Ui(Action::SpotifyRepeat(crate::media::Repeat::Track)));
+        assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Repeat(crate::media::Repeat::Track)));
+        // An idle device offers no toggles: they would only write to nothing.
+        s.media.spotify.device_id = None; s.ui.spotify_cmd = None;
+        let f = frame(&s, 42, 0);
+        assert!(f.hits.iter().all(|h| !matches!(h.action, Action::SpotifyShuffle(_) | Action::SpotifyRepeat(_))));
+    }
+    #[test]
+    fn the_track_that_is_playing_is_marked_and_still_playable() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        let track = |id: &str, title: &str| crate::media::Track { id: id.into(), title: title.into(), artist: "Daft Punk".into(), position: 0 };
+        s.media.spotify = crate::media::Spotify {
+            state: "reproduciendo".into(), linked: true, running: true, device_id: Some("d".into()),
+            playlists: vec![crate::media::Playlist { id: "p".into(), name: "Rock".into(), cover: None }],
+            selected: Some(0),
+            tracks: vec![track("a", "Uno"), track("b", "Dos"), track("c", "Tres")],
+            playing_id: Some("b".into()),
+            ..Default::default()
+        };
+        let row = |f: &Frame, needle: &str| f.lines.iter().map(|l| plain(l)).find(|l| l.contains(needle)).unwrap_or_else(|| panic!("no {needle:?}"));
+        let f = frame(&s, 42, 0);
+        assert!(row(&f, "Dos").contains("▶"), "the playing track is marked: {:?}", row(&f, "Dos"));
+        assert!(!row(&f, "Uno").contains("▶") && !row(&f, "Tres").contains("▶"), "and only that one");
+        // The mark never steals the click: the marked row still plays its own index.
+        let (x, y) = at(&f, "Dos");
+        assert_eq!(click(&f, x, y), Some(Action::SpotifyPlay(1)));
+        // A track played from search is not in this list, so no row is marked.
+        s.media.spotify.playing_id = Some("zzz".into());
+        let f = frame(&s, 42, 0);
+        assert!(["Uno", "Dos", "Tres"].iter().all(|t| !row(&f, t).contains("▶")), "an unknown id marks nothing");
     }
 }
