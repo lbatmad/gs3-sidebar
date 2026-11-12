@@ -71,16 +71,21 @@ fn placement(window: Option<(i64,i64,i64,i64)>, layout: Option<(CellRect,CellRec
 
 /// The window belongs to the app that is in front, and only to it: this rail's video is always on top,
 /// so it must hide as soon as anything else comes forward. Pure, so the rule is pinned without a GUI.
-fn visible_now(frontmost: Option<i64>, ours: Option<i64>) -> bool {
-    match (frontmost, ours) { (Some(f), Some(o)) => f == o, _ => true }
+fn visible_now(frontmost: Option<i64>, ours: Option<i64>, player: Option<u32>) -> bool {
+    match (frontmost, ours) {
+        // The player belongs to this rail: when it takes focus (mpv raises its own window) the video
+        // is the thing being watched, so it stays. Anything else in front hides it.
+        (Some(f), Some(o)) => f == o || Some(f) == player.map(i64::from),
+        _ => true,
+    }
 }
 
-/// The app in front, from the window list CoreGraphics orders front to back. No permission needed.
+/// The active application, asked to the window server's own notion of activation. A window-list
+/// heuristic cannot answer this: an always-on-top player is a window of *our* session but not the
+/// active app, and `--ontop` raises it to a layer of its own (measured: layer 3, not 0).
 fn frontmost_pid() -> Option<i64> {
-    let script = r#"ObjC.import("CoreGraphics");
-const list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));
-const hit = list.find(w => (w.kCGWindowLayer|0) === 0 && (w.kCGWindowBounds.Width|0) > 100);
-hit ? String(hit.kCGWindowOwnerPID|0) : "";"#;
+    let script = r#"ObjC.import("AppKit");
+String($.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier);"#;
     let out = Command::new("osascript").args(["-l", "JavaScript", "-e", script]).output().ok()?;
     String::from_utf8_lossy(&out.stdout).trim().parse::<i64>().ok()
 }
@@ -98,10 +103,10 @@ hit ? String(hit.kCGWindowOwnerPID|0) : "";"#);
 }
 
 /// The value mpv's `window-minimized` takes for the requested visibility.
-fn window_arg(visible: bool) -> &'static str { if visible { "false" } else { "true" } }
+fn window_value(visible: bool) -> bool { !visible }
 
 fn mpv_args(socket: &str, geometry: Option<&str>) -> Vec<String> {
-    let mut args = vec!["--idle=yes".into(), "--no-terminal".into(), "--msg-level=all=error".into(), "--keep-open=yes".into(), "--title=gs3 media".into(), format!("--input-ipc-server={socket}"), "--border=no".into(), "--osc=no".into(), "--ontop".into(), "--panscan=1.0".into()];
+    let mut args = vec!["--idle=yes".into(), "--no-terminal".into(), "--msg-level=all=error".into(), "--keep-open=yes".into(), "--title=gs3 media".into(), format!("--input-ipc-server={socket}"), "--border=no".into(), "--osc=no".into(), "--ontop".into(), "--panscan=1.0".into(), "--macos-app-activation-policy=accessory".into()];
     // `whole` because the rectangle we compute comes from CoreGraphics, which reports absolute screen
     // coordinates: with mpv's default `visible` calculation the window lands a menu bar lower.
     // `whole` because the rectangle comes from CoreGraphics, which reports absolute screen
@@ -211,10 +216,20 @@ impl Player {
 
     /// Send one JSON IPC command and wait for the reply carrying its `request_id`.
     /// Replies interleave with mpv's own events, so a plain read is not enough.
+    /// Bool properties need a real boolean: mpv answers `unsupported format for accessing property`
+    /// to the string "true", which a `&[&str]` command cannot express.
+    fn set_bool(&mut self, name: &str, value: bool) -> Option<Value> {
+        self.send(json!({"command": ["set_property", name, value], "request_id": self.id + 1}))
+    }
+
     fn call(&mut self, command: &[&str]) -> Option<Value> {
+        self.send(json!({"command": command, "request_id": self.id + 1}))
+    }
+
+    fn send(&mut self, payload: Value) -> Option<Value> {
         self.id += 1;
         let id = self.id;
-        self.out.write_all(json!({"command": command, "request_id": id}).to_string().as_bytes()).ok()?;
+        self.out.write_all(payload.to_string().as_bytes()).ok()?;
         self.out.write_all(b"\n").ok()?;
         self.out.flush().ok()?;
         loop {
@@ -301,7 +316,7 @@ fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &
     }
     if let MediaCmd::Window(visible) = cmd {
         // A player that is not there yet has nothing to hide, and must not report an error for it.
-        if let Some(player) = player.as_mut() { player.call(&["set_property", "window-minimized", window_arg(visible)]); }
+        if let Some(player) = player.as_mut() { player.set_bool("window-minimized", window_value(visible)); }
         return;
     }
     let Some(player) = player.as_mut() else { y.state = "mpv no encontrado".into(); return };
@@ -374,8 +389,8 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
                 if last_focus.elapsed() >= Duration::from_millis(1200) {
                     last_focus = Instant::now();
                     if ours.is_none() { ours = terminal_pid() }
-                    let now = visible_now(frontmost_pid(), ours);
-                    if shown != Some(now) { shown = Some(now); p.call(&["set_property", "window-minimized", window_arg(now)]); }
+                    let now = visible_now(frontmost_pid(), ours, Some(p.child.id()));
+                    if shown != Some(now) { shown = Some(now); p.set_bool("window-minimized", window_value(now)); }
                 }
             } else { shown = None }
             if youtube != sent { sent = youtube.clone(); if tx.send(Event::Media(youtube.clone())).is_err() { break } }
@@ -431,24 +446,26 @@ mod tests {
 
     #[test]
     fn the_window_shows_only_while_our_terminal_is_in_front() {
-        assert!(visible_now(Some(7), Some(7)));
-        assert!(!visible_now(Some(9), Some(7)), "another app in front hides the video");
-        assert!(visible_now(None, Some(7)), "an unreadable frontmost app must not hide the video");
-        assert!(visible_now(Some(7), None), "nor must an unknown terminal");
+        assert!(visible_now(Some(7), Some(7), None));
+        assert!(!visible_now(Some(9), Some(7), None), "another app in front hides the video");
+        assert!(visible_now(None, Some(7), None), "an unreadable frontmost app must not hide the video");
+        assert!(visible_now(Some(7), None, None), "nor must an unknown terminal");
+        assert!(visible_now(Some(9), Some(7), Some(9)), "our own player taking focus is not another app");
+        assert!(!visible_now(Some(9), Some(7), Some(8)));
     }
 
     #[test]
     fn the_window_visibility_command_is_a_minimize_toggle() {
         // Measured on macOS: `window-minimized` removes the always-on-top window from the screen and
         // restores it at the same rectangle, which is what "hide while another app is in front" needs.
-        assert_eq!(window_arg(true), "false");
-        assert_eq!(window_arg(false), "true");
+        assert!(!window_value(true), "visible means not minimized");
+        assert!(window_value(false));
     }
 
     #[test]
     fn mpv_arguments_keep_playback_flags_with_optional_geometry() {
         let args = mpv_args("/tmp/mpv.sock", None);
-        assert_eq!(args, vec!["--idle=yes", "--no-terminal", "--msg-level=all=error", "--keep-open=yes", "--title=gs3 media", "--input-ipc-server=/tmp/mpv.sock", "--border=no", "--osc=no", "--ontop", "--panscan=1.0"]);
+        assert_eq!(args, vec!["--idle=yes", "--no-terminal", "--msg-level=all=error", "--keep-open=yes", "--title=gs3 media", "--input-ipc-server=/tmp/mpv.sock", "--border=no", "--osc=no", "--ontop", "--panscan=1.0", "--macos-app-activation-policy=accessory"]);
         // The geometry we compute is in screen coordinates, so mpv must treat it as such: with the
         // default `visible` calculation it shifts the window down by the menu bar (measured: 25 px).
         let mut expected = args; expected.push("--geometry=100x50+1+2".into()); expected.push("--macos-geometry-calculation=whole".into()); expected.push("--force-window=yes".into());
@@ -460,6 +477,9 @@ mod tests {
         // The window must exist before the file loads, or mpv creates it later and applies the
         // geometry off by the menu bar (measured: asked +1488+406, landed at +1513+438).
         assert!(mpv_args("/tmp/mpv.sock", Some("1x1+1+1")).contains(&"--force-window=yes".to_string()));
+        // An accessory app never becomes active: the player would otherwise take focus from the
+        // terminal every time a video starts, and the focus rule would hide it immediately.
+        assert!(mpv_args("/tmp/mpv.sock", None).contains(&"--macos-app-activation-policy=accessory".to_string()));
         assert!(!mpv_args("/tmp/mpv.sock", None).contains(&"--force-window=yes".to_string()));
     }
 

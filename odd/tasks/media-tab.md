@@ -192,6 +192,10 @@ L37. The off-by-one of L36 did not change what the human saw, so instead of anot
 
 Recorded as T10 rather than hidden: the window is pinned in screen coordinates, so scrolling the MEDIA body — or a Spotify card that grows while a video plays — moves the card away from the video. mpv cannot be moved at runtime (`set_property geometry` answers success and does nothing), so the options are a stable reserved position, a re-spawn on layout change, or accepting it as a limitation. 116 tests passed, 2 ignored.
 
+L38. The human: "no pierde el foco el reproductor, ni cambiando de ventana ni de menú". Two defects, found by instrumenting rather than guessing. First, the frontmost app cannot be read from the window list: `--ontop` puts the player in its own layer (measured: layer 3), so the first layer-0 window is always the terminal and the rule never fired; the answer is `NSWorkspace.frontmostApplication`, which reports the active app regardless of layers. Second, and the real blocker: `set_property window-minimized` answered `{"error":"unsupported format for accessing property"}` to the string `"true"` — mpv wants a real boolean, and the `&[&str]` command helper could not express one, so every hide request was rejected and ignored. A shim on the PATH logging every `osascript` call proved the poll was running all along (one CoreGraphics query at start, then one AppKit query every 1.2 s), and a direct probe of both forms showed string-versus-boolean. `Player::set_bool` now sends the boolean.
+
+Live, with the video playing: start `minimized = false`; Discord activated `minimized = true`; back to Ghostty `minimized = false`. `--macos-app-activation-policy=accessory` was added so the player does not steal activation, and the rule treats the player itself as "ours" rather than as another app. 118 tests passed, 2 ignored.
+
 ## Delivery
 
 Slice boundary: commit `0457e04` closes the previously prepared rail work, and the next commit is the
