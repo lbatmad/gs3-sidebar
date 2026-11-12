@@ -344,8 +344,10 @@ fn api(url: &str, file: &Path) -> Result<Value, String> {
     }
 }
 
-/// `/me/playlists`: entries without an id or a name cannot be selected and are dropped.
-fn playlists(v: &Value) -> Vec<Playlist> {
+/// `/me/playlists`, narrowed to the rows the API will read back: `/playlists/{id}/items` documents a
+/// `403` for a playlist the user neither owns nor collaborates on, so a followed playlist is a row
+/// that can only fail and is never offered. Entries without an id or a name cannot be selected.
+fn playlists(v: &Value, me: &str) -> Vec<Playlist> {
     v["items"]
         .as_array()
         .into_iter()
@@ -354,30 +356,45 @@ fn playlists(v: &Value) -> Vec<Playlist> {
         .filter_map(|item| {
             let id = item["id"].as_str().unwrap_or_default();
             let name = item["name"].as_str().unwrap_or_default().trim();
-            (!id.is_empty() && !name.is_empty()).then(|| Playlist { id: id.to_string(), name: name.to_string() })
+            let owned = item["owner"]["id"].as_str() == Some(me);
+            let collaborator = item["collaborative"].as_bool().unwrap_or(false);
+            (!id.is_empty() && !name.is_empty() && (owned || collaborator)).then(|| Playlist { id: id.to_string(), name: name.to_string() })
         })
         .collect()
 }
 
-/// `/playlists/{id}/tracks`: exactly [`TRACKS`] entries, skipping a null track (a removed episode).
+/// The playlist rows. `/playlists/{id}/tracks` was retired for this app (it answers 403 even for an
+/// owned playlist), so the request names `/items`, which carries the same rows with the track under
+/// `item`. Percent-encoding an id is harmless and keeps a crafted id from adding a path segment.
+fn items_url(id: &str) -> String { format!("{API}/playlists/{}/items?limit={TRACKS}", encode(id)) }
+
+/// `/playlists/{id}/items`: exactly [`TRACKS`] entries, skipping a null track (a removed episode).
 fn tracks(v: &Value) -> Vec<Track> {
     v["items"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|item| {
-            let title = item["track"]["name"].as_str().unwrap_or_default().trim();
-            let artist = item["track"]["artists"][0]["name"].as_str().unwrap_or_default().trim();
+        .filter_map(|row| {
+            let track = &row["item"];
+            let title = track["name"].as_str().unwrap_or_default().trim();
+            let artist = track["artists"][0]["name"].as_str().unwrap_or_default().trim();
             (!title.is_empty()).then(|| Track { title: title.to_string(), artist: artist.to_string() })
         })
         .take(TRACKS)
         .collect()
 }
 
+/// The profile id is what tells an own playlist from a followed one, so it is read first and the
+/// same call then lists the playlists: one explicit click, two requests.
 fn list_playlists(state: &mut Spotify, file: &Path) {
-    match api(&format!("{API}/me/playlists?limit={PLAYLISTS}"), file) {
-        Ok(v) => {
-            state.playlists = playlists(&v);
+    let listed = api(&format!("{API}/me"), file).and_then(|me| {
+        let id = me["id"].as_str().unwrap_or_default().to_string();
+        if id.is_empty() { return Err("Spotify: respuesta sin id de perfil".to_string()) }
+        api(&format!("{API}/me/playlists?limit={PLAYLISTS}"), file).map(|v| playlists(&v, &id))
+    });
+    match listed {
+        Ok(list) => {
+            state.playlists = list;
             state.tracks.clear();
             state.selected = None;
             state.state = match state.playlists.len() {
@@ -391,7 +408,7 @@ fn list_playlists(state: &mut Spotify, file: &Path) {
 
 fn select_playlist(state: &mut Spotify, id: &str, file: &Path) {
     let name = state.playlists.iter().find(|p| p.id == id).map(|p| p.name.clone()).unwrap_or_default();
-    match api(&format!("{API}/playlists/{}/tracks?limit={TRACKS}", encode(id)), file) {
+    match api(&items_url(id), file) {
         Ok(v) => {
             state.tracks = tracks(&v);
             state.selected = state.playlists.iter().position(|p| p.id == id);
@@ -527,33 +544,60 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The profile id the reply is compared against. Ownership is the filter: `/playlists/{id}/items`
+    /// documents a `403` for a playlist the user neither owns nor collaborates on, so a followed row
+    /// is a row that can only fail.
+    const ME: &str = "me-user";
+
     #[test]
-    fn playlist_reply_drops_entries_that_cannot_be_selected() {
+    fn playlist_reply_keeps_only_the_ones_the_api_will_read_back() {
         let reply = json!({"items": [
-            {"id": "a", "name": "  Rock  "},
-            {"id": "b", "name": ""},
-            {"name": "sin id"},
-            {"id": "c", "name": "Jazz"},
+            {"id": "own", "name": "  Rock  ", "owner": {"id": ME}},
+            {"id": "followed", "name": "Ajena", "owner": {"id": "someone-else"}},
+            {"id": "collab", "name": "Jazz", "owner": {"id": "someone-else"}, "collaborative": true},
+            {"id": "b", "name": "", "owner": {"id": ME}},
+            {"name": "sin id", "owner": {"id": ME}},
+            {"id": "d", "name": "sin owner"},
             null
         ]});
-        assert_eq!(playlists(&reply), vec![
-            Playlist { id: "a".into(), name: "Rock".into() },
-            Playlist { id: "c".into(), name: "Jazz".into() },
+        assert_eq!(playlists(&reply, ME), vec![
+            Playlist { id: "own".into(), name: "Rock".into() },
+            Playlist { id: "collab".into(), name: "Jazz".into() },
         ]);
-        assert!(playlists(&json!({"items": []})).is_empty());
-        assert!(playlists(&json!({})).is_empty());
+        assert!(playlists(&json!({"items": []}), ME).is_empty());
+        assert!(playlists(&json!({}), ME).is_empty());
+    }
+
+    /// One row exactly as the live `/playlists/{id}/items` reply carries it: the track sits under
+    /// `item`, beside `added_at`, `added_by` and `is_local`. Read from the API, not from memory:
+    /// for this app `/playlists/{id}/tracks` answers 403 while `/items` answers 200.
+    fn items_row(name: &str) -> Value {
+        json!({
+            "added_at": "2026-11-11T23:20:00Z",
+            "added_by": {"id": "x"},
+            "is_local": false,
+            "item": {"type": "track", "name": name, "artists": [{"name": "Artist"}]}
+        })
     }
 
     #[test]
-    fn track_reply_keeps_exactly_ten_and_skips_a_removed_track() {
-        let mut items: Vec<Value> = (0..14).map(|i| json!({"track": {"name": format!("T{i}"), "artists": [{"name": "Artist"}]}})).collect();
-        items.insert(2, json!({"track": null}));
+    fn item_reply_keeps_exactly_ten_and_skips_a_removed_track() {
+        let mut items: Vec<Value> = (0..14).map(|i| items_row(&format!("T{i}"))).collect();
+        items.insert(2, json!({"added_at": "2026-11-11T23:20:00Z", "item": null}));
         let got = tracks(&json!({"items": items}));
         assert_eq!(got.len(), 10, "S2 asks for ten, not every row the reply carries");
         assert_eq!((got[0].title.as_str(), got[0].artist.as_str()), ("T0", "Artist"));
         assert_eq!(got[9].title, "T9");
-        // A track without artists still renders: the artist is a detail, not a requirement.
-        assert!(tracks(&json!({"items": [{"track": {"name": "Solo"}}]}))[0].artist.is_empty());
+        // A row without artists still renders: the artist is a detail, not a requirement.
+        assert!(tracks(&json!({"items": [{"item": {"name": "Solo"}}]}))[0].artist.is_empty());
+    }
+
+    #[test]
+    fn the_tracks_request_uses_the_items_endpoint() {
+        // The request must name the endpoint that still answers: `/tracks` returns 403 for this app,
+        // and a 403 is the whole playlist card losing its rows to a one-word URL.
+        assert_eq!(items_url("abc123"), format!("{API}/playlists/abc123/items?limit={TRACKS}"));
+        assert!(!items_url("abc123").contains("/tracks"));
     }
 
     fn mode(path: &Path) -> u32 {

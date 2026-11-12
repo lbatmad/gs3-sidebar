@@ -51,8 +51,12 @@ token live together in the private `~/.config/gs3/spotify.json` (0600 from creat
 never displayed); a stored session older than a minute before expiry is reported as
 `sesión vencida · renovar`. Nothing is fetched until that click, so an unused rail makes no requests.
 
-Once a session exists the card asks `/me/playlists?limit=50` (own playlists only) and, for the
-playlist you click, `/playlists/{id}/tracks?limit=10`: the ten rows are the reply, never a guess, and
+Once a session exists the card reads `/me` for the profile id and then asks `/me/playlists?limit=50`,
+keeping only the playlists that profile owns or collaborates on: Spotify's `/playlists/{id}/items`
+documents a `403` for a playlist the user neither owns nor collaborates on, so a followed playlist is
+a row that can only fail and is never offered. For the playlist you click it asks
+`/playlists/{id}/items?limit=10` — `/tracks` is the retired spelling and answers `403` for this app:
+the ten rows are the reply, never a guess, and
 an empty or refused playlist keeps the failure text in the state line and drops the previous tracks
 instead of showing them as current. A token
 about to expire, or a 401 from the API, is renewed from the stored refresh token and the call is
