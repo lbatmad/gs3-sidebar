@@ -107,6 +107,18 @@ pub struct Youtube {
     pub queue: Vec<Video>,
     /// Index into `queue`; only meaningful while `queue` is not empty.
     pub index: usize,
+    pub playlists: Vec<youtube::Playlist>,
+    pub playlist_search_done: bool,
+    /// Whether playlist search results are the current YouTube view.
+    pub playlist_view: bool,
+    pub selected: Option<usize>,
+    pub videos: Vec<Video>,
+    pub from_playlist: bool,
+}
+
+pub mod youtube {
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Playlist { pub id: String, pub title: String }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -133,6 +145,9 @@ pub enum MediaCmd {
     CardRect(Option<CellRect>),
     /// Search this text, then queue the best match with its recommendations and start it.
     Play(String, Option<CellRect>),
+    SearchPlaylists(String),
+    OpenPlaylist(String),
+    PlayVideoAt(usize),
 }
 
 impl Default for Spotify {
@@ -149,6 +164,6 @@ impl Default for Media {
 
 impl Default for Youtube {
     fn default() -> Self {
-        Youtube { state: "sin reproducción".into(), title: None, position: 0.0, duration: 0.0, playing: false, queue: Vec::new(), index: 0 }
+        Youtube { state: "sin reproducción".into(), title: None, position: 0.0, duration: 0.0, playing: false, queue: Vec::new(), index: 0, playlists: Vec::new(), playlist_search_done: false, playlist_view: false, selected: None, videos: Vec::new(), from_playlist: false }
     }
 }

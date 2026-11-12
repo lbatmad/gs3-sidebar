@@ -44,7 +44,19 @@ The Spotify card gains a clickable volume control, a shuffle toggle and a repeat
 
 S14. User: "podes hacer que los controles de spotify ocupen la menor cantidad de lineas posibles? sin romper la estética", with a screenshot of the seven control rows. When asked how compact, the human chose "3 filas, etiquetas cortas" over four rows with full words: the control block is three rows (device + `🔍 buscar`; one play/pause button that shows what `/me/player` reports; `vol` with its percentage followed by `⇄ sí|no` and `⟲ no|lista|tema`), each control keeping its own hitbox.
 
+S15. User: "con esta libreria se puede hacer lo mismo que en youtube? buscar listas, dejar play y que siga con el siguiente tema, si es una lista mostrar la lista de videos", and on scope: "quiero las listas publicas, pero buscarlas por nombre, no por id".
+The YouTube section gains the same shape Spotify already has: a search box that finds public playlists **by name** (not by URL or id), the selected playlist's videos listed in the card with the same ten-row window the wheel scrolls, a click on a row starting playback at that entry, and the existing auto-advance continuing through the rest of the playlist. Public playlists only: no cookies, no stored secret. At the end of a playlist playback stops; the recommendations mix stays the behavior for a single-track search.
+
 ## Tasks
+
+T14 | S15 | parent: public playlist search by name (`yt-dlp` over YouTube's playlist-filtered search results), the selected playlist's videos enumerated with `--flat-playlist` and capped, the `⌁ Videos` card with the S13 window/wheel machinery, a click starting at that row, and auto-advance inside the playlist without the RD refill | done by code and tests: 144 green, 2 ignored; one
+UI interaction test pins the boxes, the id-carrying rows, the ten-row window with `1-10/25`, the wheel
+routing, the absolute click, the `▶` mark and the window reset, and `ensure_player` is shared by both
+playback paths. Live against the real API: `rock clasico` returned ten public playlists, the first
+enumerated `200 videos` (the cap) into `1-10/200`, and one wheel step over the card read `4-13/200` with
+the YouTube card unmoved. Not claimed: a click starting playback and reaching the end of a list, and a
+polling test for the stopped state (the `Stop` arm is three lines and rests on the guard the live
+automatic advance already proved) | commit: pending
 
 T13 | S14 | parent: the Spotify control block from seven rows to three — device and `🔍 buscar` sharing one row with disjoint hitboxes, `▶ reproducir lista` / `❚❚ pausar` becoming one state-aware button, and `vol … 99%   ⇄ no   ⟲ no` sharing the third row with hits computed from the segment widths | done by code and unit tests: 138 passed, 2 ignored; the new test pins the three rows verbatim, each hitbox, the state-aware button both ways, the `sin dispositivo` hint with no actionable hits, and no overflow from 8 to 46 columns. Live on the rail at 46 columns: `▶ dispositivo · 🔍 buscar · sin dispositivo` / `▶ reproducir lista` / `vol ▱▱▱▱▱▱▱▱▱▱ —   ⇄ no   ⟲ no`, and after opening a 69-track playlist the Pistas window still read `4-13/69` | commit: pending
 
@@ -62,7 +74,7 @@ T3a | S5, S7, S9 | parent: librespot is the device the Web API plays to — spaw
 T3b | S5 | parent: transport (previous/next over `/me/player/previous` and `/me/player/next`), a 1 s `GET /me/player` poll for title, position and duration, and the clickable seek bar mapped to `PUT /me/player/seek?position_ms` | done and live-verified: `POST /me/player/next` and `/previous`, a 1 s `GET /me/player` poll that starts only on an explicit playback action, the reply parsed into title/artist/position/duration, and the clickable seek bar mapped to `PUT /me/player/seek?position_ms=`. Live: `▶▶` moved Billie Jean to Beat It, a bar click landed at 209637 of 258296 ms, and the card read `3:29 / 4:18`; 96 tests green | commit: this unit
 T4a | S3 | parent: search dialog on the Spotify card, `GET /search?type=track`, and one click that plays the found track on the same device | done and live-verified: typing `daft punk` returned `10 resultados`, a click on `One More Time` started it on device `gs3` (`is_playing: true`); the YouTube box and its test are untouched, and the modal state is Spotify's own (`ui.spotify_prompt`) so the two never steal keys | commit: this unit
 T8 | S11 | parent: the YouTube window becomes part of the card: `--border=no --osc=no --ontop`, no title bar, geometry computed from the terminal window's screen rect and the card's cell rect so the video opens under the search box, with a graceful fallback when the system will not tell us where the window is | done and live-verified: pane layout from `pane.layout` with `HERDR_PANE_ID`, window bounds from CoreGraphics through JXA (no permission), geometry clamped and signed, `--macos-geometry-calculation=whole`, the idle card reserving nothing. Live, with a video playing: requested `386x110+1488+406` and the window measured `{X:1488,Y:406,Width:386,Height:110}` — the card's block, not the chat pane | commit: this unit
-T10 | S11 | parent: the video window is pinned in screen coordinates, so scrolling the MEDIA body or a Spotify card that grows moves the card away from the video; decide between reserving a stable position, re-spawning mpv on layout change, or documenting it as a limitation | pending | commit: pending
+T10 | S11 | parent: the video window is pinned in screen coordinates, so scrolling the MEDIA body or a Spotify card that grows moves the card away from the video; decide between reserving a stable position, re-spawning mpv on layout change, or documenting it as a limitation | done: the card records the rows it really reserves (`Card::video_rows`), `Body` maps them to body rows and `frame()` derives the rect from that range with the inset clamped and the height capped, so it can no longer reach the title | RED: `video last row 32 overlaps title row 32`; 140 tests green, 2 ignored | commit: pending
 T9 | S11 | parent: `Card::on_click` registers only the card's last row, so the docs' "the whole card opens the search box" is false | done for the YouTube card: every row carries `Action::Search`, and the transport, seek columns and collapse toggle keep their narrower hitboxes because the narrowest hit wins. Live: with a video playing, a click on `🔍 buscar` opens the box and a new query plays | commit: 84b2aad
 T3c | S7 | parent: on start, adopt an `gs3` device that is already registered (`/me/player/devices`) instead of spawning a second librespot, so a hard-killed HUD cannot leave a stale device that duplicates audio | done and live-verified: a detached librespot was registered, the card read `dispositivo gs3 adoptado` and no second process appeared; 97 tests green | commit: this unit
 T4b | S3 | parent: cover art for the open playlist or the playing track, drawn with the terminal image protocol Ghostty speaks (kitty graphics) and never fabricated when the reply carries no image | done by code and offline tests: the playing album wins over the open playlist, the fetch runs off the UI thread into a 0700 cache, the PNG goes out in 4096-byte chunks with placement re-emitted after every frame, and every failure reserves nothing; 107 tests green. the picture is visually confirmed by the human ("lo de la portada funciona", L31), which is the only check text capture could not make | commit: this unit
@@ -325,3 +337,35 @@ note was checked against the card: the overflow test sweeps 8-46 columns and the
 `fit`, so the narrowing was a test-fixture fix, not a hidden regression. 138 tests passed, 2 ignored.
 Live on the real rail at 46 columns and at the ready state, then with the 69-track playlist open to
 confirm Pistas still scrolled (`4-13/69`).
+
+L50. Human, with a screenshot of the YouTube card while a video played: "fijate como queda la parte que
+muestra el video de youtube cuando se cambia mucho el tamaño que ocupa spotify, quizas tendrias que
+calcular la distancia con respecto a Buscar de youtube". The report arrived right after the control
+block lost four rows (S14), which moved the YouTube card —and everything reserved for the video— up by
+four rows. The arithmetic was wrong on its own terms, independent of the move: the card reserved
+`VIDEO_ROWS` (12) rows, the rect started `VIDEO_INSET_Y` (3) rows into them and was `VIDEO_ROWS_TALL`
+(10) tall, so it needed 13 and its last row was exactly the card's title row. RED pinned it as `video
+last row 32 overlaps title row 32`. The fixed offset `youtube_start` was replaced by the real
+reservation: the card marks the rows it pushes (`Card::video_rows`), `Body::push` shifts that range to
+body coordinates and `frame()` derives the rect from it, clamping the inset and capping the height to
+the range. The engine was not touched: it already compares the whole `CellRect` and keeps the
+anti-respawn guard from L43. 140 tests, 2 ignored, including the two Spotify heights, the prompt mode
+and the off-screen cases. Not claimed: the pixel position of a real mpv window, which needs a video
+playing; the rail was rebuilt and reinstalled (`28845aa9`) with the pane recreated as `w2:p3V`.
+
+L51. Human: "con esta libreria se puede hacer lo mismo que en youtube? buscar listas, dejar play y que siga
+con el siguiente tema, si es una lista mostrar la lista de videos". Read only at first: the engine
+already enumerates with `--flat-playlist`, already owns a queue and already advances on `eof-reached`,
+so auto-advance needed no new mechanism, only a different queue source. Answered with that, and with the
+one real cost: the profile's own playlists need session cookies, which would add a new secret. Scope
+chosen by the human: "quiero las listas publicas, pero buscarlas por nombre, no por id" — so the search
+box takes a name, and the search is the playlist-filtered YouTube results page, not an id.
+
+L52. Implementation of S15 in four delegated passes (engine, engine follow-up, UI, tests), each one
+stopping short and reporting what it could not prove — useful, because the gaps it named were the real
+ones. Two decisions taken by the parent along the way: `Action::YtOpenPlaylist` carries the playlist id
+like Spotify's `SelectPlaylist(String)` does, so `ui::act` never needs `State` and `core.rs` stays
+untouched; and `⌁ Videos` reuses S13's window machinery instead of a second mechanism, gaining a
+`ListWindow.videos` flag so the wheel knows which of the two lists it is over. Caps: 10 playlists per
+search, `LIST_CAP` 200 videos per list, both to keep one click from becoming an unbounded scrape. Live
+verification is in T14. Left uncommitted for the human.

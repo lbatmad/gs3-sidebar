@@ -43,6 +43,7 @@ pub struct Ui {
     /// MEDIA · `⌁ Pistas`: index of the first track row the card shows. A playlist longer than the
     /// card's window scrolls here, inside its own frame, instead of pushing YouTube out of reach.
     pub track_scroll: usize,
+    pub yt_lists: Option<String>, pub video_scroll: usize,
     /// Explicit click on the Flameshot icon; main consumes this intent off the render path.
     pub screenshot: bool,
 }
@@ -62,7 +63,7 @@ impl Ui {
 pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, ScrollTo(usize), GitView(GitView), Branch(Option<String>), File(String),
     /// MEDIA · `⌁ Pistas`: the index of the first track row to show, so the wheel can scroll a long
     /// playlist inside its card.
-    ScrollList(usize),
+    ScrollList(usize), ScrollVideos(usize), YtLists, YtOpenPlaylist(String), YtPlayVideo(usize),
     /// TREE: toggle a folder, fold every folder, open a changed file's diff in GIT, select an unchanged file.
     Dir(String), Fold, Inspect(String), Pick(String), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot,
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
@@ -73,7 +74,7 @@ pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, Scrol
 pub enum Key { Char(char), Back, Enter, Esc }
 
 pub fn act(ui: &mut Ui, a: Action) {
-    if matches!(a, Action::Search) { ui.spotify_prompt = None; }
+    if matches!(a, Action::Search) { ui.spotify_prompt = None; ui.yt_lists = None; }
     match a {
         Action::Tab(t) if ui.config.visible(t) => { if ui.tab != t { ui.editing = None; } ui.tab = t; }
         Action::Cycle(d) => {
@@ -96,6 +97,10 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::VoiceOpen => ui.voice_cmd = Some(VoiceCmd::Open),
         Action::Screenshot => ui.screenshot = true,
         Action::Search => ui.prompt = Some(String::new()),
+        Action::YtLists => { ui.prompt = None; ui.spotify_prompt = None; ui.yt_lists = Some(String::new()); }
+        Action::YtOpenPlaylist(id) => { ui.video_scroll = 0; ui.media_cmd = Some(MediaCmd::OpenPlaylist(id)); }
+        Action::YtPlayVideo(row) => ui.media_cmd = Some(MediaCmd::PlayVideoAt(row)),
+        Action::ScrollVideos(n) => ui.video_scroll = n,
         Action::PlayPause => ui.media_cmd = Some(MediaCmd::Toggle),
         Action::NextTrack => ui.media_cmd = Some(MediaCmd::Next),
         Action::PrevTrack => ui.media_cmd = Some(MediaCmd::Prev),
@@ -104,7 +109,7 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::SpotifyRefresh => ui.spotify_cmd = Some(SpotifyCmd::Refresh),
         Action::SpotifyPlaylists => ui.spotify_cmd = Some(SpotifyCmd::Playlists),
         Action::SelectPlaylist(id) => { ui.track_scroll = 0; ui.spotify_cmd = Some(SpotifyCmd::Select(id)); }
-        Action::SpotifySearch => { ui.prompt = None; ui.spotify_prompt = Some(String::new()); }
+        Action::SpotifySearch => { ui.prompt = None; ui.yt_lists = None; ui.spotify_prompt = Some(String::new()); }
         Action::SpotifyPlayResult(row) => ui.spotify_cmd = Some(SpotifyCmd::PlayResult(row)),
         Action::SpotifyStart => ui.spotify_cmd = Some(SpotifyCmd::Start),
         Action::SpotifyPlay(row) => ui.spotify_cmd = Some(SpotifyCmd::Play(row)),
@@ -138,6 +143,16 @@ pub fn key(s: &mut State, k: Key) {
             Key::Back => { buf.pop(); }
             Key::Enter => { s.ui.config.name = clean_name(buf); s.ui.editing = None; s.ui.save = true; }
             Key::Esc => s.ui.editing = None,
+            _ => {}
+        }
+        return;
+    }
+    if let Some(buf) = &mut s.ui.yt_lists {
+        match k {
+            Key::Char(c) if !c.is_control() && buf.chars().count() < 120 => buf.push(c),
+            Key::Back => { buf.pop(); }
+            Key::Enter => { let q = buf.trim().to_string(); s.ui.yt_lists = None; if !q.is_empty() { s.ui.media_cmd = Some(MediaCmd::SearchPlaylists(q)); } }
+            Key::Esc => s.ui.yt_lists = None,
             _ => {}
         }
         return;
@@ -255,13 +270,19 @@ fn keyed(label: &str, value: Vec<Seg>, w: usize) -> Vec<Seg> {
 }
 
 /// One framed card: `id` keys its collapsed state, rows may carry click actions.
-struct Card { id: &'static str, title: Vec<Seg>, extra: Extra, w: usize, rows: Vec<Vec<Seg>>, hits: Vec<(usize, usize, usize, Action)>, list: Option<(usize, usize)> }
+struct Card { id: &'static str, title: Vec<Seg>, extra: Extra, w: usize, rows: Vec<Vec<Seg>>, hits: Vec<(usize, usize, usize, Action)>, list: Option<(usize, usize)>, video: Option<std::ops::Range<usize>> }
 impl Card {
-    fn new(id: &'static str, title: Vec<Seg>, w: usize) -> Self { Card { id, title, extra: Vec::new(), w, rows: Vec::new(), hits: Vec::new(), list: None } }
+    fn new(id: &'static str, title: Vec<Seg>, w: usize) -> Self { Card { id, title, extra: Vec::new(), w, rows: Vec::new(), hits: Vec::new(), list: None, video: None } }
     /// This card's rows are a window of a longer list: the wheel over it scrolls the list, not the body.
     fn scrolls(&mut self, scroll: usize, max_scroll: usize) { if max_scroll > 0 { self.list = Some((scroll, max_scroll)); } }
     fn row(&mut self, l: Vec<Seg>, r: Vec<Seg>) { self.rows.push(row(l, r, self.w)); }
     fn keyed(&mut self, label: &str, v: Vec<Seg>) { self.rows.push(keyed(label, v, self.w)); }
+    /// Reserve the actual rows below the search controls for the external video window.
+    fn video_rows(&mut self) {
+        let start = self.rows.len();
+        for _ in 0..VIDEO_ROWS { self.row(vec![], vec![]); }
+        self.video = Some(start..self.rows.len());
+    }
     fn divider(&mut self) { self.rows.push(divider(self.w)); }
     /// The whole inner width of the last row triggers `a`.
     fn on_click(&mut self, a: Action) { let i = self.rows.len() - 1; self.hits.push((i, 2, self.w.saturating_sub(2), a)); }
@@ -271,7 +292,7 @@ pub struct Hit { pub row: usize, pub x0: usize, pub x1: usize, pub action: Actio
 /// A card that scrolls its own rows: its first screen row, how many rows it shows, and where the list
 /// stands. Screen rows are absolute, like [`Hit`], so the wheel can tell which card the pointer is on.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ListWindow { pub top: usize, pub height: usize, pub scroll: usize, pub max_scroll: usize }
+pub struct ListWindow { pub top: usize, pub height: usize, pub scroll: usize, pub max_scroll: usize, pub videos: bool }
 pub struct Frame { pub lines: Vec<Vec<Seg>>, pub hits: Vec<Hit>, pub tab_row: usize, pub scroll: usize, pub max_scroll: usize, pub cover_pos: Option<(usize, usize)>, pub youtube_rect: Option<crate::media::CellRect>, pub lists: Vec<ListWindow> }
 /// The narrowest region under the cursor wins (a title toggle beats its whole row).
 pub fn click(f: &Frame, col: usize, row: usize) -> Option<Action> {
@@ -286,7 +307,7 @@ pub fn wheel(f: &Frame, row: usize, down: bool) -> Option<Action> {
     // sections below it would be unreachable.
     if let Some(l) = f.lists.iter().find(|l| (l.top..l.top + l.height).contains(&row)) {
         let n = if down { (l.scroll + 3).min(l.max_scroll) } else { l.scroll.saturating_sub(3) };
-        if n != l.scroll { return Some(Action::ScrollList(n)) }
+        if n != l.scroll { return Some(if l.videos { Action::ScrollVideos(n) } else { Action::ScrollList(n) }) }
     }
     let n = if down { (f.scroll + 3).min(f.max_scroll) } else { f.scroll.saturating_sub(3) };
     (n != f.scroll).then_some(Action::ScrollTo(n))
@@ -297,17 +318,13 @@ const PAD: usize = 1;
 /// the closest a 42-46 column card gets to 16:9, so the video has almost nothing left to crop and the
 /// window lands inside the frame instead of over it.
 const VIDEO_ROWS: usize = 12;
-/// Where the video sits inside that block, in cells, measured from the window the human placed by
-/// hand ("ahi está centrada"): inset 7 columns, 3 rows down, 36 columns wide and 10 rows tall. Those
-/// cells map back to 1543/462/330/181 px on this display, within 4 px of the 1546/458/332/180 they
-/// dragged to, so the choice is theirs and the rail only reproduces it.
-/// Those cells, as a share of the card's inner width, so a narrower or wider panel keeps the same
-/// look instead of overflowing: 16% from the left, 2% from the right, ten of the twelve rows.
+/// Horizontal insets preserve the proportions chosen by the human. The preferred vertical inset
+/// is clamped to the rows actually reserved, keeping all ten video rows inside the block.
 const VIDEO_INSET_PCT: usize = 16;
 const VIDEO_RIGHT_PCT: usize = 2;
 const VIDEO_INSET_Y: usize = 3;
 const VIDEO_ROWS_TALL: usize = 10;
-struct Body { lines: Vec<Vec<Seg>>, hits: Vec<Hit>, glued: bool, lists: Vec<ListWindow> }
+struct Body { lines: Vec<Vec<Seg>>, hits: Vec<Hit>, glued: bool, lists: Vec<ListWindow>, video: Option<std::ops::Range<usize>> }
 impl Body {
     fn push(&mut self, ui: &Ui, c: Card) {
         if !self.lines.is_empty() && !std::mem::take(&mut self.glued) { self.lines.push(Vec::new()); }
@@ -318,8 +335,9 @@ impl Body {
         self.hits.push(Hit { row: start, x0: PAD, x1: PAD + c.w, action: Action::Collapse(c.id.into()) });
         if let Some(t) = toggle { self.hits.push(toggle_at(t)); }
         if !collapsed {
+            if let Some(range) = &c.video { self.video = Some(start + 1 + range.start..start + 1 + range.end); }
             // Title included: the whole visible card takes the wheel, which is where the hand is.
-            if let Some((scroll, max_scroll)) = c.list { self.lists.push(ListWindow { top: start, height: c.rows.len() + 1, scroll, max_scroll }); }
+            if let Some((scroll, max_scroll)) = c.list { self.lists.push(ListWindow { top: start, height: c.rows.len() + 1, scroll, max_scroll, videos: c.id == "videos" }); }
             for (i, x0, x1, a) in c.hits { self.hits.push(Hit { row: start + 1 + i, x0: PAD + x0, x1: PAD + x1, action: a }); }
             self.lines.extend(c.rows);
         }
@@ -370,7 +388,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     if ui.tab != Tab::Main { head.push(Vec::new()); }
     let top_rows = head.len();
 
-    let mut body = Body { lines: Vec::new(), hits: Vec::new(), glued: false, lists: Vec::new() };
+    let mut body = Body { lines: Vec::new(), hits: Vec::new(), glued: false, lists: Vec::new(), video: None };
     let cw = net;
 
     // The cover owns six rows at the top of the Spotify card and the image is only placed while that
@@ -382,14 +400,13 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     let show_cover = ui.tab == Tab::Media && !ui.collapsed("spotify") && cw >= 16 && scroll_hint <= 1
         && 7 <= scroll_hint.saturating_add(view_hint)
         && crate::cover::ready(s.media.spotify.cover_url.as_deref(), s.media.spotify.cover_png.as_deref(), true, true);
-    let mut youtube_start = None;
     match ui.tab {
         Tab::Main => { voice_row(&mut body, s.voice, cw, ui.config.plain_controls); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); }
         Tab::Git => { body.push(ui, git_card(s, cw)); body.push(ui, worktree_card(s, cw)); body.push(ui, pr_card(s, cw)); }
         Tab::Prof => body.push(ui, profiles_card(s, cw)),
         Tab::Mem => { for c in [engram_card(s, cw), handoff_card(s, cw), stack_card(s, cw), tools_card(s, cw), mcp_card(s, cw)] { body.push(ui, c); } }
         Tab::Tree => body.push(ui, tree_card(s, cw)),
-        Tab::Media => { body.push(ui, spotify_card(s, cw, show_cover)); if let Some(c) = tracks_card(s, cw, ui.track_scroll) { body.push(ui, c); } youtube_start = Some(body.lines.len() + 1); body.push(ui, youtube_card(s, cw)); }
+        Tab::Media => { body.push(ui, spotify_card(s, cw, show_cover)); if let Some(c) = tracks_card(s, cw, ui.track_scroll) { body.push(ui, c); } body.push(ui, youtube_card(s, cw)); if let Some(c) = videos_card(s, cw) { body.push(ui, c); } }
         Tab::Config => { for c in config_cards(s, cw) { body.push(ui, c); } }
     }
     if body.lines.is_empty() { body.lines.push(centered(vec![seg("Sin información disponible en esta pestaña.", Dim)], net)); }
@@ -407,16 +424,17 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     // half scrolled out only owns the rows still on screen.
     let lists = body.lists.into_iter().filter_map(|l| {
         let top = l.top.max(scroll); let end = (l.top + l.height).min(scroll + view);
-        (end > top).then(|| ListWindow { top: top - scroll + top_rows, height: end - top, scroll: l.scroll, max_scroll: l.max_scroll })
+        (end > top).then(|| ListWindow { top: top - scroll + top_rows, height: end - top, scroll: l.scroll, max_scroll: l.max_scroll, videos: l.videos })
     }).collect();
+    let video = body.video;
     let lines = head.into_iter().chain(body.lines.into_iter().skip(scroll).take(view))
         .map(|l| { if l.is_empty() { return l } let mut p = vec![seg(" ".repeat(PAD), Text)]; p.extend(l); fit(p, w) }).collect();
     let cover_pos = show_cover.then(|| (PAD + 2, top_rows + 1 - scroll));
-    let video_block = s.ui.prompt.is_some() || s.media.youtube.title.is_some();
-    let youtube_rect = youtube_start.filter(|_| video_block && !ui.collapsed("youtube") && cw > 4).and_then(|start| {
-        let y = start + 3;
-        (y >= scroll && y + VIDEO_ROWS <= scroll + view).then(|| (|| { let inner = cw.saturating_sub(2); let left = inner * VIDEO_INSET_PCT / 100; let right = inner * VIDEO_RIGHT_PCT / 100;
-            crate::media::CellRect::new((PAD + 1 + left) as u32, (top_rows + y + VIDEO_INSET_Y - scroll) as u32, inner.saturating_sub(left + right) as u32, VIDEO_ROWS_TALL as u32) })())
+    let youtube_rect = video.filter(|r| cw > 4 && r.start >= scroll && r.end <= scroll + view).map(|r| {
+        let inner = cw.saturating_sub(2); let left = inner * VIDEO_INSET_PCT / 100; let right = inner * VIDEO_RIGHT_PCT / 100;
+        let height = VIDEO_ROWS_TALL.min(r.len());
+        let inset = VIDEO_INSET_Y.min(r.len() - height);
+        crate::media::CellRect::new((PAD + 1 + left) as u32, (top_rows + r.start + inset - scroll) as u32, inner.saturating_sub(left + right) as u32, height as u32)
     });
     Frame { lines, hits, tab_row, scroll, max_scroll, cover_pos, youtube_rect, lists }
 }
@@ -973,11 +991,11 @@ fn spotify_card(s: &State, w: usize, show_cover: bool) -> Card {
     if let Some(title) = &sp.title {
         c.row(vec![seg(title, Text)], vec![seg(&sp.artist, Muted)]);
         let row = c.rows.len();
-        c.row(vec![seg("◀◀   ", Muted), seg(if sp.playing { "❚❚" } else { "▶" }, PinkBright), seg("   ▶▶", Muted)], vec![]);
+        c.row(vec![seg("◀◀   ", Muted), seg(if sp.playing { "❚❚" } else { "▶ " }, PinkBright), seg("   ▶▶", Muted)], vec![]);
         if ready {
             c.hits.push((row, 2, 4, Action::SpotifyPrevious));
-            c.hits.push((row, 7, 8, if sp.playing { Action::SpotifyPause } else { Action::SpotifyResume }));
-            c.hits.push((row, 11, 13, Action::SpotifyNext));
+            c.hits.push((row, 7, 9, if sp.playing { Action::SpotifyPause } else { Action::SpotifyResume }));
+            c.hits.push((row, 12, 14, Action::SpotifyNext));
         }
         let inner = w.saturating_sub(4);
         let fraction = if sp.duration_ms > 0 { (sp.position_ms as f64 / sp.duration_ms as f64).clamp(0.0, 1.0) } else { 0.0 };
@@ -1052,23 +1070,35 @@ fn youtube_card(s: &State, w: usize) -> Card {
         // The hint owns its own row: sharing it with the input cut long queries at half the inner width.
         c.row(vec![seg("> ", PinkBright), seg(buf.clone(), Text), bold("▏", PinkBright)], vec![]);
         c.row(vec![seg("Enter busca · Esc cancela", Dim)], vec![]);
-        for _ in 0..VIDEO_ROWS { c.row(vec![], vec![]); }
+        c.video_rows();
         return c;
     }
-    c.row(vec![seg("🔍 buscar", Pink)], vec![seg("el vídeo se abre en mpv", Dim)]);
-    // The block is where the video window lands. Only a video that exists or is about to be started
-    // may cost six rows: an idle card spends nothing.
+    let search = "🔍 buscar"; let sep = " · "; let lists = "🔍 listas";
+    let hint = "el vídeo se abre en mpv";
+    let hint = if search.width() + sep.width() + lists.width() + 1 + hint.width() <= inner { vec![seg(hint, Dim)] } else { vec![] };
+    c.row(vec![seg(search, Pink), seg(sep, Dim), seg(lists, Pink)], hint);
+    let start = search.width() + sep.width();
+    if start < inner { c.hits.push((0, 2 + start, 2 + (start + lists.width()).min(inner), Action::YtLists)); }
+    if let Some(buf) = &s.ui.yt_lists {
+        c.row(vec![seg("> ", PinkBright), seg(buf.clone(), Text), bold("▏", PinkBright)], vec![]);
+        c.row(vec![seg("Enter busca · Esc cancela", Dim)], vec![]);
+    }
+    for playlist in y.playlists.iter().filter(|_| y.playlist_view) {
+        c.row(vec![seg(&playlist.title, Text)], vec![seg("lista", Muted)]);
+        c.on_click(Action::YtOpenPlaylist(playlist.id.clone()));
+    }
+    // Only a video that exists or is about to be started reserves rows; an idle card spends nothing.
     if y.title.is_some() {
         c.row(vec![], vec![]);
-        for _ in 0..VIDEO_ROWS { c.row(vec![], vec![]); }
+        c.video_rows();
     }
     if y.title.is_some() && !y.queue.is_empty() {
         c.row(vec![seg(y.title.clone().unwrap_or_default(), Text)], vec![seg(format!("{}/{}", y.index + 1, y.queue.len()), Dim)]);
-        c.row(vec![seg("◀◀   ", Muted), seg(if y.playing { "❚❚" } else { "▶" }, PinkBright), seg("   ▶▶", Muted)], vec![]);
+        c.row(vec![seg("◀◀   ", Muted), seg(if y.playing { "❚❚" } else { "▶ " }, PinkBright), seg("   ▶▶", Muted)], vec![]);
         let row = c.rows.len() - 1;
         c.hits.push((row, 2, 4, Action::PrevTrack));
-        c.hits.push((row, 7, 8, Action::PlayPause));
-        c.hits.push((row, 11, 13, Action::NextTrack));
+        c.hits.push((row, 7, 9, Action::PlayPause));
+        c.hits.push((row, 12, 14, Action::NextTrack));
         let fraction = if y.duration > 0.0 { (y.position / y.duration).clamp(0.0, 1.0) } else { 0.0 };
         c.row(seek_bar(fraction, inner), vec![]);
         // S5: every column of the bar seeks to its own position.
@@ -1089,6 +1119,22 @@ fn youtube_card(s: &State, w: usize) -> Card {
     // the progress line and the search row used to stop answering.
     for row in 0..c.rows.len() { c.hits.push((row, 2, w.saturating_sub(2), Action::Search)); }
     c
+}
+
+fn videos_card(s: &State, w: usize) -> Option<Card> {
+    use Tone::*;
+    let y = &s.media.youtube; if y.videos.is_empty() || s.ui.prompt.is_some() { return None }
+    let max = y.videos.len().saturating_sub(TRACK_ROWS); let first = s.ui.video_scroll.min(max); let last = (first + TRACK_ROWS).min(y.videos.len());
+    let mut c = Card::new("videos", mark("Videos", Pink), w);
+    if max > 0 { c.extra = vec![(seg(format!("{}-{}/{} ", first + 1, last, y.videos.len()), Dim), None)]; }
+    let playing = if y.from_playlist { y.queue.get(y.index).map(|v| v.id.as_str()) } else { None };
+    for (i, v) in y.videos.iter().enumerate().take(last).skip(first) {
+        let active = playing == Some(v.id.as_str());
+        let mut left = Vec::new(); if active { left.push(seg("▶ ", PinkBright)); }
+        left.push(seg(format!("{:>2}. ", i + 1), Dim)); left.push(seg(&v.title, if active { PinkBright } else { Text }));
+        c.row(left, vec![]); c.on_click(Action::YtPlayVideo(i));
+    }
+    c.scrolls(first, max); Some(c)
 }
 
 /// `m:ss`, or `h:mm:ss` past an hour. Negative and non-finite positions are drawn as zero.
@@ -1198,12 +1244,67 @@ mod tests {
     }
 
     #[test]
+    fn youtube_video_stays_in_reserved_rows_as_spotify_changes_height() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        s.media.youtube.title = Some("Unique video title".into());
+        s.media.youtube.queue = vec![crate::media::Video { id: "a".into(), title: "Unique video title".into() }];
+        s.media.youtube.state = "unique state".into();
+        let check = |f: &Frame| {
+            let lines: Vec<_> = f.lines.iter().map(|l| plain(l)).collect();
+            let search = lines.iter().position(|l| l.contains("🔍 buscar")).unwrap();
+            let title = lines.iter().position(|l| l.contains("Unique video title")).unwrap();
+            let transport = lines.iter().position(|l| l.contains("◀◀")).unwrap();
+            let state = lines.iter().position(|l| l.contains("unique state")).unwrap();
+            let r = f.youtube_rect.unwrap();
+            assert!(r.y as usize > search);
+            assert!((r.y + r.height) as usize <= title, "video last row {} overlaps title row {}", r.y + r.height - 1, title);
+            assert!((r.y + r.height) as usize <= transport && (r.y + r.height) as usize <= state);
+            (search, r.y)
+        };
+        let a = check(&frame(&s, 42, 0));
+        s.media.spotify.cover_url = Some("https://example.test/image".into());
+        s.media.spotify.cover_png = Some(vec![1]);
+        let b = check(&frame(&s, 42, 0));
+        assert_eq!(b.0 - a.0, (b.1 - a.1) as usize);
+        assert_eq!(b.0 - a.0, 6);
+        assert_eq!((a.1, b.1), (22, 28));
+        s.ui.config.collapsed.push("spotify".into());
+        let collapsed = check(&frame(&s, 42, 0));
+        assert!(collapsed.0 < b.0);
+        assert_eq!(b.0 - collapsed.0, (b.1 - collapsed.1) as usize);
+        s.media.spotify.tracks.push(crate::media::Track { id: "t".into(), title: "Track".into(), artist: "Artist".into(), position: 0 });
+        let tracks = check(&frame(&s, 42, 0));
+        assert!(tracks.0 > collapsed.0);
+        assert_eq!(tracks.0 - collapsed.0, (tracks.1 - collapsed.1) as usize);
+    }
+
+    #[test]
+    fn youtube_prompt_block_and_offscreen_visibility() {
+        let mut s = sample(); s.ui.tab = Tab::Media; s.ui.prompt = Some("query".into());
+        let f = frame(&s, 42, 0);
+        let lines: Vec<_> = f.lines.iter().map(|l| plain(l)).collect();
+        let hint = lines.iter().position(|l| l.contains("Enter busca · Esc cancela")).unwrap();
+        let end = (hint + 1..lines.len()).find(|&i| lines[i].contains('╚')).unwrap();
+        let r = f.youtube_rect.unwrap();
+        assert!(r.y as usize > hint && (r.y + r.height) as usize <= end);
+        s.ui.tab = Tab::Main;
+        assert_eq!(frame(&s, 42, 0).youtube_rect, None);
+        s.ui.tab = Tab::Media;
+        s.ui.config.collapsed.push("youtube".into());
+        assert_eq!(frame(&s, 42, 0).youtube_rect, None);
+        s.ui.config.collapsed.clear();
+        assert_eq!(frame(&s, 42, 10).youtube_rect, None);
+        s.ui.scroll[Tab::Media.index()] = usize::MAX;
+        assert_eq!(frame(&s, 42, 10).youtube_rect, None);
+    }
+
+    #[test]
     fn youtube_placement_and_fallback_remain_visible() {
         let mut s = sample(); s.ui.tab = Tab::Media; s.ui.prompt = Some("query".into());
         let prompt = frame(&s, 42, 0);
         let rect = prompt.youtube_rect.expect("video area");
         let input = prompt.lines.iter().position(|l| plain(l).contains("> query")).unwrap();
-        assert_eq!(rect.y as usize, input + 2 + VIDEO_INSET_Y, "the video sits below the block's first rows");
+        assert_eq!(rect.y as usize, input + 2 + VIDEO_INSET_Y.min(VIDEO_ROWS - VIDEO_ROWS_TALL), "the video sits inside the reserved rows");
         s.ui.prompt = None;
         s.media.youtube.state = "sin geometría: sin ubicación de ventana del terminal".into();
         s.media.youtube.title = Some("video".into());
@@ -1332,6 +1433,29 @@ mod tests {
         apply(&mut s, Event::Ui(Action::SpotifyPlayResult(9))); assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::PlayResult(9)));
     }
     #[test]
+    fn transport_all_rendered_glyph_columns() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        s.media.spotify.linked = true; s.media.spotify.running = true; s.media.spotify.device_id = Some("dev".into());
+        s.media.spotify.title = Some("Spotify track".into());
+        s.media.youtube.title = Some("YouTube track".into());
+        s.media.youtube.queue = vec![crate::media::Video { id: "v".into(), title: "YouTube track".into() }];
+        for playing in [true, false] {
+            s.media.spotify.playing = playing; s.media.youtube.playing = playing;
+            let f = frame(&s, 46, 0);
+            let rows: Vec<_> = f.lines.iter().enumerate().filter(|(_, l)| plain(l).contains("◀◀")).collect();
+            assert_eq!(rows.len(), 2);
+            for (i, (row, line)) in rows.into_iter().enumerate() {
+                let text = plain(line);
+                let middle = if playing { "❚❚" } else { "▶" };
+                for (glyph, action) in [("◀◀", if i == 0 { Action::SpotifyPrevious } else { Action::PrevTrack }), (middle, if i == 0 { if playing { Action::SpotifyPause } else { Action::SpotifyResume } } else { Action::PlayPause }), ("▶▶", if i == 0 { Action::SpotifyNext } else { Action::NextTrack })] {
+                    let start = text[..text.find(glyph).unwrap()].width();
+                    for col in start..start + glyph.width() { assert_eq!(click(&f, col, row), Some(action.clone()), "{text} col {col}"); }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn spotify_transport_and_seek_columns() {
         let mut s = sample(); s.ui.tab = Tab::Media;
         s.media.spotify.linked = true; s.media.spotify.running = true; s.media.spotify.device_id = Some("dev".into());
@@ -1398,12 +1522,68 @@ mod tests {
         for inner in 1..60 { assert_eq!(seek_bar(0.37, inner).iter().map(|g| g.text.width()).sum::<usize>(), inner); }
     }
     #[test]
+    fn youtube_playlist_interactions_and_window() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        let f = frame(&s, 46, 0);
+        let (x,y) = at(&f, "🔍 listas");
+        act(&mut s.ui, click(&f,x,y).unwrap());
+        assert_eq!(s.ui.yt_lists.as_deref(), Some("")); assert!(s.ui.prompt.is_none() && s.ui.spotify_prompt.is_none());
+        key(&mut s, Key::Char('x')); key(&mut s, Key::Enter);
+        assert_eq!(s.ui.media_cmd.take(), Some(MediaCmd::SearchPlaylists("x".into())));
+        key(&mut s, Key::Enter); assert_eq!(s.ui.media_cmd, None);
+        let f = frame(&s, 46, 0); let (x,y) = at(&f, "🔍 buscar"); act(&mut s.ui, click(&f,x,y).unwrap());
+        assert!(s.ui.prompt.is_some() && s.ui.yt_lists.is_none()); s.ui.prompt = None;
+        s.media.youtube.playlist_view = true;
+        s.media.youtube.playlists = vec![crate::media::youtube::Playlist { id: "p1".into(), title: "Playlist Alpha".into() }, crate::media::youtube::Playlist { id: "p2".into(), title: "Playlist Beta".into() }];
+        s.media.youtube.videos = (1..=25).map(|i| crate::media::Video { id: i.to_string(), title: format!("Video {i:02}") }).collect();
+        let f = frame(&s, 46, 0); let (x,y) = at(&f, "Playlist Alpha");
+        let lines: Vec<_> = f.lines.iter().map(|l| plain(l)).collect();
+        for line in &lines { if line.contains("Playlist Alpha") || line.contains("Playlist Beta") || line.contains("⌁ Videos") || line.contains("Video 0") || line.contains("Video 10") { println!("{line}"); } }
+        assert!(lines.iter().any(|l| l.contains("1-10/25")));
+        for i in 1..=10 { assert!(lines.iter().any(|l| l.contains(&format!("{:>2}. Video {i:02}", i)))); }
+        assert!(!lines.iter().any(|l| l.contains("Video 11")));
+        assert_eq!(click(&f,x,y), Some(Action::YtOpenPlaylist("p1".into())));
+        let (_,y) = at(&f, "Video 01"); assert_eq!(wheel(&f,y,true), Some(Action::ScrollVideos(3)));
+        let old = s.ui.scroll; act(&mut s.ui, wheel(&f,y,true).unwrap()); assert_eq!(s.ui.scroll, old);
+        let f = frame(&s, 46, 0); let lines: Vec<_> = f.lines.iter().map(|l| plain(l)).collect();
+        assert!(lines.iter().any(|l| l.contains("4-13/25")));
+        let (x,y) = at(&f, "Video 12"); assert_eq!(click(&f,x,y), Some(Action::YtPlayVideo(11)));
+        s.media.youtube.queue = vec![s.media.youtube.videos[11].clone()]; s.media.youtube.from_playlist = true;
+        let f = frame(&s, 46, 0); assert!(plain(&f.lines[at(&f, "Video 12").1]).contains("▶"));
+        s.media.youtube.from_playlist = false; let f = frame(&s, 46, 0); assert!(!plain(&f.lines[at(&f, "Video 12").1]).contains("▶"));
+        s.ui.video_scroll = 9; act(&mut s.ui, Action::YtOpenPlaylist("p2".into())); assert_eq!(s.ui.video_scroll, 0);
+    }
+    #[test]
+    fn track_search_hides_playlist_videos() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        s.media.youtube.playlists.push(crate::media::youtube::Playlist { id: "p".into(), title: "Old playlist".into() });
+        s.media.youtube.videos.push(crate::media::Video { id: "v".into(), title: "Old video".into() });
+        act(&mut s.ui, Action::Search);
+        let lines = render_lines(&s, 46);
+        assert!(!lines.iter().any(|l| l.contains("Old playlist") || l.contains("⌁ Videos") || l.contains("Old video")), "{lines:?}");
+    }
+
+    #[test]
+    fn youtube_playlist_ui_contract() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        act(&mut s.ui, Action::YtLists);
+        assert_eq!(s.ui.yt_lists.as_deref(), Some(""));
+        key(&mut s, Key::Char('a')); key(&mut s, Key::Enter);
+        assert_eq!(s.ui.media_cmd, Some(MediaCmd::SearchPlaylists("a".into())));
+        assert!(s.ui.prompt.is_none());
+        s.media.youtube.videos = (1..=25).map(|i| crate::media::Video { id: i.to_string(), title: format!("Video {i}") }).collect();
+        let f = frame(&s, 46, 0);
+        assert!(f.lines.iter().map(|l| plain(l)).any(|l| l.contains("1-10/25")));
+        act(&mut s.ui, Action::YtOpenPlaylist("list".into()));
+        assert_eq!(s.ui.media_cmd, Some(MediaCmd::OpenPlaylist("list".into())));
+    }
+    #[test]
     fn youtube_transport_and_every_seek_column_click_their_own_cell() {
         let mut s = sample();
         s.ui.tab = Tab::Media;
         s.media.youtube = crate::media::Youtube { state: "reproduciendo".into(), title: Some("Daft Punk - Around The World".into()),
             position: 30.0, duration: 242.0, playing: true,
-            queue: vec![crate::media::Video { id: "a".into(), title: "A".into() }, crate::media::Video { id: "b".into(), title: "B".into() }], index: 0 };
+            queue: vec![crate::media::Video { id: "a".into(), title: "A".into() }, crate::media::Video { id: "b".into(), title: "B".into() }], index: 0, ..crate::media::Youtube::default() };
         let f = frame(&s, 42, 0);
         let (x, y) = at(&f, "◀◀"); assert_eq!(click(&f, x, y), Some(Action::PrevTrack));
         let (x, y) = at(&f, "❚❚"); assert_eq!(click(&f, x, y), Some(Action::PlayPause));

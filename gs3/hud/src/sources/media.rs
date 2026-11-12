@@ -45,6 +45,8 @@ const HIDE_TICKS: u8 = 5;
 /// only once the URL resolves, so a minimize that arrived before that survives the later deminiaturize.
 const VERIFY: Duration = Duration::from_millis(400);
 const QUEUE_MAX: usize = 24;
+const LISTS: usize = 10;
+const LIST_CAP: usize = 200;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Parse the bounds CoreGraphics reports for a window, rejecting anything incomplete.
@@ -179,20 +181,31 @@ hit ? String(hit.kCGWindowOwnerPID|0) : "";"#);
     String::from_utf8_lossy(&out.stdout).trim().parse::<i64>().ok()
 }
 
-/// The window cannot be moved at runtime, so a block that changed while the video is on screen means a
-/// new player at the same video and position. `used` is the block the running player was started for,
-/// not where it landed: a player that was built while the card sat at `want` needs no further rebuild,
-/// even if the placement itself failed. `want` is where the card is now.
-fn needs_move(used: Option<CellRect>, want: Option<CellRect>, visible: bool) -> bool {
-    visible && want.is_some() && used != want
+#[derive(Debug, PartialEq, Eq)]
+enum Movement { None, Move, Rebuild }
+
+fn needs_move(used: Option<CellRect>, want: Option<CellRect>, visible: bool) -> Movement {
+    if !visible || want.is_none() || used == want { return Movement::None }
+    match (used, want) {
+        (Some(a), Some(b)) if a.width == b.width && a.height == b.height => Movement::Move,
+        _ => Movement::Rebuild,
+    }
 }
 
-/// Rebuild the player on the same video and position when the block moved, because mpv cannot be
-/// moved once its window exists (measured: `set_property geometry` answers success and does nothing).
-/// Debounced: a scroll in progress would otherwise restart the video on every tick.
+/// Keep playback on position-only changes; mpv's runtime geometry property was measured to do nothing.
+/// Size changes rebuild at the same video and position, debounced during scrolling.
 fn move_window(player: &mut Option<Player>, y: &mut Youtube, card: Option<CellRect>, visible: bool, moved_at: &mut Option<Instant>, socket: &std::path::Path) {
     let Some(p) = player.as_mut() else { *moved_at = None; return };
-    if !needs_move(p.geom, card, visible) { *moved_at = None; return }
+    match needs_move(p.geom, card, visible) {
+        Movement::None => { *moved_at = None; return }
+        Movement::Move => {
+            trace!("move: pid={} used={:?} want={card:?} action=preserve (runtime geometry unsupported)", p.child.id(), p.geom);
+            p.geom = card;
+            *moved_at = None;
+            return;
+        }
+        Movement::Rebuild => {}
+    }
     let since = moved_at.get_or_insert_with(Instant::now);
     if since.elapsed() < Duration::from_millis(300) { return }
     *moved_at = None;
@@ -392,6 +405,10 @@ impl Player {
     fn load(&mut self, video: &str) -> bool {
         let success = self.call(&["loadfile", &format!("https://www.youtube.com/watch?v={video}"), "replace"])
             .is_some_and(|reply| reply["error"].as_str() == Some("success"));
+        // `--keep-open=yes` leaves mpv paused at EOF, and `loadfile` inherits that: without clearing it
+        // every track after the first one loads paused at 0:00 while the card still said "reproduciendo"
+        // (seen live: `3/24`, `▶`, `0:00 / 3:51`). A load starts playing, always.
+        if success { self.call(&["set_property", "pause", "no"]); }
         self.eof = if success { EofGuard::Waiting } else { EofGuard::Handled };
         success
     }
@@ -405,6 +422,64 @@ fn run(program: &PathBuf, args: &[&str]) -> Result<String, String> {
     let out = Command::new(program).args(args).env("PATH", tool_path()).output().map_err(|e| e.to_string())?;
     if !out.status.success() { return Err(format!("{} falló", program.display())) }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn encode(query: &str) -> String {
+    let mut encoded = String::new();
+    for byte in query.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+
+fn playlists_url(query: &str) -> String {
+    format!("https://www.youtube.com/results?search_query={}&sp=EgIQAw%253D%253D", encode(query))
+}
+fn playlist_request(id: &str) -> (String, usize) {
+    (format!("https://www.youtube.com/playlist?list={}", encode(id)), LIST_CAP)
+}
+fn parse_pairs(out: &str) -> Vec<(String, String)> {
+    out.lines().filter_map(|line| {
+        let (id, title) = line.split_once('\t')?;
+        let (id, title) = (id.trim(), title.trim());
+        (!id.is_empty() && !title.is_empty()).then(|| (id.into(), title.into()))
+    }).collect()
+}
+fn list_request(url: &str, cap: usize) -> Result<Vec<(String, String)>, String> {
+    let tool = find_tool("yt-dlp").ok_or("yt-dlp no encontrado")?;
+    let out = run(&tool, &["--flat-playlist", "--no-warnings", "--playlist-end", &cap.to_string(), "--print", "%(id)s\t%(title)s", url])?;
+    Ok(parse_pairs(&out).into_iter().take(cap).collect())
+}
+fn search_playlists(query: &str) -> Result<Vec<crate::media::youtube::Playlist>, String> {
+    Ok(list_request(&playlists_url(query), LISTS)?.into_iter().map(|(id, title)| crate::media::youtube::Playlist { id, title }).collect())
+}
+fn playlist_videos(id: &str) -> Result<Vec<Video>, String> {
+    let (url, cap) = playlist_request(id);
+    Ok(list_request(&url, cap)?.into_iter().map(|(id, title)| Video { id, title }).collect())
+}
+fn apply_playlists(y: &mut Youtube, result: Result<Vec<(String, String)>, String>) {
+    y.playlists.clear(); y.playlist_search_done = true; y.selected = None; y.videos.clear();
+    match result {
+        Ok(list) => { y.playlists = list.into_iter().map(|(id, title)| crate::media::youtube::Playlist { id, title }).collect(); y.state = if y.playlists.is_empty() { "sin listas".into() } else { format!("{} listas", y.playlists.len()) }; }
+        Err(e) => y.state = e,
+    }
+}
+fn apply_videos(y: &mut Youtube, id: &str, result: Result<Vec<Video>, String>) {
+    y.selected = None; y.videos.clear();
+    match result {
+        Ok(videos) => { y.selected = y.playlists.iter().position(|p| p.id == id); y.videos = videos; y.state = format!("{} videos", y.videos.len()); }
+        Err(e) => y.state = e,
+    }
+}
+#[derive(Debug, PartialEq)]
+enum EofDecision { Next, Stop, Refill }
+fn eof_decision(list: &[Video], index: usize, from_playlist: bool) -> EofDecision {
+    if next_index(list, index).is_some() { EofDecision::Next } else if from_playlist { EofDecision::Stop } else { EofDecision::Refill }
 }
 
 /// The seed result, then its YouTube recommendations (the RD mix), both enumerated by yt-dlp.
@@ -432,24 +507,46 @@ fn advance(player: &mut Player, y: &mut Youtube, step: isize) {
     if !player.load(&y.queue[next].id) { y.state = "no se pudo cargar el video".into(); y.playing = false; }
 }
 
-fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &std::path::Path) {
+fn ensure_player(player: &mut Option<Player>, socket: &std::path::Path, card: Option<CellRect>) -> Option<&'static str> {
+    if player.is_some() { return None }
+    let layout = std::env::var("HERDR_PANE_ID").ok().and_then(|id| super::request(socket, "pane.layout", json!({"pane_id":id})).ok().and_then(|v| parse_layout(&v, &id)));
+    let result = placement(window_rect(), layout, card);
+    let fallback = result.as_ref().err().copied();
+    *player = Player::start(result.as_deref().ok(), card);
+    fallback
+}
+
+fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &std::path::Path, current_card: Option<CellRect>) {
+    match &cmd {
+        MediaCmd::SearchPlaylists(query) => {
+            y.playlist_view = true; y.videos.clear(); y.selected = None;
+            y.playlists.clear(); y.playlist_search_done = false;
+            let result = search_playlists(query).map(|p| p.into_iter().map(|p| (p.id, p.title)).collect());
+            apply_playlists(y, result); return;
+        }
+        MediaCmd::OpenPlaylist(id) => { let result = playlist_videos(id); apply_videos(y, id, result); return; }
+        MediaCmd::PlayVideoAt(row) => {
+            if *row >= y.videos.len() { return }
+            let fallback = ensure_player(player, socket, current_card);
+            let Some(player) = player.as_mut() else { y.state = "mpv no encontrado".into(); return };
+            y.queue = y.videos.clone(); y.index = *row; y.from_playlist = true;
+            y.state = fallback.map(|reason| format!("sin geometría: {reason}")).unwrap_or_else(|| "reproduciendo".into());
+            y.title = Some(y.queue[*row].title.clone()); y.position = 0.0; y.duration = 0.0;
+            if !player.load(&y.queue[*row].id) { y.state = "no se pudo cargar el video".into(); y.playing = false; }
+            return;
+        }
+        _ => {}
+    }
     if let MediaCmd::Play(query, card) = &cmd {
+        y.playlist_view = false; y.playlists.clear(); y.videos.clear(); y.selected = None; y.from_playlist = false; y.playlist_search_done = false;
         trace!("play query={query} card={card:?} player_exists={}", player.is_some());
         if let Some(player) = player.as_mut() { player.eof = EofGuard::Waiting; }
         y.state = format!("buscando {query}");
         match queue(query) {
             Ok(list) if !list.is_empty() => {
-                let mut fallback = None;
-                if player.is_none() {
-                    let layout = std::env::var("HERDR_PANE_ID").ok().and_then(|id| super::request(socket, "pane.layout", json!({"pane_id":id})).ok().and_then(|v| parse_layout(&v, &id)));
-                    let result = placement(window_rect(), layout, *card);
-                    fallback = result.as_ref().err().copied();
-                    trace!("place at play: geometry={:?} fallback={fallback:?}", result.as_deref().ok());
-                    *player = Player::start(result.as_deref().ok(), *card);
-                    trace!("player at play: {:?}", player.as_ref().map(|p| p.child.id()));
-                }
+                let fallback = ensure_player(player, socket, *card);
                 let Some(player) = player.as_mut() else { y.state = "mpv no encontrado".into(); return };
-                y.queue = list; y.index = 0; y.state = fallback.map(|reason| format!("sin geometría: {reason}")).unwrap_or_else(|| "reproduciendo".into());
+                y.queue = list; y.index = 0; y.from_playlist = false; y.state = fallback.map(|reason| format!("sin geometría: {reason}")).unwrap_or_else(|| "reproduciendo".into());
                 y.title = y.queue.first().map(|v| v.title.clone());
                 y.position = 0.0; y.duration = 0.0;
                 let id = y.queue[0].id.clone();
@@ -470,7 +567,7 @@ fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &
         MediaCmd::Seek(fraction) => {
             if y.duration > 0.0 { player.call(&["seek", &format!("{:.3}", fraction.clamp(0.0, 1.0) * y.duration), "absolute"]); }
         }
-        MediaCmd::Play(..) => unreachable!("handled above"),
+        MediaCmd::Play(..) | MediaCmd::SearchPlaylists(..) | MediaCmd::OpenPlaylist(..) | MediaCmd::PlayVideoAt(..) => unreachable!("handled above"),
     }
 }
 
@@ -481,11 +578,15 @@ fn poll(player: &mut Option<Player>, y: &mut Youtube) {
     if let Some(v) = player.get("pause").and_then(|v| v.as_bool()) { y.playing = !v }
     if let Some(v) = player.get("media-title").and_then(|v| v.as_str().map(str::to_owned)) { if !v.is_empty() { y.title = Some(v) } }
     let Some(eof) = player.get("eof-reached").and_then(|v| v.as_bool()) else { return };
-    if !player.eof.observe(eof) { return }
+    if !player.eof.observe(eof) {
+        if eof && y.from_playlist && matches!(player.eof, EofGuard::Handled) { y.playing = false; }
+        return
+    }
     if let Some(finished) = y.queue.get(y.index).cloned() {
-        if next_index(&y.queue, y.index).is_some() {
-            advance(player, y, 1);
-            return;
+        match eof_decision(&y.queue, y.index, y.from_playlist) {
+            EofDecision::Next => { advance(player, y, 1); return; }
+            EofDecision::Stop => { y.playing = false; y.state = "fin de la lista".into(); return; }
+            EofDecision::Refill => {}
         }
         y.playing = false;
         y.state = "buscando recomendaciones".into();
@@ -529,7 +630,7 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
         let _ = tx.send(Event::Media(youtube.clone()));
         loop {
             match cmd_rx.recv_timeout(TICK) {
-                Ok(cmd) => { if let MediaCmd::CardRect(rect) = cmd { card = rect; trace!("card {card:?}"); } else { handle(&mut player, &mut youtube, cmd, &socket) } },
+                Ok(cmd) => { if let MediaCmd::CardRect(rect) = cmd { card = rect; trace!("card {card:?}"); } else { handle(&mut player, &mut youtube, cmd, &socket, card) } },
                 Err(RecvTimeoutError::Timeout) => if last_poll.elapsed() >= POLL { last_poll = Instant::now(); poll(&mut player, &mut youtube) },
                 // The rail is gone: dropping the player stops mpv with it.
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -567,6 +668,42 @@ mod tests {
     use super::*;
 
     fn video(id: &str) -> Video { Video { id: id.into(), title: id.into() } }
+
+    #[test]
+    fn movement_decision_distinguishes_position_and_size() {
+        let a = CellRect::new(3, 20, 40, 10);
+        let b = CellRect::new(3, 24, 40, 10);
+        let c = CellRect::new(3, 24, 41, 10);
+        assert_eq!(format!("{:?}", needs_move(Some(a), Some(a), true)), "None");
+        assert_eq!(format!("{:?}", needs_move(Some(a), Some(b), true)), "Move");
+        assert_eq!(format!("{:?}", needs_move(Some(a), Some(c), true)), "Rebuild");
+    }
+
+    #[test]
+    fn playlist_engine_contract() {
+        assert_eq!(playlist_request("abc &"), ("https://www.youtube.com/playlist?list=abc%20%26".to_string(), 200));
+        assert_eq!(parse_pairs("a\tAlpha\n\tMissing\nb\t \nno-tab\nc\tGamma\n"), vec![("a".into(), "Alpha".into()), ("c".into(), "Gamma".into())]);
+        let mut y = Youtube::default();
+        apply_playlists(&mut y, Ok(vec![("p".into(), "List".into())]));
+        assert_eq!(y.state, "1 listas");
+        assert!(y.playlist_search_done);
+        apply_videos(&mut y, "p", Ok(vec![video("a"), video("b")]));
+        assert_eq!(y.selected, Some(0));
+        assert_eq!(y.state, "2 videos");
+        assert_eq!(eof_decision(&y.videos, 0, true), EofDecision::Next);
+        assert_eq!(eof_decision(&y.videos, 1, true), EofDecision::Stop);
+        assert_eq!(eof_decision(&y.videos, 1, false), EofDecision::Refill);
+        apply_playlists(&mut y, Ok(vec![]));
+        assert_eq!(y.state, "sin listas");
+        apply_playlists(&mut y, Err("falló".into()));
+        assert_eq!(y.state, "falló");
+        assert!(y.playlists.is_empty());
+    }
+
+    #[test]
+    fn playlist_search_encodes_query_and_filters_to_playlists() {
+        assert_eq!(playlists_url("música & jazz"), "https://www.youtube.com/results?search_query=m%C3%BAsica%20%26%20jazz&sp=EgIQAw%253D%253D");
+    }
 
     #[test]
     fn layout_parser_selects_own_pane_and_rejects_missing_data() {
@@ -624,15 +761,15 @@ mod tests {
     fn a_block_that_moved_asks_for_a_new_player() {
         let a = CellRect::new(3, 20, 40, 10);
         let b = CellRect::new(3, 24, 40, 10);
-        assert!(needs_move(Some(a), Some(b), true), "the card scrolled and the window cannot follow");
-        assert!(!needs_move(Some(a), Some(a), true), "same block, nothing to do");
-        assert!(!needs_move(Some(a), Some(b), false), "a hidden window does not need to move yet");
-        assert!(!needs_move(None, None, true));
+        assert_eq!(needs_move(Some(a), Some(b), true), Movement::Move);
+        assert_eq!(needs_move(Some(a), Some(a), true), Movement::None);
+        assert_eq!(needs_move(Some(a), Some(b), false), Movement::None);
+        assert_eq!(needs_move(None, None, true), Movement::None);
         // A player is recorded for the block it was built for, whether or not the placement worked.
         // Recording where it landed, or nothing at all, asked for a new player on every tick: an endless
         // kill-and-respawn of mpv that stole the keyboard from the rail and left the sidebar frozen.
-        assert!(!needs_move(Some(b), Some(b), true), "the rebuild already followed this block");
-        assert!(!needs_move(Some(b), Some(b), false));
+        assert_eq!(needs_move(Some(b), Some(b), true), Movement::None);
+        assert_eq!(needs_move(Some(b), Some(b), false), Movement::None);
     }
 
     #[test]

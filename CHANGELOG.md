@@ -4,6 +4,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 
 ## [Sin publicar]
 
+### Añadido
+
+- `MEDIA` · YouTube suma `🔍 listas`: busca listas públicas por nombre, muestra sus videos en la tarjeta `⌁ Videos` (ventana de diez filas con rueda y rango visible) y un clic arranca en esa fila, siguiendo con el siguiente video hasta el final de la lista.
+
 ### Corregido
 
 - `MEDIA` · El bloque de controles de Spotify ahora entra en tres filas.
