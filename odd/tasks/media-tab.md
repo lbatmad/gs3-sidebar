@@ -265,3 +265,14 @@ The branch, not this unit, is what has outgrown a slice: `feat/gs3-macos` now ca
 `3317` insertions against `origin/main` (`52` files). Delivering it as one PR would hand a reviewer
 something no one can read in one pass, so delivery needs a chained-PR plan (the `chained-pr` skill)
 before anything is pushed. That plan is the human's decision; nothing here has been pushed or merged.
+
+
+L46. Human, with a screenshot of the MEDIA card: "dejo de mostrarse la portada por Spotify". The picture
+was still being fetched and the card still reserved its six rows: the card was merely *scrolled*, which
+the frame had always used to withhold the placement (`scroll <= 1`), but the reservation was decided
+inside `spotify_card` from `cover::ready` alone, so the block stayed behind as an empty hole. Scrolling
+became reachable in practice only with L45, which put the volume, shuffle and repeat rows below the
+tracks on a card that no longer fits one screen. Reservation and placement are now one decision, taken
+in `frame()` from the wheel's scroll and the viewport before the cards are built, and the card receives
+it as a parameter. RED: the new `scrolling_the_spotify_card_leaves_no_cover_sized_hole` failed on
+`max_scroll` 7 against 1, exactly the six rows. 131 tests passed, 2 ignored.

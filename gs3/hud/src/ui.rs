@@ -345,9 +345,20 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     head.push(vec![seg("─".repeat(net), BorderMuted)]);
     // MAIN: the voice icons sit right on the divider; other tabs keep one blank line.
     if ui.tab != Tab::Main { head.push(Vec::new()); }
+    let top_rows = head.len();
 
     let mut body = Body { lines: Vec::new(), hits: Vec::new(), glued: false };
     let cw = net;
+
+    // The cover owns six rows at the top of the Spotify card and the image is only placed while that
+    // block is still fully on screen, so one decision feeds both. The scroll is the wheel's, not the
+    // body's, which is what lets it be taken here: a card that reserved the rows after the image was
+    // withheld (scrolled card, block out of the viewport) left an empty hole where the cover used to be.
+    let view_hint = if height == 0 { usize::MAX } else { (height as usize).saturating_sub(top_rows) };
+    let scroll_hint = ui.scroll[ui.tab.index()];
+    let show_cover = ui.tab == Tab::Media && !ui.collapsed("spotify") && cw >= 16 && scroll_hint <= 1
+        && 7 <= scroll_hint.saturating_add(view_hint)
+        && crate::cover::ready(s.media.spotify.cover_url.as_deref(), s.media.spotify.cover_png.as_deref(), true, true);
     let mut youtube_start = None;
     match ui.tab {
         Tab::Main => { voice_row(&mut body, s.voice, cw, ui.config.plain_controls); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); }
@@ -355,7 +366,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
         Tab::Prof => body.push(ui, profiles_card(s, cw)),
         Tab::Mem => { for c in [engram_card(s, cw), handoff_card(s, cw), stack_card(s, cw), tools_card(s, cw), mcp_card(s, cw)] { body.push(ui, c); } }
         Tab::Tree => body.push(ui, tree_card(s, cw)),
-        Tab::Media => { body.push(ui, spotify_card(s, cw)); if let Some(c) = tracks_card(s, cw) { body.push(ui, c); } youtube_start = Some(body.lines.len() + 1); body.push(ui, youtube_card(s, cw)); }
+        Tab::Media => { body.push(ui, spotify_card(s, cw, show_cover)); if let Some(c) = tracks_card(s, cw) { body.push(ui, c); } youtube_start = Some(body.lines.len() + 1); body.push(ui, youtube_card(s, cw)); }
         Tab::Config => { for c in config_cards(s, cw) { body.push(ui, c); } }
     }
     if body.lines.is_empty() { body.lines.push(centered(vec![seg("Sin información disponible en esta pestaña.", Dim)], net)); }
@@ -368,13 +379,10 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
         let mark = match (scroll > 0, scroll < max_scroll) { (true, true) => " ↑↓", (true, false) => " ↑", _ => " ↓" };
         head[tab_row + 1] = vec![seg("─".repeat(net.saturating_sub(mark.width())), BorderMuted), seg(mark, Muted)];
     }
-    let top_rows = head.len();
     hits.extend(body.hits.into_iter().filter(|h| (scroll..scroll + view).contains(&h.row)).map(|h| Hit { row: h.row - scroll + top_rows, ..h }));
     let lines = head.into_iter().chain(body.lines.into_iter().skip(scroll).take(view))
         .map(|l| { if l.is_empty() { return l } let mut p = vec![seg(" ".repeat(PAD), Text)]; p.extend(l); fit(p, w) }).collect();
-    let cover_pos = (ui.tab == Tab::Media && !ui.collapsed("spotify") && cw >= 16
-        && crate::cover::ready(s.media.spotify.cover_url.as_deref(), s.media.spotify.cover_png.as_deref(), true, true)
-        && scroll <= 1 && 7 <= scroll + view).then(|| (PAD + 2, top_rows + 1 - scroll));
+    let cover_pos = show_cover.then(|| (PAD + 2, top_rows + 1 - scroll));
     let video_block = s.ui.prompt.is_some() || s.media.youtube.title.is_some();
     let youtube_rect = youtube_start.filter(|_| video_block && !ui.collapsed("youtube") && cw > 4).and_then(|start| {
         let y = start + 3;
@@ -856,11 +864,11 @@ fn mcp_card(s: &State, w: usize) -> Card {
 /// Upper section of MEDIA: Spotify. Without a credential file the card states the prerequisite and
 /// the exact redirect the app must allowlist; with one it lists the user's own playlists and offers
 /// a renewal instead of first-time setup.
-fn spotify_card(s: &State, w: usize) -> Card {
+fn spotify_card(s: &State, w: usize, show_cover: bool) -> Card {
     use Tone::*;
     let sp = &s.media.spotify;
     let mut c = Card::new("spotify", mark("Spotify", Mint), w);
-    if w >= 16 && crate::cover::ready(sp.cover_url.as_deref(), sp.cover_png.as_deref(), true, true) {
+    if show_cover {
         for _ in 0..6 { c.row(vec![], vec![]); }
     }
     c.row(vec![seg("estado · ", Muted), seg(&sp.state, Text)], vec![]);
@@ -1108,6 +1116,20 @@ mod tests {
         s.mcp = Some(vec![Mcp { name: "engram".into(), local: true }]);
         s
     }
+    #[test]
+    fn scrolling_the_spotify_card_leaves_no_cover_sized_hole() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        s.media.spotify.cover_url = Some("https://example.test/image".into());
+        s.media.spotify.cover_png = Some(vec![1]);
+        s.ui.scroll[Tab::Media.index()] = 9;
+        let scrolled = frame(&s, 42, 20);
+        assert_eq!(scrolled.cover_pos, None);
+        // The six reserved rows must go with the picture: the body has to be exactly the one a card
+        // without a cover has, or the reader gets a blank block that promises an image it never shows.
+        s.media.spotify.cover_png = None;
+        assert_eq!(scrolled.max_scroll, frame(&s, 42, 20).max_scroll);
+    }
+
     #[test]
     fn both_search_boxes_put_the_hint_below_so_the_query_keeps_the_width() {
         let query = "around the world daft punk";
