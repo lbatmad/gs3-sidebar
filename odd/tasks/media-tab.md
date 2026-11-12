@@ -161,3 +161,14 @@ consent flow, its primitives, its tests, its card and its docs are one behaviour
 primitives from the flow would leave one commit with unused code and neither commit reviewable on its
 own. It therefore exceeds the ~400-line slice by design and must be reviewed as one unit. The T2b unit
 follows the same rule: card, engine calls, parsers and docs of one behaviour, reviewed together.
+
+The Spotify endpoint and visibility fix is `680efb1`: `138` changed lines (107 insertions, 31 deletions)
+across `sources/spotify.rs`, three docs and the feature log. It stays one commit on purpose. The two
+defects are one behaviour chain — the card offers a playlist and reads its ten tracks — and their code
+hunks sit in the same functions and their doc paragraphs in the same lines, so a split would have
+needed hunk surgery on shared text and would have left neither commit reviewable alone.
+
+The branch, not this unit, is what has outgrown a slice: `feat/gs3-macos` now carries `19` commits and
+`3317` insertions against `origin/main` (`52` files). Delivering it as one PR would hand a reviewer
+something no one can read in one pass, so delivery needs a chained-PR plan (the `chained-pr` skill)
+before anything is pushed. That plan is the human's decision; nothing here has been pushed or merged.
