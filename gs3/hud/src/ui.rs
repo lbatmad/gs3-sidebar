@@ -337,12 +337,18 @@ const PAD: usize = 1;
 /// The rows the YouTube card reserves for the video window. Twelve rows of the card's inner width is
 /// the closest a 42-46 column card gets to 16:9, so the video has almost nothing left to crop and the
 /// window lands inside the frame instead of over it.
-const VIDEO_ROWS: usize = 12;
+const VIDEO_ROWS: usize = 15;
 /// Horizontal insets preserve the proportions chosen by the human; vertically the picture is centred
 /// in the rows the card reserves, so it crowds neither the search row above nor the title below.
 const VIDEO_INSET_PCT: usize = 16;
 const VIDEO_RIGHT_PCT: usize = 2;
-const VIDEO_ROWS_TALL: usize = 10;
+/// Eleven rows is what a 39-column block gets at 16:9 (~202 px of an 18 px row); asking for ten
+/// left the picture slightly letterboxed and visually short of the title below it.
+const VIDEO_ROWS_TALL: usize = 11;
+/// Rows to sit below the pure centre. The external window is drawn about two rows higher than the
+/// cell it is given (a pixel-conversion offset in `placement`), so the reservation carries the
+/// slack and the nudge puts the picture where the eye expects it: one to two rows above and below.
+const VIDEO_NUDGE_DOWN: usize = 2;
 struct Body { lines: Vec<Vec<Seg>>, hits: Vec<Hit>, glued: bool, lists: Vec<ListWindow>, video: Option<std::ops::Range<usize>> }
 impl Body {
     fn push(&mut self, ui: &Ui, c: Card) {
@@ -452,7 +458,9 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     let youtube_rect = video.filter(|r| cw > 4 && r.start >= scroll && r.end <= scroll + view).map(|r| {
         let inner = cw.saturating_sub(2); let left = inner * VIDEO_INSET_PCT / 100; let right = inner * VIDEO_RIGHT_PCT / 100;
         let height = VIDEO_ROWS_TALL.min(r.len());
-        let inset = (r.len() - height) / 2;
+        // Pure centring put the taller picture flush against the top of its block, which read as
+        // moving it *up*; the nudge rests it one row lower without leaving the reserved rows.
+        let inset = ((r.len() - height) / 2 + VIDEO_NUDGE_DOWN).min(r.len() - height);
         crate::media::CellRect::new((PAD + 1 + left) as u32, (top_rows + r.start + inset - scroll) as u32, inner.saturating_sub(left + right) as u32, height as u32)
     });
     Frame { lines, hits, tab_row, scroll, max_scroll, cover_pos, youtube_rect, lists }
@@ -1291,7 +1299,7 @@ mod tests {
         assert_eq!(b.0 - a.0, (b.1 - a.1) as usize);
         assert_eq!(b.0 - a.0, 6);
         // Centred in the twelve reserved rows: the ten-row picture leaves one row above and one below.
-        assert_eq!((a.1, b.1), (21, 27));
+        assert_eq!((a.1, b.1), (24, 30));
         s.ui.config.collapsed.push("spotify".into());
         let collapsed = check(&frame(&s, 42, 0));
         assert!(collapsed.0 < b.0);
@@ -1328,7 +1336,8 @@ mod tests {
         let prompt = frame(&s, 42, 0);
         let rect = prompt.youtube_rect.expect("video area");
         let input = prompt.lines.iter().position(|l| plain(l).contains("> query")).unwrap();
-        assert_eq!(rect.y as usize, input + 2 + (VIDEO_ROWS - VIDEO_ROWS_TALL) / 2, "the video is centred in the reserved rows");
+        let inset = ((VIDEO_ROWS - VIDEO_ROWS_TALL) / 2 + VIDEO_NUDGE_DOWN).min(VIDEO_ROWS - VIDEO_ROWS_TALL);
+        assert_eq!(rect.y as usize, input + 2 + inset, "nudged down from the pure centre, still inside the reserved rows");
         s.ui.prompt = None;
         s.media.youtube.state = "sin geometría: sin ubicación de ventana del terminal".into();
         s.media.youtube.title = Some("video".into());

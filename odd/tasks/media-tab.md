@@ -391,3 +391,11 @@ reservation itself, `(reserved - height) / 2`, so the ten-row picture carries on
 below and `VIDEO_INSET_Y` is gone. The test that pins the absolute rows moved from `(22, 28)` to
 `(21, 27)`; the property it really guards — the picture moves exactly as much as the search row — is
 unchanged. 147 tests green.
+
+L55. Human, three rounds of "se sigue viendo muy arriba": measuring the rendered card and the cell rect
+settled it. The rail asks for `CellRect { y: 22, height: 11 }` but the system draws the window about two
+rows higher and one shorter, so the picture crowded `buscar` while the reservation showed a gap below.
+The reservation grew to 15 rows and the inset to 4, which puts the drawn picture one to two rows above
+and three below. This is a compensation, not a fix: the offset lives in `placement`'s cell-to-pixel
+conversion, and it cannot be measured from this session because mpv hides its window when the rail is
+not frontmost (S11), so the honest next step is one real measurement with the rail focused.
