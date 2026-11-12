@@ -70,7 +70,7 @@ fn placement(window: Option<(i64,i64,i64,i64)>, layout: Option<(CellRect,CellRec
 }
 
 fn mpv_args(socket: &str, geometry: Option<&str>) -> Vec<String> {
-    let mut args = vec!["--idle=yes".into(), "--no-terminal".into(), "--msg-level=all=error".into(), "--keep-open=yes".into(), "--title=gs3 media".into(), format!("--input-ipc-server={socket}"), "--border=no".into(), "--osc=no".into(), "--ontop".into()];
+    let mut args = vec!["--idle=yes".into(), "--no-terminal".into(), "--msg-level=all=error".into(), "--keep-open=yes".into(), "--title=gs3 media".into(), format!("--input-ipc-server={socket}"), "--border=no".into(), "--osc=no".into(), "--ontop".into(), "--panscan=1.0".into()];
     // `whole` because the rectangle we compute comes from CoreGraphics, which reports absolute screen
     // coordinates: with mpv's default `visible` calculation the window lands a menu bar lower.
     if let Some(g) = geometry { args.push(format!("--geometry={g}")); args.push("--macos-geometry-calculation=whole".into()); }
@@ -373,12 +373,15 @@ mod tests {
     #[test]
     fn mpv_arguments_keep_playback_flags_with_optional_geometry() {
         let args = mpv_args("/tmp/mpv.sock", None);
-        assert_eq!(args, vec!["--idle=yes", "--no-terminal", "--msg-level=all=error", "--keep-open=yes", "--title=gs3 media", "--input-ipc-server=/tmp/mpv.sock", "--border=no", "--osc=no", "--ontop"]);
+        assert_eq!(args, vec!["--idle=yes", "--no-terminal", "--msg-level=all=error", "--keep-open=yes", "--title=gs3 media", "--input-ipc-server=/tmp/mpv.sock", "--border=no", "--osc=no", "--ontop", "--panscan=1.0"]);
         // The geometry we compute is in screen coordinates, so mpv must treat it as such: with the
         // default `visible` calculation it shifts the window down by the menu bar (measured: 25 px).
         let mut expected = args; expected.push("--geometry=100x50+1+2".into()); expected.push("--macos-geometry-calculation=whole".into());
         assert_eq!(mpv_args("/tmp/mpv.sock", Some("100x50+1+2")), expected);
         assert!(!mpv_args("/tmp/mpv.sock", None).iter().any(|a| a.starts_with("--macos-geometry")));
+        // S11: no black bands. The card's block is only approximately 16:9, so whatever is left after
+        // the window is sized to it gets cropped instead of drawn as letterbox.
+        assert!(mpv_args("/tmp/mpv.sock", None).contains(&"--panscan=1.0".to_string()));
     }
 
     #[test]

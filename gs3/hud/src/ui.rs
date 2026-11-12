@@ -269,6 +269,10 @@ pub fn wheel(f: &Frame, row: usize, down: bool) -> Option<Action> {
 }
 
 const PAD: usize = 1;
+/// The rows the YouTube card reserves for the video window. Twelve rows of the card's inner width is
+/// the closest a 42-46 column card gets to 16:9, so the video has almost nothing left to crop and the
+/// window lands inside the frame instead of over it.
+const VIDEO_ROWS: usize = 12;
 struct Body { lines: Vec<Vec<Seg>>, hits: Vec<Hit>, glued: bool }
 impl Body {
     fn push(&mut self, ui: &Ui, c: Card) {
@@ -361,7 +365,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     let video_block = s.ui.prompt.is_some() || s.media.youtube.title.is_some();
     let youtube_rect = youtube_start.filter(|_| video_block && !ui.collapsed("youtube") && cw > 4).and_then(|start| {
         let y = start + 3;
-        (y >= scroll && y + 6 <= scroll + view).then(|| crate::media::CellRect::new((PAD + 2) as u32, (top_rows + y - scroll) as u32, (cw - 4) as u32, 6))
+        (y >= scroll && y + VIDEO_ROWS <= scroll + view).then(|| crate::media::CellRect::new((PAD + 2) as u32, (top_rows + y - scroll) as u32, (cw - 4) as u32, VIDEO_ROWS as u32))
     });
     Frame { lines, hits, tab_row, scroll, max_scroll, cover_pos, youtube_rect }
 }
@@ -954,7 +958,7 @@ fn youtube_card(s: &State, w: usize) -> Card {
         // The hint owns its own row: sharing it with the input cut long queries at half the inner width.
         c.row(vec![seg("> ", PinkBright), seg(buf.clone(), Text), bold("▏", PinkBright)], vec![]);
         c.row(vec![seg("Enter busca · Esc cancela", Dim)], vec![]);
-        for _ in 0..6 { c.row(vec![], vec![]); }
+        for _ in 0..VIDEO_ROWS { c.row(vec![], vec![]); }
         return c;
     }
     c.row(vec![seg("🔍 buscar", Pink)], vec![seg("el vídeo se abre en mpv", Dim)]);
@@ -962,7 +966,7 @@ fn youtube_card(s: &State, w: usize) -> Card {
     // may cost six rows: an idle card spends nothing.
     if y.title.is_some() {
         c.row(vec![], vec![]);
-        for _ in 0..6 { c.row(vec![], vec![]); }
+        for _ in 0..VIDEO_ROWS { c.row(vec![], vec![]); }
     }
     if y.title.is_some() && !y.queue.is_empty() {
         c.row(vec![seg(y.title.clone().unwrap_or_default(), Text)], vec![seg(format!("{}/{}", y.index + 1, y.queue.len()), Dim)]);
@@ -1115,6 +1119,10 @@ mod tests {
         s.media.youtube.title = Some("One More Time".into());
         let playing = frame(&s, 42, 40);
         assert!(playing.youtube_rect.is_some(), "a playing video owns the block");
+        // Twelve rows is the closest a card this narrow gets to 16:9, so the video has almost no
+        // letterbox left to crop and the window stays inside the frame.
+        assert_eq!(playing.youtube_rect.unwrap().height, VIDEO_ROWS as u32, "the block must match the video's shape");
+        assert!(playing.youtube_rect.unwrap().width >= 20, "and the card's inner width");
         assert!(playing.lines.len() > idle.lines.len(), "the block is real rows, not an invisible promise");
     }
 
