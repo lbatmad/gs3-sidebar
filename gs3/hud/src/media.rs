@@ -90,6 +90,13 @@ pub struct Youtube {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Video { pub id: String, pub title: String }
 
+/// A rectangle in terminal cells, relative to the containing grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellRect { pub x: u32, pub y: u32, pub width: u32, pub height: u32 }
+impl CellRect {
+    pub fn new(x: u32, y: u32, width: u32, height: u32) -> Self { Self { x, y, width, height } }
+}
+
 /// What the rail asks the YouTube engine to do. Sent over a channel, never run on the render path.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MediaCmd {
@@ -100,7 +107,7 @@ pub enum MediaCmd {
     /// Absolute position as a fraction of the current duration (0.0–1.0), from a click on the bar.
     Seek(f64),
     /// Search this text, then queue the best match with its recommendations and start it.
-    Play(String),
+    Play(String, Option<CellRect>),
 }
 
 impl Default for Spotify {

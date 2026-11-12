@@ -9,7 +9,7 @@
 //! The video is drawn by mpv in its own window. This module only sends commands and reports state.
 
 use crate::core::Event;
-use crate::media::{MediaCmd, Video, Youtube};
+use crate::media::{CellRect, MediaCmd, Video, Youtube};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -22,6 +22,66 @@ use std::time::Duration;
 const POLL: Duration = Duration::from_millis(500);
 const QUEUE_MAX: usize = 24;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Parse the position and size returned by System Events, rejecting incomplete rectangles.
+fn parse_window_rect(reply: &str) -> Option<(i64, i64, i64, i64)> {
+    let values: Vec<i64> = reply.trim().split(',').map(|part| part.trim().parse()).collect::<Result<_, _>>().ok()?;
+    match values.as_slice() {
+        [x, y, width, height] if *width > 0 && *height > 0 => Some((*x, *y, *width, *height)),
+        _ => None,
+    }
+}
+
+fn parse_layout(reply: &Value, id: &str) -> Option<(CellRect, CellRect)> {
+    fn rect(v: &Value) -> Option<CellRect> {
+        let n = |key| u32::try_from(v[key].as_u64()?).ok();
+        let r = CellRect::new(n("x")?, n("y")?, n("width")?, n("height")?);
+        (r.width > 0 && r.height > 0).then_some(r)
+    }
+    let layout = &reply["layout"];
+    let area = rect(&layout["area"])?;
+    let pane = layout["panes"].as_array()?.iter().find(|v| v["pane_id"].as_str() == Some(id))?;
+    Some((area, rect(&pane["rect"])?))
+}
+
+fn geometry(win: (i64,i64,i64,i64), area: CellRect, pane: CellRect, card: CellRect) -> Option<String> {
+    if win.2 <= 0 || win.3 <= 0 || area.width == 0 || area.height == 0 || card.width == 0 || card.height == 0 { return None }
+    fn axis(origin: i64, size: i64, grid_start: u32, grid_size: u32, pane_start: u32, pane_size: u32, start: u32, length: u32) -> Option<(i64,i64)> {
+        let grid_start = i128::from(grid_start); let grid_end = grid_start + i128::from(grid_size);
+        let pane_start = i128::from(pane_start); let pane_end = pane_start + i128::from(pane_size);
+        let begin = (pane_start + i128::from(start)).max(grid_start);
+        let end = (pane_start + i128::from(start) + i128::from(length)).min(grid_end).min(pane_end);
+        if begin >= end { return None }
+        let scale = |v: i128| (v - grid_start) * i128::from(size) / i128::from(grid_size);
+        let a = scale(begin); let b = scale(end);
+        if b <= a { return None }
+        Some((i64::try_from(i128::from(origin) + a).ok()?, i64::try_from(b-a).ok()?))
+    }
+    let (x,w) = axis(win.0,win.2,area.x,area.width,pane.x,pane.width,card.x,card.width)?;
+    let (y,h) = axis(win.1,win.3,area.y,area.height,pane.y,pane.height,card.y,card.height)?;
+    // Rust's own sign: mpv accepts `-20` and rejects `+-20`.
+    Some(format!("{w}x{h}{x:+}{y:+}"))
+}
+
+fn placement(window: Option<(i64,i64,i64,i64)>, layout: Option<(CellRect,CellRect)>, card: Option<CellRect>) -> Result<String, &'static str> {
+    let card = card.ok_or("sin área visible de YouTube")?;
+    let (area,pane) = layout.ok_or("sin ubicación del panel")?;
+    let window = window.ok_or("sin ubicación de ventana; revisar Accesibilidad")?;
+    geometry(window, area, pane, card).ok_or("área de video inválida")
+}
+
+fn mpv_args(socket: &str, geometry: Option<&str>) -> Vec<String> {
+    let mut args = vec!["--idle=yes".into(), "--no-terminal".into(), "--msg-level=all=error".into(), "--keep-open=yes".into(), "--title=gs3 media".into(), format!("--input-ipc-server={socket}"), "--border=no".into(), "--osc=no".into(), "--ontop".into()];
+    if let Some(g) = geometry { args.push(format!("--geometry={g}")); }
+    args
+}
+
+fn window_rect() -> Option<(i64,i64,i64,i64)> {
+    let script = "tell application \"System Events\" to tell first application process whose frontmost is true to get {position, size} of front window";
+    let out = Command::new("osascript").args(["-e", script]).output().ok()?;
+    if !out.status.success() { return None }
+    parse_window_rect(std::str::from_utf8(&out.stdout).ok()?)
+}
 
 /// A Homebrew installation is not always on the PATH the rail inherits from its launcher.
 pub(super) fn find_tool(name: &str) -> Option<PathBuf> {
@@ -65,14 +125,13 @@ fn refill_index(list: &[Video], finished: &str) -> Option<usize> {
 struct Player { child: Child, out: UnixStream, inp: BufReader<UnixStream>, id: u64, eof: EofGuard }
 
 impl Player {
-    fn start() -> Option<Player> {
+    fn start(geometry: Option<&str>) -> Option<Player> {
         let mpv = find_tool("mpv")?;
         let sock = std::env::temp_dir().join(format!("gs3-hud-{}-mpv.sock", std::process::id()));
         let _ = std::fs::remove_file(&sock);
         let child = Command::new(mpv)
             // Keep EOF observable until the engine has polled and loaded the next video.
-            .args(["--idle=yes", "--no-terminal", "--msg-level=all=error", "--keep-open=yes", "--title=gs3 media"])
-            .arg(format!("--input-ipc-server={}", sock.display()))
+            .args(mpv_args(&sock.to_string_lossy(), geometry))
             // mpv runs yt-dlp as its own child: it needs the same augmented PATH we resolve from.
             .env("PATH", tool_path())
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
@@ -153,15 +212,21 @@ fn advance(player: &mut Player, y: &mut Youtube, step: isize) {
     if !player.load(&y.queue[next].id) { y.state = "no se pudo cargar el video".into(); y.playing = false; }
 }
 
-fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd) {
-    if let MediaCmd::Play(query) = &cmd {
+fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &std::path::Path) {
+    if let MediaCmd::Play(query, card) = &cmd {
         if let Some(player) = player.as_mut() { player.eof = EofGuard::Waiting; }
         y.state = format!("buscando {query}");
         match queue(query) {
             Ok(list) if !list.is_empty() => {
-                if player.is_none() { *player = Player::start(); }
+                let mut fallback = None;
+                if player.is_none() {
+                    let layout = std::env::var("HERDR_PANE_ID").ok().and_then(|id| super::request(socket, "pane.layout", json!({"pane_id":id})).ok().and_then(|v| parse_layout(&v, &id)));
+                    let result = placement(window_rect(), layout, *card);
+                    fallback = result.as_ref().err().copied();
+                    *player = Player::start(result.as_deref().ok());
+                }
                 let Some(player) = player.as_mut() else { y.state = "mpv no encontrado".into(); return };
-                y.queue = list; y.index = 0; y.state = "reproduciendo".into();
+                y.queue = list; y.index = 0; y.state = fallback.map(|reason| format!("sin geometría: {reason}")).unwrap_or_else(|| "reproduciendo".into());
                 y.title = y.queue.first().map(|v| v.title.clone());
                 y.position = 0.0; y.duration = 0.0;
                 let id = y.queue[0].id.clone();
@@ -180,7 +245,7 @@ fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd) {
         MediaCmd::Seek(fraction) => {
             if y.duration > 0.0 { player.call(&["seek", &format!("{:.3}", fraction.clamp(0.0, 1.0) * y.duration), "absolute"]); }
         }
-        MediaCmd::Play(_) => unreachable!("handled above"),
+        MediaCmd::Play(..) => unreachable!("handled above"),
     }
 }
 
@@ -217,7 +282,7 @@ fn poll(player: &mut Option<Player>, y: &mut Youtube) {
 }
 
 /// The engine thread. mpv starts lazily on the first play, so an unused rail spawns nothing.
-pub fn media(tx: Sender<Event>) -> Sender<MediaCmd> {
+pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
     let (cmd_tx, cmd_rx) = mpsc::channel();
     thread::spawn(move || {
         let mut youtube = Youtube { state: if find_tool("mpv").is_some() { "sin reproducción".into() } else { "mpv no encontrado".into() }, ..Youtube::default() };
@@ -226,7 +291,7 @@ pub fn media(tx: Sender<Event>) -> Sender<MediaCmd> {
         let _ = tx.send(Event::Media(youtube.clone()));
         loop {
             match cmd_rx.recv_timeout(POLL) {
-                Ok(cmd) => handle(&mut player, &mut youtube, cmd),
+                Ok(cmd) => handle(&mut player, &mut youtube, cmd, &socket),
                 Err(RecvTimeoutError::Timeout) => poll(&mut player, &mut youtube),
                 // The rail is gone: dropping the player stops mpv with it.
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -242,6 +307,63 @@ mod tests {
     use super::*;
 
     fn video(id: &str) -> Video { Video { id: id.into(), title: id.into() } }
+
+    #[test]
+    fn layout_parser_selects_own_pane_and_rejects_missing_data() {
+        let v = json!({"layout":{"area":{"x":0,"y":0,"width":200,"height":50},"panes":[{"pane_id":"hud","rect":{"x":150,"y":0,"width":50,"height":50}}]}});
+        assert_eq!(parse_layout(&v, "hud"), Some((CellRect::new(0,0,200,50), CellRect::new(150,0,50,50))));
+        assert_eq!(parse_layout(&v, "other"), None);
+        assert_eq!(parse_layout(&json!({"layout":{"area":{},"panes":[]}}), "hud"), None);
+    }
+
+    #[test]
+    fn pixel_geometry_scales_pane_origin_and_clamps() {
+        let win = (10, 20, 1000, 500);
+        let area = CellRect::new(0,0,100,50);
+        assert_eq!(geometry(win, area, CellRect::new(0,0,100,50), CellRect::new(10,5,20,10)).as_deref(), Some("200x100+110+70"));
+        assert_eq!(geometry((0,0,101,101), CellRect::new(0,0,10,10), CellRect::new(5,0,5,10), CellRect::new(0,0,2,2)).as_deref(), Some("20x20+50+0"));
+        assert_eq!(geometry(win, area, CellRect::new(90,40,10,10), CellRect::new(5,5,100,100)).as_deref(), Some("50x50+960+470"));
+        assert!(geometry(win, area, CellRect::new(100,0,1,1), CellRect::new(0,0,1,1)).is_none());
+    }
+
+    #[test]
+    fn a_negative_window_origin_is_not_formatted_with_a_double_sign() {
+        // A display left of or above the main one gives a negative origin. mpv reads `-20` and rejects
+        // `+-20`, so the sign must come from Rust's own formatting.
+        let area = CellRect::new(0, 0, 100, 50);
+        let pane = CellRect::new(0, 0, 100, 50);
+        let card = CellRect::new(10, 20, 40, 10);
+        let got = geometry((-120, -25, 1000, 500), area, pane, card).expect("geometry");
+        assert_eq!(got, "400x100-20+175");
+        assert!(!got.contains("+-"), "{got}");
+    }
+
+    #[test]
+    fn missing_geometry_inputs_have_a_fallback_reason() {
+        let r = CellRect::new(0,0,100,50);
+        assert!(placement(None, Some((r,r)), Some(r)).is_err());
+        assert!(placement(Some((0,0,100,100)), None, Some(r)).is_err());
+        assert!(placement(Some((0,0,100,100)), Some((r,r)), None).is_err());
+        assert!(placement(Some((0,0,100,100)), Some((r,r)), Some(r)).is_ok());
+    }
+
+    #[test]
+    fn mpv_arguments_keep_playback_flags_with_optional_geometry() {
+        let args = mpv_args("/tmp/mpv.sock", None);
+        assert_eq!(args, vec!["--idle=yes", "--no-terminal", "--msg-level=all=error", "--keep-open=yes", "--title=gs3 media", "--input-ipc-server=/tmp/mpv.sock", "--border=no", "--osc=no", "--ontop"]);
+        let mut expected = args; expected.push("--geometry=100x50+1+2".into());
+        assert_eq!(mpv_args("/tmp/mpv.sock", Some("100x50+1+2")), expected);
+    }
+
+    #[test]
+    fn window_rect_parser_accepts_two_pairs_and_rejects_invalid_output() {
+        assert_eq!(parse_window_rect("10, 20, 800, 600\n"), Some((10, 20, 800, 600)));
+        assert_eq!(parse_window_rect("-30, 20, 801, 601"), Some((-30, 20, 801, 601)));
+        assert_eq!(parse_window_rect("10, 20"), None);
+        assert_eq!(parse_window_rect("garbage"), None);
+        assert_eq!(parse_window_rect("10, 20, 0, 600"), None);
+        assert_eq!(parse_window_rect("10, 20, 800, 600, 9"), None);
+    }
 
     #[test]
     fn eof_guard_fires_once_and_rearms_only_for_a_new_load() {

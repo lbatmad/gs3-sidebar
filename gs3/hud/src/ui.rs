@@ -150,7 +150,7 @@ pub fn key(s: &mut State, k: Key) {
             Key::Back => { buf.pop(); }
             Key::Enter => {
                 let query = buf.trim().to_string(); s.ui.prompt = None;
-                if !query.is_empty() { s.ui.media_cmd = Some(MediaCmd::Play(query)); }
+                if !query.is_empty() { s.ui.media_cmd = Some(MediaCmd::Play(query, None)); }
             }
             Key::Esc => s.ui.prompt = None,
             _ => {}
@@ -256,7 +256,7 @@ impl Card {
 }
 
 pub struct Hit { pub row: usize, pub x0: usize, pub x1: usize, pub action: Action }
-pub struct Frame { pub lines: Vec<Vec<Seg>>, pub hits: Vec<Hit>, pub tab_row: usize, pub scroll: usize, pub max_scroll: usize, pub cover_pos: Option<(usize, usize)> }
+pub struct Frame { pub lines: Vec<Vec<Seg>>, pub hits: Vec<Hit>, pub tab_row: usize, pub scroll: usize, pub max_scroll: usize, pub cover_pos: Option<(usize, usize)>, pub youtube_rect: Option<crate::media::CellRect> }
 /// The narrowest region under the cursor wins (a title toggle beats its whole row).
 pub fn click(f: &Frame, col: usize, row: usize) -> Option<Action> {
     f.hits.iter().filter(|h| h.row == row && (h.x0..h.x1).contains(&col)).min_by_key(|h| h.x1 - h.x0).map(|h| h.action.clone())
@@ -331,13 +331,14 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
 
     let mut body = Body { lines: Vec::new(), hits: Vec::new(), glued: false };
     let cw = net;
+    let mut youtube_start = None;
     match ui.tab {
         Tab::Main => { voice_row(&mut body, s.voice, cw, ui.config.plain_controls); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); }
         Tab::Git => { body.push(ui, git_card(s, cw)); body.push(ui, worktree_card(s, cw)); body.push(ui, pr_card(s, cw)); }
         Tab::Prof => body.push(ui, profiles_card(s, cw)),
         Tab::Mem => { for c in [engram_card(s, cw), handoff_card(s, cw), stack_card(s, cw), tools_card(s, cw), mcp_card(s, cw)] { body.push(ui, c); } }
         Tab::Tree => body.push(ui, tree_card(s, cw)),
-        Tab::Media => { body.push(ui, spotify_card(s, cw)); if let Some(c) = tracks_card(s, cw) { body.push(ui, c); } body.push(ui, youtube_card(s, cw)); }
+        Tab::Media => { body.push(ui, spotify_card(s, cw)); if let Some(c) = tracks_card(s, cw) { body.push(ui, c); } youtube_start = Some(body.lines.len() + 1); body.push(ui, youtube_card(s, cw)); }
         Tab::Config => { for c in config_cards(s, cw) { body.push(ui, c); } }
     }
     if body.lines.is_empty() { body.lines.push(centered(vec![seg("Sin información disponible en esta pestaña.", Dim)], net)); }
@@ -357,7 +358,12 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     let cover_pos = (ui.tab == Tab::Media && !ui.collapsed("spotify") && cw >= 16
         && crate::cover::ready(s.media.spotify.cover_url.as_deref(), s.media.spotify.cover_png.as_deref(), true, true)
         && scroll <= 1 && 7 <= scroll + view).then(|| (PAD + 2, top_rows + 1 - scroll));
-    Frame { lines, hits, tab_row, scroll, max_scroll, cover_pos }
+    let video_block = s.ui.prompt.is_some() || s.media.youtube.title.is_some();
+    let youtube_rect = youtube_start.filter(|_| video_block && !ui.collapsed("youtube") && cw > 4).and_then(|start| {
+        let y = start + 3;
+        (y >= scroll && y + 6 <= scroll + view).then(|| crate::media::CellRect::new((PAD + 2) as u32, (top_rows + y - scroll) as u32, (cw - 4) as u32, 6))
+    });
+    Frame { lines, hits, tab_row, scroll, max_scroll, cover_pos, youtube_rect }
 }
 pub fn render_lines(s: &State, width: u16) -> Vec<String> { frame(s, width, 0).lines.iter().map(|l| plain(l)).collect() }
 
@@ -948,7 +954,15 @@ fn youtube_card(s: &State, w: usize) -> Card {
         // The hint owns its own row: sharing it with the input cut long queries at half the inner width.
         c.row(vec![seg("> ", PinkBright), seg(buf.clone(), Text), bold("▏", PinkBright)], vec![]);
         c.row(vec![seg("Enter busca · Esc cancela", Dim)], vec![]);
+        for _ in 0..6 { c.row(vec![], vec![]); }
         return c;
+    }
+    c.row(vec![seg("🔍 buscar", Pink)], vec![seg("el vídeo se abre en mpv", Dim)]);
+    // The block is where the video window lands. Only a video that exists or is about to be started
+    // may cost six rows: an idle card spends nothing.
+    if y.title.is_some() {
+        c.row(vec![], vec![]);
+        for _ in 0..6 { c.row(vec![], vec![]); }
     }
     if y.title.is_some() && !y.queue.is_empty() {
         c.row(vec![seg(y.title.clone().unwrap_or_default(), Text)], vec![seg(format!("{}/{}", y.index + 1, y.queue.len()), Dim)]);
@@ -964,11 +978,15 @@ fn youtube_card(s: &State, w: usize) -> Card {
             let row = c.rows.len() - 1; let last = inner.saturating_sub(1).max(1);
             for k in 0..inner { c.hits.push((row, 2 + k, 3 + k, Action::Seek(k as f64 / last as f64))); }
         }
-        c.row(vec![seg(format!("{} / {}", clock(y.position), clock(y.duration)), Muted)], vec![seg(&y.state, Dim)]);
+        if y.state.starts_with("sin geometría:") {
+            c.row(vec![seg(format!("{} / {}", clock(y.position), clock(y.duration)), Muted)], vec![]);
+            for line in wrap(&y.state, inner) { c.row(vec![seg(line, Dim)], vec![]); }
+        } else {
+            c.row(vec![seg(format!("{} / {}", clock(y.position), clock(y.duration)), Muted)], vec![seg(&y.state, Dim)]);
+        }
     } else {
         c.row(vec![seg("estado · ", Muted), seg(&y.state, Text)], vec![]);
     }
-    c.row(vec![seg("🔍 buscar", Pink)], vec![seg("el vídeo se abre en mpv", Dim)]);
     c.on_click(Action::Search);
     c
 }
@@ -1069,13 +1087,45 @@ mod tests {
     }
 
     #[test]
+    fn youtube_placement_and_fallback_remain_visible() {
+        let mut s = sample(); s.ui.tab = Tab::Media; s.ui.prompt = Some("query".into());
+        let prompt = frame(&s, 42, 0);
+        let rect = prompt.youtube_rect.expect("video area");
+        let input = prompt.lines.iter().position(|l| plain(l).contains("> query")).unwrap();
+        assert_eq!(rect.y as usize, input + 2);
+        s.ui.prompt = None;
+        s.media.youtube.state = "sin geometría: sin ubicación de ventana; revisar Accesibilidad".into();
+        s.media.youtube.title = Some("video".into());
+        s.media.youtube.queue = vec![crate::media::Video { id: "a".into(), title: "video".into() }];
+        let f = frame(&s, 42, 0);
+        assert_eq!(f.youtube_rect, Some(rect));
+        assert!(f.lines.iter().any(|l| plain(l).contains("sin geometría")));
+        assert!(f.lines.iter().any(|l| plain(l).contains("Accesibilidad")));
+    }
+
+    #[test]
+    fn the_video_block_is_reserved_only_while_it_can_show_a_video() {
+        let mut s = sample(); s.ui.tab = Tab::Media;
+        let idle = frame(&s, 42, 40);
+        assert_eq!(idle.youtube_rect, None, "an idle card must not spend six empty rows");
+        s.ui.prompt = Some("daft punk".into());
+        let open = frame(&s, 42, 40);
+        assert!(open.youtube_rect.is_some(), "the box reserves the block for the video it is about to start");
+        s.ui.prompt = None;
+        s.media.youtube.title = Some("One More Time".into());
+        let playing = frame(&s, 42, 40);
+        assert!(playing.youtube_rect.is_some(), "a playing video owns the block");
+        assert!(playing.lines.len() > idle.lines.len(), "the block is real rows, not an invisible promise");
+    }
+
+    #[test]
     fn cover_layout_is_reserved_only_for_visible_complete_images() {
         let mut s = sample(); s.ui.tab = Tab::Media;
-        let empty = frame(&s, 42, 30);
+        let empty = frame(&s, 42, 0);
         assert_eq!(empty.cover_pos, None);
         s.media.spotify.cover_url = Some("https://example.test/image".into());
         s.media.spotify.cover_png = Some(vec![1]);
-        let shown = frame(&s, 42, 30);
+        let shown = frame(&s, 42, 0);
         assert_eq!(shown.cover_pos, Some((3, 8)));
         assert_eq!(shown.lines.len(), empty.lines.len() + 6);
         s.ui.scroll[Tab::Media.index()] = 9;
@@ -1201,7 +1251,7 @@ mod tests {
         apply(&mut s, Event::Key(Key::Back)); apply(&mut s, Event::Key(Key::Char('k')));
         apply(&mut s, Event::Key(Key::Enter));
         assert_eq!(s.ui.prompt, None);
-        assert_eq!(s.ui.media_cmd, Some(MediaCmd::Play("daft punk".into())));
+        assert_eq!(s.ui.media_cmd, Some(MediaCmd::Play("daft punk".into(), None)));
         // Esc closes without playing, and an empty query never reaches the engine.
         s.ui.media_cmd = None;
         apply(&mut s, Event::Ui(Action::Search)); apply(&mut s, Event::Key(Key::Char('x'))); apply(&mut s, Event::Key(Key::Esc));
