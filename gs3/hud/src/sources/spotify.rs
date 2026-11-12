@@ -509,6 +509,18 @@ fn next_idle_streak(playing: bool, previous: u32) -> u32 {
 
 fn should_poll(activated: bool, idle: u32) -> bool { activated && idle < IDLE_LIMIT }
 
+/// What `Start` should do: adopt the device already registered under our name, or start one. A failed
+/// probe counts as "nothing there": the first start must not be blocked by a slow request.
+#[derive(Debug, PartialEq)]
+enum DeviceStart { Adopt(String), Spawn }
+
+fn start_decision(devices: Result<Value, String>) -> DeviceStart {
+    match devices {
+        Ok(v) => device_id(&v).map(DeviceStart::Adopt).unwrap_or(DeviceStart::Spawn),
+        Err(_) => DeviceStart::Spawn,
+    }
+}
+
 fn player_reply(state: &mut Spotify, reply: &Value) {
     state.playing = reply["is_playing"].as_bool().unwrap_or(false);
     let item = &reply["item"];
@@ -681,9 +693,13 @@ pub fn spotify(tx: Sender<Event>) -> Sender<SpotifyCmd> {
             match cmd_rx.recv_timeout(POLL) {
                 Ok(SpotifyCmd::Start) => {
                     if player.is_none() {
-                        match start_device(file, url_tx.clone()) {
-                            Ok((child, dir)) => { player = Some(child); cache = Some(dir); state.running = true; state.state = "iniciando dispositivo gs3".into(); discover = true; }
-                            Err(e) => state.state = e,
+                        match start_decision(api(&format!("{API}/me/player/devices"), file)) {
+                            // A device we do not own the handle of: adopt it rather than duplicate it.
+                            DeviceStart::Adopt(id) => { state.device_id = Some(id); state.running = true; state.state = "dispositivo gs3 adoptado".into(); }
+                            DeviceStart::Spawn => match start_device(file, url_tx.clone()) {
+                                Ok((child, dir)) => { player = Some(child); cache = Some(dir); state.running = true; state.state = "iniciando dispositivo gs3".into(); discover = true; }
+                                Err(e) => state.state = e,
+                            },
                         }
                     } else { discover = true; state.state = "buscando dispositivo gs3".into(); }
                     publish(&tx, &state);
@@ -767,6 +783,16 @@ mod tests {
         let cache = Path::new("/private/cache");
         assert_eq!(librespot_args(cache, false), vec!["--name", DEVICE, "--backend", "rodio", "--cache", "/private/cache", "--enable-oauth"]);
         assert_eq!(librespot_args(cache, true), vec!["--name", DEVICE, "--backend", "rodio", "--cache", "/private/cache"]);
+    }
+
+    #[test]
+    fn an_already_registered_device_is_adopted_instead_of_starting_a_second() {
+        // A hard kill of the HUD orphans librespot, so a restart can find its own device already
+        // registered. Spawning another one would put two devices named `gs3` in the list and the
+        // audio could go to the stale instance.
+        assert_eq!(start_decision(Ok(json!({"devices": [{"name": "otro", "id": "x"}, {"name": "gs3", "id": "d1"}]}))), DeviceStart::Adopt("d1".into()));
+        assert_eq!(start_decision(Ok(json!({"devices": []}))), DeviceStart::Spawn);
+        assert_eq!(start_decision(Err("sin red".into())), DeviceStart::Spawn, "a failed probe must not block the first start");
     }
 
     #[test]

@@ -63,7 +63,8 @@ about to expire, or a 401 from the API, is renewed from the stored refresh token
 retried once; nothing is refreshed while no call needs it.
 
 Spotify Premium playback starts only on an explicit `▶ iniciar dispositivo` click. The HUD starts
-`librespot` as `gs3` with the rodio backend; on first login the card shows its OAuth URL in the state
+`librespot` as `gs3` with the rodio backend — unless a device already registered under that name, which
+is adopted instead of duplicated —; on first login the card shows its OAuth URL in the state
 and wrapped lines to open manually. The private `~/.config/gs3/librespot` cache directory is 0700;
 when credentials exist, subsequent starts reuse them without `--enable-oauth`, and that file is
 tightened to 0600 as soon as it appears: librespot creates it with the ambient umask. The card resolves the
