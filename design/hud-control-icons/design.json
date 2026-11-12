@@ -1,0 +1,27 @@
+{
+  "title": "Delicate HUD controls",
+  "brief": "Replace heavy pixel controls with delicate terminal-feasible alternatives that harmonize with the sidebar.",
+  "artboards": [
+    {
+      "file": "01-fine-lines.html",
+      "title": "Fine lines",
+      "tradeoff": "Light two-row line art, no icon font required; microphone needs validation at actual terminal size.",
+      "width": 1100,
+      "height": 650
+    },
+    {
+      "file": "02-compact-symbols.html",
+      "title": "Compact symbols",
+      "tradeoff": "Quiet single-row controls; headphone and microphone symbols depend on terminal font coverage.",
+      "width": 1100,
+      "height": 650
+    },
+    {
+      "file": "03-labelled-controls.html",
+      "title": "Quiet labels",
+      "tradeoff": "Maximum legibility and predictable font support, trading pictograms for short action labels.",
+      "width": 1100,
+      "height": 650
+    }
+  ]
+}

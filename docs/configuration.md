@@ -82,7 +82,20 @@ Un clic en el modelo, el esfuerzo (`sin modelo`) o la flechita `▸` de *Status*
 
 ![Captura completa](assets/integration.png)
 
-La barra usa su propia paleta (violeta `#8e44ad` para los marcos, rosa para el activo) y respeta el fondo de tu terminal. El fondo de rosas de las capturas es **una imagen personal** puesta en Ghostty; no viene en el repo. Para algo parecido, en `~/.config/ghostty/config.ghostty`:
+La barra usa una paleta azul oscuro y amarillo, y respeta el fondo de tu terminal. Las capturas anteriores pueden mostrar la paleta violeta/rosa original.
+
+| Rol | Color |
+| --- | --- |
+| Fondo recomendado de terminal | `#0E1524` |
+| Marcos / divisiones | `#334155` |
+| Activos y títulos destacados | `#FFD23F` |
+| Texto | `#E2E8F0` |
+| Estados correctos | `#10B981` |
+| Acciones y controles | `#06B6D4` |
+
+El texto secundario usa grises más claros para que siga siendo legible; las advertencias conservan un ámbar y los errores un rojo rosado. Los indicadores de voz conservan los colores conocidos de Discord. La barra no modifica la configuración de tu terminal.
+
+El fondo de rosas de las capturas es **una imagen personal** puesta en Ghostty; no viene en el repo. Para algo parecido, en `~/.config/ghostty/config.ghostty`:
 
 ```ini
 background-image = /ruta/a/tu/imagen.png

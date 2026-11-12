@@ -17,7 +17,7 @@ to collapse/expand it, and CONFIG rows; the wheel over the tab bar cycles tabs a
 elsewhere scrolls the body. MAIN's model section is a button: click any model-name,
 effort or `sin modelo` row (or the dim Status `▸`) to open the model picker in gs2.
 Above Status, three centered pixel-art icons (5×2, no frame) control the local Discord RPC client (Vesktop on Linux; official Discord on macOS):
-🎙 toggles mute, 🎧 toggles deafen (red = active, green = off, white = no client running), ⚙ opens or focuses that client. Each whole icon (plus one column on each side) is clickable.
+🎙 toggles mute, 🎧 toggles deafen (red = active, green = off, white = no client running), the Discord icon opens or focuses that client. Each whole icon (plus one column on each side) is clickable.
 The first click asks for RPC consent; the token is kept private in `~/.config/gs3/discord-token.json` (0600). On macOS the connected peer's UID and executable path are checked before any RPC data is sent.
 It focuses only the bound pane, then sends fixed F9 to the model-picker extension.
 A dedicated worker keeps socket I/O off rendering, coalesces pending clicks and
@@ -35,7 +35,7 @@ violet double-framed collapsible cards). Card catalog: `skills/gs3-sidebar/refer
 
 | Tab | Cards |
 | --- | --- |
-| 1:MAIN | voice buttons `🎙 🎧 ⚙` (Vesktop mute, deafen, open) plus a small capture flame flush right (Flameshot on Linux, native selection to clipboard on macOS), ⌁ Status (project, branch, clickable model section: spaced capitals + `◆ THINKING ◆`; Status `▸` hint), ⌁ Context, ⌁ Todos (latest `todo` tool checklist of the session) |
+| 1:MAIN | regular-weight Nerd Font voice buttons (mic, headphones, cog) (Vesktop mute, deafen, open) plus a small lavender capture-area icon flush right (Flameshot on Linux, native selection to clipboard on macOS), ⌁ Status (project, branch, clickable model section: spaced capitals + `◆ THINKING ◆`; Status `▸` hint), ⌁ Context, ⌁ Todos (latest `todo` tool checklist of the session) |
 | 2:GIT | ⎇ git graph (`[ Grafo \| Ramas ]`: commit graph or branches; click a branch to diff it against HEAD), 📁 Working Tree (changed files; click one for an inline diff preview, secret-like names are never read), ⌁ Pull requests |
 | 3:PROF | ⌁ Profiles & Clusters (host model/thinking from `settings.json`, one row per `agents/*.md` with its model and effort, Task Manager footer) |
 | 4:MEM | 🧠 Engram (daemon health, sync state), 🧠 Active Handoff (latest session summary, bounded), ⌁ Stack (session-installation versions; refreshed on binding and `r`), 🔧 tools, ⌁ MCP (names only, never values) |
@@ -94,3 +94,5 @@ CARGO_TARGET_DIR=./target cargo build --release
 Binary: `./target/release/gs3-hud`. Dependencies include bundled
 SQLite and no OpenSSL or HTTP client. The launcher should pass the **Pi pane's**
 id, not the HUD pane's id. It can terminate the HUD pane after Pi exits.
+
+The MAIN controls require a Nerd Font with Material Design glyph coverage. Audio controls use the existing mint/coral state colors, dim when offline; client and capture controls use the panel's lavender secondary tone.

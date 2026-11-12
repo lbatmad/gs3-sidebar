@@ -352,18 +352,23 @@ pub fn fmt_tokens(n:u64)->String {
     if n>=1_000_000 {f(n as f64/1e6,"M")} else if n>=1000 {f(n as f64/1e3,"k")} else {n.to_string()}
 }
 
-/// CUTE palette (`themes/CinlodevCute.json` of pi-cinlodev-cute).
+/// Navy/yellow workspace palette; semantic roles stay independent of their hues.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone { Border, BorderMuted, PinkBright, Pink, Gold, Yellow, Text, Muted, Dim, Mint, Orange, Coral, Cyan, Read, Salmon, Secondary, Blue, Green, Purple, VoiceRed, VoiceGreen }
 impl Tone {
     pub fn rgb(self)->(u8,u8,u8) {
-        match self {Tone::VoiceRed=>(0xf2,0x3f,0x43),Tone::VoiceGreen=>(0x23,0xa5,0x5a),Tone::Border=>(0x8e,0x44,0xad),Tone::BorderMuted=>(0x5c,0x2c,0x74),Tone::PinkBright=>(0xff,0xb1,0xdd),Tone::Pink=>(0xf0,0x95,0xc8),Tone::Gold=>(0xe0,0xc2,0x7a),
-            Tone::Yellow=>(0xf2,0xb8,0x6d),Tone::Text=>(0xf6,0xef,0xf3),Tone::Muted=>(0xa7,0x8e,0x9b),Tone::Dim=>(0x76,0x61,0x6b),Tone::Mint=>(0xb4,0xe7,0xc7),Tone::Orange=>(0xe8,0x83,0x52),
-            Tone::Coral=>(0xff,0x71,0x8f),Tone::Cyan=>(0xa5,0xcb,0xe8),Tone::Green=>(0x8e,0xc5,0xa6),Tone::Read=>(0xc5,0xa3,0xe0),Tone::Salmon=>(0xf0,0x97,0x8a),
-            // secondary (remote refs) and syntaxFunction (graph edges, hunk headers).
-            Tone::Secondary=>(0xd7,0xa0,0xb8),Tone::Blue=>(0xa9,0xc7,0xee),
-            // Gear silhouette: a lighter shade of the frame purple (#8e44ad) so it reads on dark backgrounds.
-            Tone::Purple=>(0xb5,0x7e,0xdc)}
+        match self {
+            // Preserve Discord's familiar mute/deafen status colors.
+            Tone::VoiceRed=>(0xf2,0x3f,0x43), Tone::VoiceGreen=>(0x23,0xa5,0x5a),
+            Tone::Border=>(0x33,0x41,0x55), Tone::BorderMuted=>(0x27,0x35,0x48),
+            Tone::PinkBright | Tone::Pink | Tone::Gold | Tone::Yellow=>(0xff,0xd2,0x3f),
+            Tone::Text=>(0xe2,0xe8,0xf0), Tone::Muted=>(0x94,0xa3,0xb8), Tone::Dim=>(0x84,0x94,0xa8),
+            Tone::Mint | Tone::Green=>(0x10,0xb9,0x81),
+            Tone::Orange=>(0xfb,0xbf,0x24), Tone::Coral | Tone::Salmon=>(0xfb,0x71,0x85),
+            Tone::Cyan | Tone::Read | Tone::Purple=>(0x06,0xb6,0xd4),
+            // Remote refs remain quieter than graph edges and action controls.
+            Tone::Secondary=>(0x7d,0xd3,0xe8), Tone::Blue=>(0x38,0xbd,0xf8),
+        }
     }
 }
 /// Context thresholds of the reference (`getContextThreshold`).
@@ -375,6 +380,30 @@ pub fn fmt_cost(c:f64)->String {if c>=1.0 {format!("${c:.2}")} else {format!("${
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn navy_yellow_palette_preserves_semantic_roles() {
+        assert_eq!(Tone::Border.rgb(), (0x33, 0x41, 0x55));
+        assert_eq!(Tone::Text.rgb(), (0xe2, 0xe8, 0xf0));
+        for tone in [Tone::PinkBright, Tone::Pink, Tone::Gold, Tone::Yellow] {
+            assert_eq!(tone.rgb(), (0xff, 0xd2, 0x3f));
+        }
+        for tone in [Tone::Mint, Tone::Green] {
+            assert_eq!(tone.rgb(), (0x10, 0xb9, 0x81));
+        }
+        for tone in [Tone::Cyan, Tone::Read, Tone::Purple] {
+            assert_eq!(tone.rgb(), (0x06, 0xb6, 0xd4));
+        }
+        // Discord's established red/green affordances stay recognizable.
+        assert_eq!(Tone::VoiceRed.rgb(), (0xf2, 0x3f, 0x43));
+        assert_eq!(Tone::VoiceGreen.rgb(), (0x23, 0xa5, 0x5a));
+        assert_ne!(Tone::Coral.rgb(), Tone::Mint.rgb());
+        assert_ne!(Tone::Orange.rgb(), Tone::Mint.rgb());
+        // The palette must not change the existing context thresholds.
+        assert_eq!(ctx_band(0.0), ("● Óptimo", Tone::Mint));
+        assert_eq!(ctx_band(40.0), ("● Medio", Tone::Gold));
+        assert_eq!(ctx_band(65.0), ("● Alerta", Tone::Orange));
+        assert_eq!(ctx_band(80.0), ("● Crítico", Tone::Coral));
+    }
     #[test]
     fn tail_aggregation_partial_and_truncation() {
         let line = b"{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"usage\":{\"input\":4,\"output\":8,\"cacheRead\":2,\"cacheWrite\":3,\"totalTokens\":17,\"cost\":{\"total\":0.5}}}}\n";

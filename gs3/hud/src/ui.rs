@@ -304,36 +304,35 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
 }
 pub fn render_lines(s: &State, width: u16) -> Vec<String> { frame(s, width, 0).lines.iter().map(|l| plain(l)).collect() }
 
-/// Voice icons drawn 5 columns × 2 rows with sextant "pixels" (no frame), 3 columns apart,
-/// right under the divider and glued to Status. Each icon plus one column on either side is clickable.
-const VOICE_ICONS: [[&str; 2]; 3] = [
-    ["\u{1fb1e}\u{2590}\u{2588}\u{258c}\u{1fb0f}", " \u{1fb30}\u{2588}\u{1fb30} "],
-    ["\u{1fb16}\u{1fb02}\u{1fb02}\u{1fb02}\u{1fb22}", "\u{2588}\u{258c} \u{2590}\u{2588}"],
-    ["\u{1fb1e}\u{1fb3b}\u{1fb0b}\u{1fb3a}\u{1fb0f}", "\u{1fb01}\u{1fb2c}\u{1fb0b}\u{1fb1d}\u{1fb00}"],
-];
-/// Flameshot flame, 3 columns × 2 rows of sextants, flush right on the voice rows (smaller than the 5-column voice icons).
-const FLAME_ICON: [&str; 2] = ["\u{1fb1e}\u{1fb3a}\u{1fb1e}", "\u{1fb2b}\u{2588}\u{1fb1d}"];
+/// Material Design Nerd Font controls, regular weight in fixed five-cell slots.
+/// Requires a Nerd Font with Material Design glyph coverage in the terminal.
+const MIC_ICON: &str = "\u{f036e}";
+const MIC_OFF: &str = "\u{f036d}";
+const HEADPHONES_ICON: &str = "\u{f02cb}";
+const HEADPHONES_OFF: &str = "\u{f07ce}";
+const DISCORD_ICON: &str = "\u{f066f}";
+const CAPTURE_ICON: &str = "\u{f019f}";
 fn voice_row(body: &mut Body, voice: Voice, w: usize) {
     const ICON: usize = 5; const GAP: usize = 3;
-    let tone = |active| if !voice.online { Tone::Text } else if active { Tone::VoiceRed } else { Tone::VoiceGreen };
-    let tones = [tone(voice.mute || voice.deaf), tone(voice.deaf), tone(false)];
+    let tone = |active| if !voice.online { Tone::Dim } else if active { Tone::Coral } else { Tone::Mint };
+    let icons = [if voice.mute || voice.deaf { MIC_OFF } else { MIC_ICON }, if voice.deaf { HEADPHONES_OFF } else { HEADPHONES_ICON }, DISCORD_ICON, CAPTURE_ICON];
+    let tones = [tone(voice.mute || voice.deaf), tone(voice.deaf), if voice.online { Tone::Secondary } else { Tone::Dim }, Tone::Secondary];
     let start = body.lines.len();
-    // The voice icons stay centered; the flame goes flush right when at least 2 columns remain between it and the gear.
-    let (flame, row_w) = (FLAME_ICON[0].width(), 3 * ICON + 2 * GAP);
+    let count = if w >= 4 * ICON + 3 * GAP { 4 } else { 3 };
+    let row_w = count * ICON + (count - 1) * GAP;
     let lead = w.saturating_sub(row_w) / 2;
-    let show_flame = lead + row_w + 2 + flame <= w;
-    for r in 0..2 {
-        let mut l = vec![seg(" ".repeat(lead), Tone::Text)];
-        for (i, icon) in VOICE_ICONS.iter().enumerate() { if i > 0 { l.push(seg(" ".repeat(GAP), Tone::Text)); } l.push(bold(icon[r], tones[i])); }
-        if show_flame { l.push(seg(" ".repeat(w - lead - row_w - flame), Tone::Text)); l.push(bold(FLAME_ICON[r], Tone::Yellow)); }
-        body.lines.push(l);
+    let mut line = vec![seg(" ".repeat(lead), Tone::Text)];
+    for (i, icon) in icons.iter().take(count).enumerate() {
+        if i > 0 { line.push(seg(" ".repeat(GAP), Tone::Text)); }
+        let padding = ICON.saturating_sub(icon.width());
+        let left = padding / 2;
+        line.push(seg(" ".repeat(left), Tone::Text));
+        line.push(seg(*icon, tones[i]));
+        line.push(seg(" ".repeat(padding - left), Tone::Text));
+        let x = PAD + lead + i * (ICON + GAP);
+        body.hits.push(Hit { row: start, x0: x.saturating_sub(1), x1: x + ICON + 1, action: [Action::VoiceMute, Action::VoiceDeaf, Action::VoiceOpen, Action::Screenshot][i].clone() });
     }
-    if show_flame { for r in 0..2 { body.hits.push(Hit { row: start + r, x0: PAD + w - flame - 1, x1: PAD + w + 1, action: Action::Screenshot }); } }
-    let x = PAD + lead;
-    for (i, action) in [Action::VoiceMute, Action::VoiceDeaf, Action::VoiceOpen].into_iter().enumerate() {
-        let x0 = x + i * (ICON + GAP);
-        for r in 0..2 { body.hits.push(Hit { row: start + r, x0: x0.saturating_sub(1), x1: x0 + ICON + 1, action: action.clone() }); }
-    }
+    body.lines.push(line);
     body.glued = true;
 }
 
@@ -816,65 +815,63 @@ mod tests {
         s
     }
     #[test]
-    fn voice_row_colors_clicks_and_apply() {
+    fn nerd_font_controls_preserve_states_colors_and_clicks() {
         let mut s = sample();
-        assert!(!apply(&mut s, Event::Voice(Voice::default())));
         for online in [false, true] { for mute in [false, true] { for deaf in [false, true] {
-            let voice = Voice { online, mute, deaf };
-            let changed = s.voice != voice;
-            assert_eq!(apply(&mut s, Event::Voice(voice)), changed);
-            assert!(!apply(&mut s, Event::Voice(voice)));
+            s.voice = Voice { online, mute, deaf };
             let f = frame(&s, 42, 0);
-            let icons = VOICE_ICONS.map(|i| i.map(String::from));
-            let (bx, y) = at(&f, &icons[0][0]);
-            assert_eq!(y, f.tab_row + 2, "glued to the divider, no blank line above");
-            assert!(plain(&f.lines[y]).starts_with(&format!("{}{}   {}   {}", " ".repeat(bx), icons[0][0], icons[1][0], icons[2][0])));
-            assert!(plain(&f.lines[y + 1]).starts_with(&format!("{}{}   {}   {}", " ".repeat(bx), icons[0][1], icons[1][1], icons[2][1])));
-            assert_eq!(at(&f, "Status").1, y + 2, "Status starts right below the icons");
-            assert!(!plain(&f.lines[y]).contains('╭') && !plain(&f.lines[y]).contains('│'), "no frame");
-            for row in VOICE_ICONS.iter().flatten() { assert_eq!(row.width(), 5); }
-            for (i, (action, cmd, active)) in [(Action::VoiceMute, VoiceCmd::Mute, mute || deaf), (Action::VoiceDeaf, VoiceCmd::Deaf, deaf), (Action::VoiceOpen, VoiceCmd::Open, false)].into_iter().enumerate() {
-                let x0 = bx + i * 8;
-                for row in [y, y + 1] {
-                    let g = f.lines[row].iter().find(|g| g.text == VOICE_ICONS[i][row - y]).unwrap();
-                    assert_eq!((g.tone, g.bold), (if !online { Tone::Text } else if active { Tone::VoiceRed } else { Tone::VoiceGreen }, true));
-                    for col in x0 - 1..x0 + 6 { assert_eq!(click(&f, col, row), Some(action.clone()), "icon {i} col {col} row {row}"); }
-                }
-                if i < 2 { assert_eq!(click(&f, x0 + 6, y), None, "the gap middle is neutral"); }
+            let icons = [if mute || deaf { MIC_OFF } else { MIC_ICON }, if deaf { HEADPHONES_OFF } else { HEADPHONES_ICON }, DISCORD_ICON];
+            assert!(f.lines.iter().any(|line| plain(line).contains('\u{f066f}')), "voice launcher must use the Discord logo");
+            let (bx, y) = at(&f, icons[0]);
+            assert_eq!(y, f.tab_row + 2);
+            assert_eq!(at(&f, "Status").1, y + 1);
+            for (i, action) in [Action::VoiceMute, Action::VoiceDeaf, Action::VoiceOpen].into_iter().enumerate() {
+                let (x, row) = at(&f, icons[i]);
+                assert_eq!(row, y);
+                let g = f.lines[y].iter().find(|g| g.text == icons[i]).unwrap();
+                let active = if i == 0 { mute || deaf } else { deaf };
+                let expected = if !online { Tone::Dim } else if i == 2 { Tone::Secondary } else if active { Tone::Coral } else { Tone::Mint };
+                assert_eq!((g.tone, g.bold), (expected, false));
+                for col in x - 1..x + icons[i].width() + 1 { assert_eq!(click(&f, col, y), Some(action.clone())); }
                 s.ui.voice_cmd = None;
                 assert!(apply(&mut s, Event::Ui(action)));
-                assert_eq!(s.ui.voice_cmd, Some(cmd)); assert!(!s.ui.save);
+                assert_eq!(s.ui.voice_cmd, Some([VoiceCmd::Mute, VoiceCmd::Deaf, VoiceCmd::Open][i]));
+                assert!(!s.ui.save);
             }
-            assert_eq!(click(&f, bx - 2, y), None); assert_eq!(click(&f, bx, y - 1), None);
+            assert_eq!(click(&f, bx, y - 1), None);
         }}}
-        for t in [Tab::Git, Tab::Prof, Tab::Mem, Tab::Tree, Tab::Config] { assert!(!on(&s, t, 42).iter().any(|l| l.contains(VOICE_ICONS[0][0]))); }
-        assert_eq!(Tone::VoiceRed.rgb(), (242,63,67)); assert_eq!(Tone::VoiceGreen.rgb(), (35,165,90));
+        for t in [Tab::Git, Tab::Prof, Tab::Mem, Tab::Tree, Tab::Config] {
+            assert!(!on(&s, t, 42).iter().any(|l| l.contains(DISCORD_ICON)));
+        }
     }
     #[test]
-    fn flameshot_icon_sits_at_the_right_end_and_opens_the_capture_tool() {
+    fn capture_icon_preserves_centered_group_and_action() {
         let mut s = sample();
-        for voice in [Voice::default(), Voice { online: true, mute: true, deaf: true }] {
-            apply(&mut s, Event::Voice(voice));
-            let f = frame(&s, 42, 0);
-            let (bx, y) = at(&f, VOICE_ICONS[0][0]);
-            let (fx, fy) = at(&f, FLAME_ICON[0]);
-            assert_eq!(fy, y, "same rows as the voice icons");
-            assert_eq!(fx, 42 - 1 - FLAME_ICON[0].width(), "flush with the right edge");
-            assert_eq!(at(&f, FLAME_ICON[1]), (fx, y + 1));
-            assert_eq!(bx, 10, "the Discord icons stay centered where they were");
-            assert!(FLAME_ICON.iter().all(|r| r.width() == 3), "smaller than the 5-column voice icons");
-            for g in f.lines[y].iter().filter(|g| g.text == FLAME_ICON[0]) { assert_eq!(g.tone, Tone::Yellow); }
-            for col in fx - 1..fx + 4 { for row in [y, y + 1] { assert_eq!(click(&f, col, row), Some(Action::Screenshot), "col {col} row {row}"); } }
-            assert_eq!(click(&f, fx - 2, y), None); assert_eq!(click(&f, fx, y - 1), None);
-            assert_ne!(click(&f, bx + 16, y), Some(Action::Screenshot), "the gear keeps its own click area");
-            s.ui.screenshot = false;
-            assert!(apply(&mut s, Event::Ui(Action::Screenshot)));
-            assert!(s.ui.screenshot && !s.ui.save && s.ui.voice_cmd.is_none());
+        let f = frame(&s, 42, 0);
+        let (x, y) = at(&f, CAPTURE_ICON);
+        assert_eq!(x, at(&f, DISCORD_ICON).0 + 8);
+        for width in [32, 42, 60] {
+            let group = frame(&s, width, 0);
+            let positions: Vec<_> = [MIC_ICON, HEADPHONES_ICON, DISCORD_ICON, CAPTURE_ICON].iter().map(|icon| at(&group, icon).0).collect();
+            assert!(positions.windows(2).all(|pair| pair[1] - pair[0] == 8));
+            let left = positions[0];
+            let right = usize::from(width) - positions[3] - CAPTURE_ICON.width();
+            assert!(left.abs_diff(right) <= 1, "group must be centered at width {width}");
         }
-        for t in [Tab::Git, Tab::Prof, Tab::Mem, Tab::Tree, Tab::Config] { assert!(!on(&s, t, 42).iter().any(|l| l.contains(FLAME_ICON[0]))); }
-        // Too narrow to sit beside the gear without touching it: the flame is dropped, the voice icons stay.
+        let g = f.lines[y].iter().find(|g| g.text == CAPTURE_ICON).unwrap();
+        assert_eq!((g.tone, g.bold), (Tone::Secondary, false));
+        for col in x - 1..x + CAPTURE_ICON.width() + 1 { assert_eq!(click(&f, col, y), Some(Action::Screenshot)); }
+        assert!(apply(&mut s, Event::Ui(Action::Screenshot)));
+        assert!(s.ui.screenshot && !s.ui.save && s.ui.voice_cmd.is_none());
         let narrow = render_lines(&s, 28);
-        assert!(!narrow.iter().any(|l| l.contains(FLAME_ICON[0])) && narrow.iter().any(|l| l.contains(VOICE_ICONS[0][0])));
+        assert!(!narrow.iter().any(|l| l.contains(CAPTURE_ICON)));
+        assert!(narrow.iter().any(|l| l.contains(DISCORD_ICON)));
+        for width in [28, 32, 42, 60] {
+            assert!(render_lines(&s, width).iter().all(|l| l.width() <= usize::from(width)));
+        }
+        for t in [Tab::Git, Tab::Prof, Tab::Mem, Tab::Tree, Tab::Config] {
+            assert!(!on(&s, t, 42).iter().any(|l| l.contains(CAPTURE_ICON)));
+        }
     }
     #[test]
     fn model_picker_clicks_every_model_row() {
@@ -910,7 +907,7 @@ mod tests {
         // Wide: `[ MAIN ]` active, other tabs by name (no numbers), CONFIG is the gear, git sync badge, gaps spread evenly.
         let tabs = &l[4]; assert!(tabs.starts_with(" [ MAIN ]") && tabs.contains("GIT ▲1") && tabs.trim_end().ends_with('⛭'), "{tabs:?}");
         assert_eq!(tabs.split_whitespace().collect::<Vec<_>>(), ["[", "MAIN", "]", "GIT", "▲1", "PROF", "MEM", "TREE", "⛭"]);
-        assert_eq!(tabs.width(), 59); assert!(l[5].trim().chars().all(|c| c == '─') && l[5].width() == 59); assert!(l[6].contains(VOICE_ICONS[0][0]), "MAIN: icons right under the divider");
+        assert_eq!(tabs.width(), 59); assert!(l[5].trim().chars().all(|c| c == '─') && l[5].width() == 59); assert!(l[6].contains(MIC_ICON), "MAIN: icons right under the divider");
         for t in [Tab::Git, Tab::Prof, Tab::Mem, Tab::Tree, Tab::Config] { let mut o = s.clone(); o.ui.tab = t; let f = frame(&o, 60, 0); assert!(f.lines[f.tab_row + 2].is_empty() || plain(&f.lines[f.tab_row + 2]).trim().is_empty(), "{t:?} keeps its blank line"); }
         // Under 44 columns: compact `[MAIN]`; hidden tabs leave no gap.
         let bar = |s: &State, w: u16| render_lines(s, w)[4].split_whitespace().map(String::from).collect::<Vec<_>>();
@@ -934,7 +931,7 @@ mod tests {
     #[test]
     fn cards_use_the_double_frame_full_width() {
         let s = sample();
-        for t in Tab::ALL { for l in on(&s, t, 42).iter().skip(7).filter(|l| !l.trim().is_empty() && !l.contains("Sin información") && !l.contains(VOICE_ICONS[0][0]) && !l.contains(VOICE_ICONS[0][1])) {
+        for t in Tab::ALL { for l in on(&s, t, 42).iter().skip(7).filter(|l| !l.trim().is_empty() && !l.contains("Sin información") && !l.contains(MIC_ICON)) {
             assert_eq!(l.width(), 41, "{l:?}"); let c = l.trim_start().chars().next().unwrap(); let z = l.chars().last().unwrap();
             assert!(matches!((c, z), ('╔', '╗') | ('║', '║') | ('╠', '╣') | ('╚', '╝')), "{l:?}");
         } }
