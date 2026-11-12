@@ -84,3 +84,24 @@ MEDIA unit (this document, the two new `media.rs` modules, and the rail wiring).
 `feat/gs3-macos` already carries more than the ~400-line review slice before this feature, so
 delivery needs a chained or clearly separated review rather than one oversized diff. Push, pull
 request and merge remain the human's decision; nothing here authorizes them.
+
+## Review
+
+R1. Native review, first attempt: `inspect` offered the whole branch since the initial release (50 paths, 2322 lines). START stopped at preflight with `lens_context_budget_exceeded`; no review authority was created and nothing had to be abandoned.
+
+R2. Reduced scope per the provider's own instruction: a fresh START with `baseRef=0457e04` plus `committedOnly: true` created lineage `review-339928d47ddfcb24` on the MEDIA unit alone (19 files, 987 authored lines, tier high, correction budget 200).
+
+R3. Four lenses ran through the host relay (risk, resilience, readability, reliability; 4 runs on openai/gpt-6.1-terra, about $0.17 total) and all four submitted. The provider then demanded a refuter, which ran once and returned `correction_required` with "candidate-caused severe findings require one bounded correction".
+
+R4. The two CRITICAL findings were both about the Spotify placeholder, not the YouTube engine:
+- `R3-001` (reliability): the upper section is only a fixed empty state; it cannot authenticate, list the user's playlists or their ten tracks, search, play, skip or seek.
+- `R4-001` (resilience): additionally, it exposes that section "without an actionable indication of that prerequisite".
+The first is the deliberately blocked T2/T3/T4 scope. The second was a real defect and the correctable part.
+
+R5. The 12-line correction (naming `developer.spotify.com` and the `client_id`, replacing the bare empty list) was committed before the correction plan was captured. That ordering killed the opaque repository-context handle: every capture then failed with `collectBinding is missing or stale for current STATUS` while STATUS kept advertising the same binding.
+
+R6. Recovery attempt, approved by the user: restore the reviewed tree. The direct history-rewrite command is refused by the Gentle AI safety policy, so the approved route was an additive restore commit (`16997df`), whose tree is byte-identical to the reviewed `7d88a3cd590a212a72d92efc43ad1e7e5ad196e3`. The binding stayed stale anyway, which shows the handle is bound to the store revision rather than to the tree hash. No non-destructive exit from that state exists.
+
+R7. User decision: disable receipt-driven development for this clone (`gentle-ai review mode disable --scope clone`; clone-local reads `off`) and land the correction as an ordinary commit. No review approval was obtained and none is claimed; delivery follows ordinary repository policy. The lineage remains in `correction_required` and would need the destructive native reset/recover to be released.
+
+R8. Consequence for delivery: the branch carries about 2574 authored lines across 9 commits since `origin/main`, far past the ~400-line review slice, and the whole-branch candidate can never fit the reviewer budget. Delivery needs a chained sequence of smaller reviewable commits, not one diff.

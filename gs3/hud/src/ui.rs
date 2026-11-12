@@ -799,13 +799,14 @@ fn mcp_card(s: &State, w: usize) -> Card {
 }
 
 // ---- 7:MEDIA --------------------------------------------------------------------------
-/// Upper section of MEDIA: Spotify. This task reports the section state only; the playlist list,
-/// the ten tracks, the transport and the seek bar arrive with their own tasks.
+/// Upper section of MEDIA: Spotify. The client does not exist yet, so the card states the exact
+/// prerequisite and the next step instead of an empty list with no way forward.
 fn spotify_card(s: &State, w: usize) -> Card {
     use Tone::*;
     let mut c = Card::new("spotify", mark("Spotify", Mint), w);
     c.row(vec![seg("estado · ", Muted), seg(&s.media.spotify.state, Text)], vec![]);
-    c.row(vec![seg("sin listas todavía", Dim)], vec![]);
+    c.row(vec![seg("creá la app en developer.spotify.com", Dim)], vec![]);
+    c.row(vec![seg("pasá su client_id · PKCE, sin secret", Dim)], vec![]);
     c
 }
 
@@ -932,7 +933,8 @@ mod tests {
         let spotify = lines.iter().position(|l| l.contains("Spotify")).expect("spotify section");
         let youtube = lines.iter().position(|l| l.contains("YouTube")).expect("youtube section");
         assert!(spotify < youtube, "Spotify must sit above YouTube: {lines:#?}");
-        find(&lines, "sin sesión");
+        find(&lines, "sin autorizar");
+        find(&lines, "developer.spotify.com");
         find(&lines, "sin reproducción");
         assert!(lines.iter().all(|l| l.width() <= 42), "no line may overflow 42 columns: {lines:#?}");
 

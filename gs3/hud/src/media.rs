@@ -49,7 +49,7 @@ pub enum MediaCmd {
 
 impl Default for Media {
     fn default() -> Self {
-        Media { spotify: Spotify { state: "sin sesión".into() }, youtube: Youtube::default() }
+        Media { spotify: Spotify { state: "sin autorizar".into() }, youtube: Youtube::default() }
     }
 }
 
