@@ -73,7 +73,15 @@ fn mpv_args(socket: &str, geometry: Option<&str>) -> Vec<String> {
     let mut args = vec!["--idle=yes".into(), "--no-terminal".into(), "--msg-level=all=error".into(), "--keep-open=yes".into(), "--title=gs3 media".into(), format!("--input-ipc-server={socket}"), "--border=no".into(), "--osc=no".into(), "--ontop".into(), "--panscan=1.0".into()];
     // `whole` because the rectangle we compute comes from CoreGraphics, which reports absolute screen
     // coordinates: with mpv's default `visible` calculation the window lands a menu bar lower.
-    if let Some(g) = geometry { args.push(format!("--geometry={g}")); args.push("--macos-geometry-calculation=whole".into()); }
+    // `whole` because the rectangle comes from CoreGraphics, which reports absolute screen
+    // coordinates: mpv's default `visible` calculation lands a menu bar lower. `force-window` because
+    // otherwise the window is created when the file loads, and mpv then applies the geometry shifted
+    // (measured: asked +1488+406, landed at +1513+438).
+    if let Some(g) = geometry {
+        args.push(format!("--geometry={g}"));
+        args.push("--macos-geometry-calculation=whole".into());
+        args.push("--force-window=yes".into());
+    }
     args
 }
 
@@ -376,12 +384,16 @@ mod tests {
         assert_eq!(args, vec!["--idle=yes", "--no-terminal", "--msg-level=all=error", "--keep-open=yes", "--title=gs3 media", "--input-ipc-server=/tmp/mpv.sock", "--border=no", "--osc=no", "--ontop", "--panscan=1.0"]);
         // The geometry we compute is in screen coordinates, so mpv must treat it as such: with the
         // default `visible` calculation it shifts the window down by the menu bar (measured: 25 px).
-        let mut expected = args; expected.push("--geometry=100x50+1+2".into()); expected.push("--macos-geometry-calculation=whole".into());
+        let mut expected = args; expected.push("--geometry=100x50+1+2".into()); expected.push("--macos-geometry-calculation=whole".into()); expected.push("--force-window=yes".into());
         assert_eq!(mpv_args("/tmp/mpv.sock", Some("100x50+1+2")), expected);
         assert!(!mpv_args("/tmp/mpv.sock", None).iter().any(|a| a.starts_with("--macos-geometry")));
         // S11: no black bands. The card's block is only approximately 16:9, so whatever is left after
         // the window is sized to it gets cropped instead of drawn as letterbox.
         assert!(mpv_args("/tmp/mpv.sock", None).contains(&"--panscan=1.0".to_string()));
+        // The window must exist before the file loads, or mpv creates it later and applies the
+        // geometry off by the menu bar (measured: asked +1488+406, landed at +1513+438).
+        assert!(mpv_args("/tmp/mpv.sock", Some("1x1+1+1")).contains(&"--force-window=yes".to_string()));
+        assert!(!mpv_args("/tmp/mpv.sock", None).contains(&"--force-window=yes".to_string()));
     }
 
     #[test]

@@ -183,6 +183,8 @@ A measured detail mattered: mpv's default `--macos-geometry-calculation=visible`
 
 Live proof: with `Daft Punk - One More Time` playing, `ps` shows `--geometry=386x110+1488+406 --macos-geometry-calculation=whole` and CoreGraphics measures the window at exactly `{X:1488, Y:406, Width:386, Height:110}`, which is the card's reserved block below the search row. The fallback still exists for a machine where the chain does not resolve, and its message no longer blames a permission that is not needed. 116 tests passed, 2 ignored.
 
+L35. The human's screenshot after L34 showed the block empty and black, with the video window somewhere else: measured, our `--geometry=386x219+1488+406` had landed at `{X:1513, Y:438}` — 25 px right, 32 px down. A controlled probe with the same flags and `--force-window=yes` landed exactly, so the difference was not the arithmetic: mpv creates its window when the file loads, and a geometry given at spawn is applied then with that shift. `--force-window=yes` is now passed whenever a geometry is, so the window exists before the file and lands where the card reserved it. Re-measured after the fix: requested `386x219+1488+406`, measured the same, video rendering (`time-pos 5.0`, 120 frames, `vo gpu-next`). A runtime `set_property geometry` was tried first and mpv answered `success` without moving the window, so it is not an alternative. 116 tests passed, 2 ignored.
+
 ## Delivery
 
 Slice boundary: commit `0457e04` closes the previously prepared rail work, and the next commit is the
