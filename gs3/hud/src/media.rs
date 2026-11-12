@@ -7,11 +7,26 @@
 #[derive(Clone, Debug, PartialEq)]
 pub struct Media { pub spotify: Spotify, pub youtube: Youtube }
 
+/// The exact redirect the Spotify app must allowlist: a loopback IPv4 is the only place Spotify
+/// accepts plain HTTP, and `localhost` is rejected.
+pub const REDIRECT: &str = "http://127.0.0.1:8899/callback";
+
 /// Upper section: the user's own playlists, the selected playlist's ten tracks, transport and seek.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spotify {
-    /// One line under the section title: `sin sesión`, `conectando`, … or the failure reason.
+    /// One line under the section title: `falta el client_id`, `esperando el navegador`, … or the failure reason.
     pub state: String,
+    /// A private credential file exists, so the section offers a refresh instead of first-time setup.
+    pub linked: bool,
+}
+
+/// What the rail asks the Spotify engine to do. Sent over a channel, never run on the render path.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SpotifyCmd {
+    /// Consent in the browser, then the code exchange; the rail never sees a password.
+    Authorize,
+    /// Renew the stored access token from the refresh token.
+    Refresh,
 }
 
 /// Lower section: YouTube search, transport and seek. The video is drawn by `mpv`, never here.
@@ -47,9 +62,13 @@ pub enum MediaCmd {
     Play(String),
 }
 
+impl Default for Spotify {
+    fn default() -> Self { Spotify { state: "falta el client_id".into(), linked: false } }
+}
+
 impl Default for Media {
     fn default() -> Self {
-        Media { spotify: Spotify { state: "sin autorizar".into() }, youtube: Youtube::default() }
+        Media { spotify: Spotify::default(), youtube: Youtube::default() }
     }
 }
 

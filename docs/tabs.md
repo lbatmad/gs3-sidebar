@@ -68,13 +68,14 @@ La pestaña no reproduce nada por sí misma: la barra es el panel de control y e
 
 | Sección | Qué muestra |
 | --- | --- |
-| **⌁ Spotify** | `estado` y el paso que falta: crear la app en `developer.spotify.com` y pasar su `client_id` (PKCE, sin secret). Las listas propias, las 10 pistas de la elegida, la búsqueda del tema y su portada dependen de ese `client_id`; mientras falte, la sección lo dice y no muestra filas inventadas. |
+| **⌁ Spotify** | `estado`, el paso que falta y la acción. Sin credenciales muestra: crear la app en `developer.spotify.com`, guardar su `client_id` en `~/.config/gs3/spotify.json` y registrar el redirect exacto de la tarjeta (`http://127.0.0.1:8899/callback`). `↗ conectar` abre el navegador y espera hasta 180 s esa vuelta; el flujo es PKCE (sin secret) y el token queda en ese mismo archivo privado 0600. Con una sesión guardada la acción pasa a `↻ renovar sesión`. Las listas propias y sus pistas todavía no están: la tarjeta no inventa filas. |
 | **⌁ YouTube** | Un clic en la tarjeta abre el cuadro `> búsqueda ▏`: `Enter` busca, `Esc` cancela. Al enviar, la barra encola el mejor resultado junto con las recomendaciones de YouTube de ese tema (el mix `RD`) y lo arranca. Mientras reproduce muestra el título, la posición en la cola, `◀◀   ❚❚/▶   ▶▶` y la barra de progreso. |
 | **Barra de progreso** | `━` lo escuchado, `●` la posición, `┄` lo que falta, y debajo `m:ss / m:ss`. Cada columna es un blanco de clic propio: el salto va a la posición de esa columna. |
 | **Ventana del vídeo** | El vídeo se ve en una ventana de `mpv` aparte, nunca dentro de la barra. El control viaja por el socket JSON de `mpv`, así que no hace falta enfocar esa ventana. |
 
 - Transporte con clic: `◀◀` anterior, `❚❚` / `▶` pausa o reanuda, `▶▶` siguiente.
 - Al terminar un vídeo la barra pasa al siguiente de la cola; al final de la cola vuelve a pedir recomendaciones y salta la que acaba de terminar. Si no aparece ninguna nueva: `sin nuevas recomendaciones`. La cola admite hasta 24 vídeos y el estado del reproductor se consulta cada 500 ms.
+- El archivo privado `~/.config/gs3/spotify.json` (0600) guarda el `client_id` y los tokens; la barra no los muestra ni los copia a ningún otro lado. El intercambio del token usa `curl`, que debe estar en el `PATH`: si falta, la tarjeta lo informa.
 - Requiere `mpv` y `yt-dlp`: primero el `PATH`, después `/opt/homebrew/bin`, `/usr/local/bin` y `/usr/bin`. La barra **no instala nada**; si `mpv` falta lo informa (`mpv no encontrado`) en vez de quedar vacía. Sin nada cargado: `sin reproducción`.
 - `mpv` se lanza solo en el primer *play*: una pestaña sin usar no crea procesos. La pestaña no escribe archivos.
 

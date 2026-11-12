@@ -77,7 +77,9 @@
 - Tab 4:MEM. Title `⌁ MCP · N`; rows `● <name>` + `[local]` (has `command`) or `[remote]`. Without `mcp.json`: `sin mcp.json`. Names only, never values.
 
 ## Spotify
-- Tab 6:MEDIA, upper section. Title `Spotify` with the mint power mark. Rows: `estado · <state>` (default `sin autorizar`) and, dim, the prerequisite itself: `creá la app en developer.spotify.com` then `pasá su client_id · PKCE, sin secret`. Own playlists, their ten tracks, the search dialog and cover art need that `client_id`; until it exists the card states the prerequisite and shows no invented rows.
+- Tab 6:MEDIA, upper section. Title `Spotify` with the mint power mark. Row `estado · <state>` (`falta el client_id`, `esperando el navegador`, `sesión guardada`, `sesión vencida · renovar`, or the failure text from the engine).
+- Unlinked card: dim `creá la app en developer.spotify.com`, `guardá el client_id en`, `~/.config/gs3/spotify.json`, `redirect exacto`, `http://127.0.0.1:8899/callback`, then the row `↗ conectar` + `abre el navegador` (hitbox columns 2-12, `Action::SpotifyAuthorize`). Linked card: only `↻ renovar sesión` + `por si expiró` (columns 2-18, `Action::SpotifyRefresh`); the setup rows disappear.
+- Engine (`sources/spotify.rs`): PKCE S256 (own SHA-256, base64url, `/dev/urandom`; no crypto crate), loopback listener bound before the browser opens, 180 s window, `state` checked on the callback, token exchange and refresh through `curl --data-urlencode`, `state` mismatch or an `error=` answer reported as the state text. Credentials: `~/.config/gs3/spotify.json`, 0600, atomic temp + rename, `client_id` + tokens only, never shown. No network on start or on `--once`. Own playlists, ten tracks, search and cover art remain pending.
 
 ## YouTube
 - Tab 6:MEDIA, lower section. Title `YouTube` with the coral power mark. Search mode (`ui.prompt`): `> <buffer>▏` + `Enter busca · Esc cancela`, modal, so `q` and the tab keys type into the buffer; `Enter` submits exactly one `MediaCmd::Play` and an empty query submits nothing.

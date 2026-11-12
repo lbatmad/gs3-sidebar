@@ -2,7 +2,7 @@
 //! scroll and mouse hit-test. Pure: `frame()` draws, `act()`/`key()` change only `Ui`.
 use crate::config::{clean_name, Config, NAME_MAX};
 use crate::core::*;
-use crate::media::MediaCmd;
+use crate::media::{MediaCmd, SpotifyCmd, REDIRECT};
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
@@ -39,7 +39,7 @@ pub struct Ui {
     pub open_picker: bool,
     pub voice_cmd: Option<VoiceCmd>,
     /// MEDIA: the YouTube search box while it is open, and the command the engine consumes off the render path.
-    pub prompt: Option<String>, pub media_cmd: Option<MediaCmd>,
+    pub prompt: Option<String>, pub media_cmd: Option<MediaCmd>, pub spotify_cmd: Option<SpotifyCmd>,
     /// Explicit click on the Flameshot icon; main consumes this intent off the render path.
     pub screenshot: bool,
 }
@@ -60,7 +60,9 @@ pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, Scrol
     /// TREE: toggle a folder, fold every folder, open a changed file's diff in GIT, select an unchanged file.
     Dir(String), Fold, Inspect(String), Pick(String), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot,
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
-    Search, PlayPause, PrevTrack, NextTrack, Seek(f64) }
+    Search, PlayPause, PrevTrack, NextTrack, Seek(f64),
+    /// MEDIA · Spotify: consent in the browser, or renew the stored token.
+    SpotifyAuthorize, SpotifyRefresh }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Key { Char(char), Back, Enter, Esc }
 
@@ -91,6 +93,8 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::NextTrack => ui.media_cmd = Some(MediaCmd::Next),
         Action::PrevTrack => ui.media_cmd = Some(MediaCmd::Prev),
         Action::Seek(fraction) => ui.media_cmd = Some(MediaCmd::Seek(fraction)),
+        Action::SpotifyAuthorize => ui.spotify_cmd = Some(SpotifyCmd::Authorize),
+        Action::SpotifyRefresh => ui.spotify_cmd = Some(SpotifyCmd::Refresh),
         Action::Edit => ui.editing = Some(ui.config.name.clone()),
         Action::ScrollTo(n) => ui.scroll[ui.tab.index()] = n,
         Action::GitView(v) => ui.git_view = v,
@@ -799,14 +803,26 @@ fn mcp_card(s: &State, w: usize) -> Card {
 }
 
 // ---- 6:MEDIA --------------------------------------------------------------------------
-/// Upper section of MEDIA: Spotify. The client does not exist yet, so the card states the exact
-/// prerequisite and the next step instead of an empty list with no way forward.
+/// Upper section of MEDIA: Spotify. Without a credential file the card states the prerequisite and
+/// the exact redirect the app must allowlist; with one it offers a renewal instead of first-time setup.
 fn spotify_card(s: &State, w: usize) -> Card {
     use Tone::*;
     let mut c = Card::new("spotify", mark("Spotify", Mint), w);
     c.row(vec![seg("estado · ", Muted), seg(&s.media.spotify.state, Text)], vec![]);
-    c.row(vec![seg("creá la app en developer.spotify.com", Dim)], vec![]);
-    c.row(vec![seg("pasá su client_id · PKCE, sin secret", Dim)], vec![]);
+    if s.media.spotify.linked {
+        let row = c.rows.len();
+        c.row(vec![seg("↻ renovar sesión", Pink)], vec![seg("por si expiró", Dim)]);
+        c.hits.push((row, 2, 18, Action::SpotifyRefresh));
+    } else {
+        c.row(vec![seg("creá la app en developer.spotify.com", Dim)], vec![]);
+        c.row(vec![seg("guardá el client_id en", Dim)], vec![]);
+        c.row(vec![seg("~/.config/gs3/spotify.json", Dim)], vec![]);
+        c.row(vec![seg("redirect exacto", Dim)], vec![]);
+        c.row(vec![seg(REDIRECT, Dim)], vec![]);
+        let row = c.rows.len();
+        c.row(vec![seg("↗ conectar", Pink)], vec![seg("abre el navegador", Dim)]);
+        c.hits.push((row, 2, 12, Action::SpotifyAuthorize));
+    }
     c
 }
 
@@ -933,7 +949,7 @@ mod tests {
         let spotify = lines.iter().position(|l| l.contains("Spotify")).expect("spotify section");
         let youtube = lines.iter().position(|l| l.contains("YouTube")).expect("youtube section");
         assert!(spotify < youtube, "Spotify must sit above YouTube: {lines:#?}");
-        find(&lines, "sin autorizar");
+        find(&lines, "falta el client_id");
         find(&lines, "developer.spotify.com");
         find(&lines, "sin reproducción");
         assert!(lines.iter().all(|l| l.width() <= 42), "no line may overflow 42 columns: {lines:#?}");
@@ -995,6 +1011,32 @@ mod tests {
         assert!(s.ui.prompt.is_none() && s.ui.media_cmd.is_none(), "Esc closes and plays nothing");
         apply(&mut s, Event::Ui(Action::Search)); apply(&mut s, Event::Key(Key::Enter));
         assert_eq!(s.ui.media_cmd, None, "an empty query is not a search");
+    }
+    #[test]
+    fn spotify_card_states_the_prerequisite_then_offers_a_renewal() {
+        let mut s = sample();
+        s.ui.tab = Tab::Media;
+        let f = frame(&s, 42, 0);
+        at(&f, "falta el client_id");
+        at(&f, "developer.spotify.com");
+        at(&f, "~/.config/gs3/spotify.json");
+        // The redirect is the contract: the app must allowlist exactly this loopback URL.
+        at(&f, "http://127.0.0.1:8899/callback");
+        let (x, y) = at(&f, "conectar");
+        assert_eq!(click(&f, x, y), Some(Action::SpotifyAuthorize), "the row starts the consent");
+        apply(&mut s, Event::Ui(Action::SpotifyAuthorize));
+        assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Authorize));
+        // With a stored session the setup rows are gone and only the renewal is offered.
+        s.media.spotify = crate::media::Spotify { state: "sesión guardada".into(), linked: true };
+        s.ui.spotify_cmd = None;
+        let f = frame(&s, 42, 0);
+        at(&f, "sesión guardada");
+        assert!(!f.lines.iter().any(|l| plain(l).contains("conectar")), "no setup rows once linked");
+        assert!(!f.lines.iter().any(|l| plain(l).contains("client_id")), "the prerequisite is resolved");
+        let (x, y) = at(&f, "renovar");
+        assert_eq!(click(&f, x, y), Some(Action::SpotifyRefresh));
+        apply(&mut s, Event::Ui(Action::SpotifyRefresh));
+        assert_eq!(s.ui.spotify_cmd, Some(SpotifyCmd::Refresh));
     }
     #[test]
     fn plain_controls_preserve_states_layout_and_actions() {

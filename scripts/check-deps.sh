@@ -32,6 +32,7 @@ have node && ok "node $(node --version) (only needed to run the extension tests)
 step "Optional integrations"
 opt mpv     "MEDIA tab: YouTube video in its own window"
 opt yt-dlp  "MEDIA tab: YouTube search and recommendations"
+opt curl    "MEDIA tab: Spotify consent and token exchange"
 if [ "$(uname -s)" = Darwin ]; then
   [ -x /usr/sbin/screencapture ] && ok "macOS screenshot selector found" || warn "screencapture missing: capture button unavailable"
   [ -d /Applications/Discord.app ] && ok "Discord.app found" || warn "Discord.app missing: voice controls unavailable"

@@ -1,8 +1,8 @@
 # Media tab (Spotify + YouTube)
 Add one HUD tab that controls Spotify audio and YouTube video, with the actual playback delegated to external processes.
 
-Status: authorized, in progress. T1, T5, T6 and T7 done. T2, T3 and T4 are blocked on one human
-input: a Spotify `client_id` from a developer app the user creates.
+Status: authorized, in progress. T1, T2a, T5, T6 and T7 done. T2b, T3 and T4 wait on one human
+input: a Spotify `client_id` from the developer app only the account owner can create.
 
 ## Specs
 
@@ -34,7 +34,8 @@ S10. User decision on tab placement (recorded in Log): keys follow visual order;
 ## Tasks
 
 T1 | S1, S10 | parent: MEDIA tab in the `Tab` enum, two stacked sections with empty states, config integration, transition note for the CONFIG key | done: 66 tests green (RED: 4 existing tab tests), keys 1-7, `--once` renders Spotify above YouTube | commit: pending (uncommitted: this document's task, blocked by the pre-existing dirty unit)
-T2 | S2, S7 | parent: Spotify PKCE auth with 0600 token, playlist list from the user profile, first 10 tracks render | blocked: needs the human to create a Spotify developer app and supply its client_id | commit: pending
+T2a | S2, S7 | parent: Spotify PKCE consent in an own engine thread, loopback redirect, 0600 credential file shared with the tokens, company-free SHA-256/base64url/urandom, `curl` for the token exchange, card states the prerequisite and offers connect/renew | done: 75 tests green, 7 of them new (SHA-256 FIPS vectors, RFC 7636 Appendix B, authorize URL, callback decoding, private atomic file, freshness margin, card actions). The live consent is NOT verified: it needs the human's client_id | commit: this unit
+T2b | S2 | parent: own playlists from the profile and the selected playlist's ten tracks, drawn in the Spotify card | blocked: T2a's live consent needs the human's client_id before these calls can be proven | commit: pending
 T3 | S5, S7 | parent: librespot device launch plus Web API playback control (play/pause/prev/next), 1 s progress poll, clickable seek bar | pending | commit: pending
 T4 | S3 | parent: search dialog and cover art for the playlist/album/track (the dialog itself ships with T5; T4 adds the Spotify side and the cover) | pending | commit: pending
 T5 | S4, S5 | parent: mpv spawn with IPC, yt-dlp search and playback, prev/next, clickable seek bar | done: engine owns the queue; 4 new tests green; the `#[ignore]` live test passed against real network + yt-dlp (seed + recommendations) | commit: pending
@@ -80,6 +81,10 @@ L13. Nothing is committed. Both `media.rs` files are new and untracked; every to
 
 L14. T7 done, and it closed a documentation debt T1 left behind: `docs/tabs.md` announced seven tabs while still listing six sections and numbering CONFIG as 6; `gs3/hud/README.md` and `cards.md` still said keys `1`–`6` and `6:CONFIG`; `docs/windows.md` still expected `--once` to print six tabs; and two section banners in `ui.rs` were swapped (`7:MEDIA`, `6:CONFIG`). All corrected in one unit. The MEDIA section documents what actually ships (Spotify states its prerequisite because T2/T3/T4 need the human's `client_id`; YouTube documents search, queue, transport, per-column seek, mpv in its own window, lazy spawn, 24-video cap, 500 ms poll and the tool search order). `check-deps.sh` gained optional `mpv` and `yt-dlp` probes; it installs nothing. No screenshot was invented for MEDIA: `docs/assets/` still holds `tab6.png`, which shows CONFIG, so a MEDIA capture and the CONFIG image rename remain pending. 68 tests passed, 2 ignored.
 
+L15. Decision recorded before T2a: the `client_id` lives with the tokens in one private file, `~/.config/gs3/spotify.json` (0600), not in `--config` and not in an environment variable (user choice). Two contract facts were checked against Spotify's own documentation, not memory: "Use HTTPS for your redirect URI, unless you are using a loopback address, when HTTP is permitted… `localhost` is not allowed", and the PKCE exchange requires `client_id`, `grant_type`, `code`, `redirect_uri` and `code_verifier` with an `application/x-www-form-urlencoded` body. The redirect is therefore `http://127.0.0.1:8899/callback` and the user must allowlist that exact string.
+
+L16. T2a done: `sources/spotify.rs` (PKCE, loopback listener, `curl` token exchange and refresh, private file), `Event::Spotify`, `SpotifyCmd`, the card's connect/renew rows and the engine wiring. No new crate was added: SHA-256, base64url and randomness come from the standard library plus `/dev/urandom`, pinned by the FIPS and RFC 7636 vectors, so the build keeps no TLS stack and the supply chain does not grow. The listener is bound before the browser opens, so no click is lost; a `state` mismatch or an `error=` answer becomes the state line instead of a silent failure; a stray preconnect or favicon read is ignored rather than aborting the consent. One existing test asserted the old placeholder (`sin autorizar`) and now asserts `falta el client_id`. 75 tests passed, 2 ignored. The live flow is NOT verified and is not claimed: it cannot run without the human's `client_id`.
+
 ## Delivery
 
 Slice boundary: commit `0457e04` closes the previously prepared rail work, and the next commit is the
@@ -108,3 +113,11 @@ R6. Recovery attempt, approved by the user: restore the reviewed tree. The direc
 R7. User decision: disable receipt-driven development for this clone (`gentle-ai review mode disable --scope clone`; clone-local reads `off`) and land the correction as an ordinary commit. No review approval was obtained and none is claimed; delivery follows ordinary repository policy. The lineage remains in `correction_required` and would need the destructive native reset/recover to be released.
 
 R8. Consequence for delivery: the branch carries about 2574 authored lines across 9 commits since `origin/main`, far past the ~400-line review slice, and the whole-branch candidate can never fit the reviewer budget. Delivery needs a chained sequence of smaller reviewable commits, not one diff.
+
+## Slice boundary
+
+The T7 unit landed as `f03986b` (53 insertions across docs, a probe script and comment banners). The
+T2a unit is `548` changed lines (525 insertions, 23 deletions) and is deliberately kept whole: the
+consent flow, its primitives, its tests, its card and its docs are one behaviour, and splitting the
+primitives from the flow would leave one commit with unused code and neither commit reviewable on its
+own. It therefore exceeds the ~400-line slice by design and must be reviewed as one unit.

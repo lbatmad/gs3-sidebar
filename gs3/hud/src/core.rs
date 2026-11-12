@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use crate::ui::{self, Ui};
-use crate::media::{Media, Youtube};
+use crate::media::{Media, Spotify, Youtube};
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -296,7 +296,7 @@ pub struct State {
 impl State {
     pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),tree:None,detail:Detail::default(),media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
 }
-pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Tree(Tree), Detail(Detail), Media(Youtube), Ui(ui::Action), Key(ui::Key) }
+pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Tree(Tree), Detail(Detail), Media(Youtube), Spotify(Spotify), Ui(ui::Action), Key(ui::Key) }
 pub fn apply(s:&mut State,e:Event)->bool {
     let old=s.clone();
     match e {
@@ -323,6 +323,7 @@ pub fn apply(s:&mut State,e:Event)->bool {
         Event::Tree(t) if t.open==s.ui.tree_open => s.tree=Some(t),
         Event::Detail(d) if (&d.branch,&d.file)==(&s.ui.git_branch,&s.ui.git_file) => s.detail=d,
         Event::Media(y) => s.media.youtube=y,
+        Event::Spotify(v) => s.media.spotify=v,
         Event::Ui(a)=>{
             let (branch,file)=(s.ui.git_branch.clone(),s.ui.git_file.clone()); ui::act(&mut s.ui,a);
             // A new selection never shows the previous answer.
