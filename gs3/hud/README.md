@@ -53,7 +53,8 @@ never displayed); a stored session older than a minute before expiry is reported
 
 Once a session exists the card asks `/me/playlists?limit=50` (own playlists only) and, for the
 playlist you click, `/playlists/{id}/tracks?limit=10`: the ten rows are the reply, never a guess, and
-an empty or refused playlist keeps the failure text in the state line instead of stale rows. A token
+an empty or refused playlist keeps the failure text in the state line and drops the previous tracks
+instead of showing them as current. A token
 about to expire, or a 401 from the API, is renewed from the stored refresh token and the call is
 retried once; nothing is refreshed while no call needs it.
 
@@ -65,8 +66,9 @@ lazily on the first play and is driven over its JSON IPC socket, whose replies a
 `request_id`. The queue lives in the HUD because mpv does not expand a `list=RD` mix into its own
 playlist: `yt-dlp --flat-playlist` enumerates the seed and its recommendations (24 at most), each
 entry is loaded by id, and a finished video advances exactly once, refilling from the same mix at
-the end. Progress is polled every 500 ms; the seek bar maps one click per column. The tab writes
-no files: the HUD's own settings file and the private Discord token remain the only two.
+the end. Progress is polled every 500 ms; the seek bar maps one click per column. The Spotify side
+writes exactly one file of its own, the private credential file; the HUD's settings file and the
+private Discord token remain the only other writes, and mpv may create its temporary IPC socket.
 
 The context limit comes from `<agent dir>/cpamc-models-cache.json` (what Pi registers
 at runtime), then `models-store.json`. Token counts are abbreviated like the reference (`33.7k`, `179k`, `1.0M`).
@@ -117,8 +119,9 @@ CARGO_TARGET_DIR=./target cargo test --release
 CARGO_TARGET_DIR=./target cargo build --release
 ```
 
-Binary: `./target/release/gs3-hud`. Dependencies include bundled
-SQLite and no OpenSSL or HTTP client. The launcher should pass the **Pi pane's**
+Binary: `./target/release/gs3-hud`. Dependencies include bundled SQLite and no
+linked OpenSSL, TLS stack or HTTP client crate; the two features that need HTTP
+shell out to `curl` (Spotify) and `yt-dlp`/`mpv` (YouTube). The launcher should pass the **Pi pane's**
 id, not the HUD pane's id. It can terminate the HUD pane after Pi exits.
 
 The default MAIN controls require a Nerd Font with Material Design glyph coverage. As an alternative for ordinary fonts, add `"plain_controls": true` to the existing HUD JSON settings passed through `--config`, preserving its other settings. The controls then use ASCII labels: `MIC` / `MUTE`, `HP` / `DEAF`, `APP` (Discord) and `CAP` (capture). Their actions, click regions, centering and state colors are unchanged; capture stays hidden at narrow widths. This is an explicit mode, not automatic font detection. Missing, false or invalid `plain_controls` values retain the Nerd Font default. Audio controls use mint/coral state colors, dim when offline; client and capture controls use the panel's secondary tone.

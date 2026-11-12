@@ -69,9 +69,14 @@ pub fn load(path: &Path) -> Option<Creds> {
 }
 
 /// 0600 from the moment it exists, atomic via a temp file and a rename. Never creates directories.
+///
+/// The temp name carries fresh randomness and is opened with `create_new`: a predictable path is a
+/// place another file can already sit with a readable mode, and `mode()` only applies on creation,
+/// so reusing one would publish credentials.
 pub fn save(path: &Path, creds: &Creds) -> Result<(), String> {
-    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    let mut file = std::os::unix::fs::OpenOptionsExt::mode(fs::OpenOptions::new().write(true).create(true).truncate(true), 0o600)
+    let suffix = random_bytes(8)?.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let tmp = path.with_extension(format!("json.{suffix}.tmp"));
+    let mut file = std::os::unix::fs::OpenOptionsExt::mode(fs::OpenOptions::new().write(true).create_new(true), 0o600)
         .open(&tmp)
         .map_err(|e| e.to_string())?;
     let written = serde_json::to_vec(&creds.to_json()).map_err(|e| e.to_string()).and_then(|body| {
@@ -221,13 +226,8 @@ fn page(stream: &mut TcpStream, ok: bool) -> std::io::Result<()> {
     stream.flush()
 }
 
-/// One loopback request. `Ok(None)` keeps waiting (a preconnect, a favicon, a read timeout).
-fn answer(stream: &mut TcpStream, expected: &str) -> Result<Option<String>, String> {
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    let mut line = String::new();
-    let read = stream.try_clone().map_err(|e| e.to_string()).and_then(|s| BufReader::new(s).read_line(&mut line).map_err(|e| e.to_string()));
-    let _ = page(stream, read.is_ok() && !line.trim().is_empty());
-    if read.is_err() { return Ok(None) }
+/// What one request line means. Pure, so the decision is testable without a socket.
+fn verdict(line: &str, expected: &str) -> Result<Option<String>, String> {
     let Some(query) = line.split_whitespace().nth(1).and_then(|target| target.split_once('?')) else { return Ok(None) };
     let params = pairs(query.1);
     let get = |k: &str| params.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
@@ -239,6 +239,22 @@ fn answer(stream: &mut TcpStream, expected: &str) -> Result<Option<String>, Stri
         (Some(_), Some(_)) => Err("el navegador volvió con un state distinto".into()),
         _ => Ok(None),
     }
+}
+
+/// One loopback request. `Ok(None)` keeps waiting (a preconnect, a favicon, a read timeout).
+///
+/// The page is written only after the decision, so a refusal or a mismatched state can never tell
+/// the browser the authorization arrived.
+fn answer(stream: &mut TcpStream, expected: &str) -> Result<Option<String>, String> {
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    let mut line = String::new();
+    let read = stream.try_clone().map_err(|e| e.to_string()).and_then(|s| BufReader::new(s).read_line(&mut line).map_err(|e| e.to_string()));
+    let decided = match read {
+        Ok(_) => verdict(&line, expected),
+        Err(_) => Ok(None),
+    };
+    let _ = page(stream, matches!(decided, Ok(Some(_))));
+    decided
 }
 
 /// Wait for the browser to come back with the code, inside the consent window.
@@ -369,7 +385,7 @@ fn list_playlists(state: &mut Spotify, file: &Path) {
                 n => format!("{n} listas"),
             };
         }
-        Err(e) => state.state = e,
+        Err(e) => { state.tracks.clear(); state.selected = None; state.state = e }
     }
 }
 
@@ -381,7 +397,7 @@ fn select_playlist(state: &mut Spotify, id: &str, file: &Path) {
             state.selected = state.playlists.iter().position(|p| p.id == id);
             state.state = format!("{} de {name}", state.tracks.len());
         }
-        Err(e) => state.state = e,
+        Err(e) => { state.tracks.clear(); state.selected = None; state.state = e }
     }
 }
 
@@ -535,6 +551,54 @@ mod tests {
         assert_eq!(got[9].title, "T9");
         // A track without artists still renders: the artist is a detail, not a requirement.
         assert!(tracks(&json!({"items": [{"track": {"name": "Solo"}}]}))[0].artist.is_empty());
+    }
+
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn a_pre_existing_temp_file_cannot_make_credentials_readable() {
+        let dir = std::env::temp_dir().join(format!("gs3-spotify-tmp-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("spotify.json");
+        // A predictable temp name is a place another file can already sit, readable, waiting to be
+        // renamed into place. Neither it nor the credential file itself may end up world-readable.
+        let stale = [path.with_extension(format!("json.{}.tmp", std::process::id())), path.with_extension("json.0644.tmp")];
+        for name in &stale {
+            fs::write(name, b"stale").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(name, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        fs::write(&path, b"{}").unwrap();
+        save(&path, &Creds { client_id: "cid".into(), access_token: "at".into(), refresh_token: "rt".into(), expires_at: 9 }).unwrap();
+        assert_eq!(mode(&path), 0o600, "the credential file is private whatever it replaced");
+        for name in &stale {
+            assert_eq!(fs::read(name).unwrap(), b"stale", "someone else's temp file is never reused: {name:?}");
+        }
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 3, "no extra temp file left behind");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_refused_callback_never_answers_the_browser_with_success() {
+        for (request, why) in [
+            ("GET /callback?error=access_denied&state=x HTTP/1.1\r\nHost: x\r\n\r\n", "a refusal"),
+            ("GET /callback?code=abc&state=wrong HTTP/1.1\r\nHost: x\r\n\r\n", "a mismatched state"),
+        ] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (mut server, _) = listener.accept().unwrap();
+            client.write_all(request.as_bytes()).unwrap();
+            let verdict = answer(&mut server, "expected");
+            drop(server);
+            let mut reply = String::new();
+            client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            client.read_to_string(&mut reply).unwrap();
+            assert!(verdict.is_err(), "{why} must reach the rail as an error: {verdict:?}");
+            assert!(!reply.contains("recibida"), "the browser is told {why} succeeded: {reply:?}");
+        }
     }
 
     #[test]
