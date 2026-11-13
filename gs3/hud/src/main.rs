@@ -72,7 +72,7 @@ fn main()->Result<()> {
     let voice=sources::voice(data_tx.clone());
     let media=sources::media(data_tx.clone(),a.socket.clone()); let spotify=sources::spotify(data_tx.clone());
     let capture=sources::screenshot();
-    let agent_pane=a.pane.clone(); let panel=sources::panel(a.socket.clone(),agent_pane.clone()); let mut shown:Option<(String,usize)>=None;
+    let agent_pane=a.pane.clone(); let panel=sources::panel(a.socket.clone(),agent_pane.clone(),data_tx.clone()); let mut shown:Option<(String,usize)>=None;
     sources::herdr(a.socket,a.pane,data_tx);
     let mut draw=true; let mut last:Option<ui::Frame>=None;
     let mut transmitted: Option<String> = None;

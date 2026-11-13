@@ -139,8 +139,24 @@ pub fn detail(cwd:&Path,r:&DetailRequest)->Detail {
 /// video window's player.
 pub enum PanelCmd { Show { hash: String, text: String, geometry: Option<String> }, Hide }
 
-pub fn panel(socket: PathBuf, agent_pane: String) -> Sender<PanelCmd> {
+pub fn panel(socket: PathBuf, agent_pane: String, events: Sender<Event>) -> Sender<PanelCmd> {
     let (send, rx) = mpsc::channel::<PanelCmd>();
+    // One socket per rail process: the window says which file was clicked and nothing else, and the rail
+    // turns that into the same action its own card would produce.
+    let hud_socket = std::env::temp_dir().join(format!("gs3-panel-{}.sock", std::process::id()));
+    let _ = fs::remove_file(&hud_socket);
+    if let Ok(listener) = std::os::unix::net::UnixListener::bind(&hud_socket) {
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut line = String::new();
+                if std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut line).is_ok() {
+                    if let Some(path) = line.trim().strip_prefix("file ").filter(|p| !p.is_empty()) {
+                        let _ = events.send(Event::Ui(crate::ui::Action::File(path.to_string())));
+                    }
+                }
+            }
+        });
+    }
     thread::spawn(move || {
         let mut open: Option<(String, std::process::Child)> = None;
         let mut close = |open: &mut Option<(String, std::process::Child)>| {
@@ -151,17 +167,18 @@ pub fn panel(socket: PathBuf, agent_pane: String) -> Sender<PanelCmd> {
             match cmd {
                 PanelCmd::Hide => close(&mut open),
                 PanelCmd::Show { hash, text, geometry } => {
-                    // The same commit already on screen is left alone: a rebuild would steal the focus and
-                    // scroll position of a window the human is reading.
-                    if open.as_ref().is_some_and(|(up, _)| *up == hash) { continue }
+                    let path = std::env::temp_dir().join(format!("gs3-panel-{}.txt", std::process::id()));
+                    // The same commit already on screen is left alone: rewriting its text is enough for the
+                    // window, which follows the file, so clicking a file never moves or rebuilds it.
+                    if open.as_ref().is_some_and(|(up, _)| *up == hash) { let _ = fs::write(&path, text); continue }
                     close(&mut open);
                     // Next to the rail itself first: the installer puts both in the same bin, and that
                     // directory is not always on the PATH the pane inherits.
                     let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("gs3-panel"))).filter(|p| p.is_file());
                     let Some(bin) = beside.or_else(|| media::find_tool("gs3-panel")) else { continue };
-                    let path = std::env::temp_dir().join(format!("gs3-panel-{}.txt", std::process::id()));
                     if fs::write(&path, text).is_err() { continue }
-                    let args = geometry.map(|g| vec!["--geometry".to_string(), g]).unwrap_or_default();
+                    let mut args = geometry.map(|g| vec!["--geometry".to_string(), g]).unwrap_or_default();
+                    args.push("--socket".to_string()); args.push(hud_socket.to_string_lossy().into_owned());
                     let spawned = std::process::Command::new(bin).args(args).arg(&path).spawn();
                     if let Ok(child) = spawned { open = Some((hash, child)); }
                 }
