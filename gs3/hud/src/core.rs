@@ -262,7 +262,7 @@ pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>
     pub total:usize, pub done:usize, pub failed:usize, pub active:usize, pub running:Vec<Running>,
     /// How long a finished task took on average, and over how many tasks that was measured.
     pub avg:String, pub measured:usize,
-    pub profile_source:String, pub configured_host:Option<Agent> }
+    pub profile_source:String, pub configured_host:Option<Agent>, pub profiles:Vec<Profile> }
 /// One subagent: model/thinking from its frontmatter (`model`, `effort`/`thinking`), else its latest task, else the host.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Agent { pub name:String, pub model:String, pub thinking:String }
@@ -317,6 +317,29 @@ pub fn configured_roster(mut r:Roster, value:Option<&Value>, source:&str)->Roste
         }
     }
     r.agents=agents.into_values().collect(); r
+}
+/// One profile from the `/gentle:profiles` store: its name, how many roles it routes, the model it
+/// gives the host (`orchestrator`), and whether the store marks it `active`. The name is display-only.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Profile { pub name:String, pub roles:usize, pub host:String, pub active:bool }
+/// The `/gentle:profiles` store: only the package's own shape is a store (`kind` + `version`),
+/// names come from the `profiles` object, and the top-level `active` marks at most one row.
+/// A stale `active` marks nobody; nothing is invented for it.
+pub fn profiles(value:Option<&Value>)->Vec<Profile> {
+    let Some(v)=value.filter(|v|text(v,"kind")=="gentle-pi.agent_model_profiles" && v["version"]==1) else {return Vec::new()};
+    let Some(entries)=v["profiles"].as_object() else {return Vec::new()};
+    let active=text(v,"active");
+    let mut out:Vec<Profile>=entries.iter().filter_map(|(name,p)|{
+        // A name is display-only: leading/trailing blanks are dropped and control characters are
+        // flattened, so no profile name can break a row or travel anywhere as an argument.
+        let raw=name.as_str();
+        let name=raw.trim().chars().map(|c|if c.is_control() {' '} else {c}).collect::<String>();
+        if name.chars().all(char::is_whitespace) {return None}
+        let roles=p.as_object().map(|o|o.values().filter(|r|r.is_object()||r.is_string()).count()).unwrap_or(0);
+        let host=p.get("orchestrator").and_then(|r|match r {Value::String(s)=>Some(s.as_str()),Value::Object(_)=>r.get("model").and_then(Value::as_str),_=>None}).map(str::trim).filter(|s|!s.is_empty()).unwrap_or("");
+        Some(Profile{name,roles,host:host.into(),active:raw==active})
+    }).collect();
+    out.sort_by(|a,b|a.name.cmp(&b.name)); out
 }
 /// One configured MCP server: only its name and transport, never its config values.
 #[derive(Clone, Debug, PartialEq)]
@@ -697,6 +720,30 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
         assert!(!head_moved(&g,&Git{dirty:Some(3),..g.clone()}));
         assert!(head_moved(&g,&Git{branch:"feat".into(),..g.clone()}));
         assert!(head_moved(&g,&Git{commits:vec!["b2 y".into(),"a1 x".into()],..g.clone()}));
+    }
+    #[test]
+    fn profiles_read_the_store_shape_and_mark_the_active_one() {
+        let v=json!({"kind":"gentle-pi.agent_model_profiles","version":1,"active":"dos",
+            "profiles":{"uno":{"orchestrator":{"model":"a/m1","thinking":"high"},"worker":{"model":"a/m2"}},
+                "dos":{"orchestrator":"b/m1"},"raro ..":{"worker":{"model":"c/m1"}}}});
+        assert_eq!(profiles(Some(&v)).iter().map(|p|(p.name.as_str(),p.roles,p.host.as_str(),p.active)).collect::<Vec<_>>(),
+            [("dos",1,"b/m1",true),("raro ..",1,"",false),("uno",2,"a/m1",false)],"orden alfabético, el activo marcado con el nombre del store");
+        assert!(profiles(None).is_empty());
+        // Foreign or newer stores are never guessed at: the card only appears for the package's own shape.
+        assert!(profiles(Some(&json!({"profiles":{"x":{}}}))).is_empty(),"sin kind no es el store");
+        assert!(profiles(Some(&json!({"kind":"gentle-pi.agent_model_profiles","version":2,"profiles":{"x":{}}}))).is_empty(),"una versión futura no se adivina");
+        // A stale `active` marks nobody: no row and no label are invented for it.
+        let stale=json!({"kind":"gentle-pi.agent_model_profiles","version":1,"active":"ghost","profiles":{"x":{"worker":{"model":"m"}}}});
+        assert!(profiles(Some(&stale)).iter().all(|p|!p.active),"un active huérfano no marca nada");
+        assert!(profiles(Some(&json!({"kind":"gentle-pi.agent_model_profiles","version":1}))).is_empty(),"sin perfiles no hay card");
+    }
+    #[test]
+    fn profile_names_flatten_control_characters_and_drop_blank_ones() {
+        let v=json!({"kind":"gentle-pi.agent_model_profiles","version":1,"active":"a\tb",
+            "profiles":{"a\tb":{"worker":"m"},"   ":{"worker":"m"},"x\u{7f}y":{"worker":"m"},"esc \u{1b}[31m":{"worker":"m"}}});
+        let p=profiles(Some(&v));
+        assert_eq!(p.iter().map(|p|(p.name.as_str(),p.active)).collect::<Vec<_>>(),[("a b",true),("esc  [31m",false),("x y",false)],"un nombre es sólo para mostrar: se aplana, no se confía en él");
+        assert!(p.iter().all(|p|!p.name.chars().any(char::is_control)),"ninguna fila puede romperse con un control");
     }
     #[test]
     fn model_shapes() {

@@ -360,6 +360,15 @@ fn profile_models(path:Option<PathBuf>)->(Option<Value>, &'static str) {
         .and_then(|b|serde_json::from_slice::<Value>(&b).ok()).filter(Value::is_object);
     if value.is_some() {(value,"/gentle:profiles · global")} else {(None,"profiles: JSON inválido")}
 }
+/// The profiles store (`profiles.json`) sits in the same config home as the routing store.
+fn profiles_store_path(agent:&Path)->Option<PathBuf> { profile_models_path(agent).map(|p|p.with_file_name("profiles.json")) }
+/// Read the `/gentle:profiles` store; never follow a symlink, never parse a non-object.
+fn profiles_store(path:Option<PathBuf>)->Option<Value> {
+    let path=path?;
+    let metadata=fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file() {return None}
+    fs::read(&path).ok().and_then(|b|serde_json::from_slice::<Value>(&b).ok()).filter(Value::is_object)
+}
 /// PROF uses canonical configured routing; MD supplies names, tasks supply counts only.
 pub fn roster_of(session:&Path)->Option<Roster> {
     let dir=agent_dir(&session.to_string_lossy())?;
@@ -368,14 +377,22 @@ pub fn roster_of(session:&Path)->Option<Roster> {
     let agents:Vec<(String,String)>=files("agents","md").into_iter().take(64).filter_map(|p|Some((p.file_stem()?.to_string_lossy().into_owned(),fs::read_to_string(&p).ok()?))).collect();
     let tasks:Vec<Value>=files("gentle-agents/tasks","json").into_iter().rev().take(200).filter_map(|p|serde_json::from_slice::<Value>(&fs::read(p).ok()?).ok()).map(|v|v["task"].clone()).filter(|t|t.is_object()).collect();
     let (models,source)=profile_models(profile_models_path(&dir));
+    let store=profiles_store(profiles_store_path(&dir));
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_millis() as u64).unwrap_or(0);
-    Some(configured_roster(roster(&settings,&agents,&tasks,now),models.as_ref(),source))
+    let mut r=configured_roster(roster(&settings,&agents,&tasks,now),models.as_ref(),source);
+    r.profiles=profiles(store.as_ref());
+    Some(r)
 }
 /// A change inside the task history: Gentle AI rewrites one JSON per subagent task when it launches and
 /// again when it ends, so watching that directory is what makes "en curso" mean something.
 pub fn is_task_file(e:&notify::Event,agent_dir:&Path)->bool {
     let dir=agent_dir.join("gentle-agents").join("tasks");
     e.paths.iter().any(|p|p.starts_with(&dir))
+}
+/// A change to the profiles store: the package swaps it through a temp sibling and a rename,
+/// so the temp name counts too. The store lives next to `models.json` in the config home.
+pub fn is_profiles_file(e:&notify::Event,store_dir:&Path)->bool {
+    e.paths.iter().any(|p|p.parent()==Some(store_dir) && p.file_name().is_some_and(|n|{let n=n.to_string_lossy(); n=="profiles.json"||n.starts_with(".profiles.json.")}))
 }
 /// MCP servers configured for the session's Pi agent dir (`mcp.json`); names only.
 pub fn mcp(session:&Path)->Option<Vec<Mcp>> {
@@ -492,6 +509,8 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
         let mut session:Option<PathBuf>=None; let mut tail=Tail::default(); let mut git_deadline:Option<Instant>=None;
         // The task history has its own debounce: five tasks writing at once must not mean five reads.
         let mut roster_deadline:Option<Instant>=None; let mut tasks_dir:Option<PathBuf>=None;
+        // The profiles store rides the same roster refresh; its dir is watched for the atomic swap.
+        let mut profiles_dir:Option<PathBuf>=None;
         // Last MCP list sent; matches State::new so unchanged lists are never re-sent.
         let mut mcp_sent:Option<Vec<Mcp>>=None;
         let send_mcp=|session:&Option<PathBuf>,sent:&mut Option<Vec<Mcp>>|{let now=session.as_deref().and_then(mcp); if now!=*sent {*sent=now.clone(); let _=tx.send(Event::Mcp(now));}};
@@ -508,17 +527,21 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
                 Ok(Local::Refresh)=>{
                     // The tasks directory only exists after the first task: watching it again costs nothing.
                     if let (Some(w),Some(d))=(&mut watcher,&tasks_dir) {let _=w.watch(d,RecursiveMode::NonRecursive);}
+                    if let (Some(w),Some(d))=(&mut watcher,&profiles_dir) {let _=w.watch(d,RecursiveMode::NonRecursive);}
                     let _=tx.send(Event::Git(git_log(&cwd,page))); let _=tx.send(Event::Engram(engram(&cwd))); send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent); let _=tx.send(Event::Stack(stack(&cwd,session.as_deref())));}
                 Ok(Local::Session(path))=>{
                     if let (Some(w),Some(p))=(&mut watcher,&session) {let _=w.unwatch(p.parent().unwrap_or(p));}
                     if let (Some(w),Some(d))=(&mut watcher,&tasks_dir) {let _=w.unwatch(d);}
+                    if let (Some(w),Some(d))=(&mut watcher,&profiles_dir) {let _=w.unwatch(d);}
                     session=path.map(PathBuf::from); tail=Tail::default();
                     if let Some(p)=&session {
                         if let Some(w)=&mut watcher {let _=w.watch(p.parent().unwrap_or(p),RecursiveMode::NonRecursive);}
                         let _=read_tail(p,&mut tail);
                     }
                     tasks_dir=session.as_deref().and_then(|p|agent_dir(&p.to_string_lossy())).map(|d|d.join("gentle-agents").join("tasks"));
+                    profiles_dir=session.as_deref().and_then(|p|agent_dir(&p.to_string_lossy())).and_then(|d|profiles_store_path(&d)).and_then(|p|p.parent().map(Path::to_path_buf));
                     if let (Some(w),Some(d))=(&mut watcher,&tasks_dir) {let _=w.watch(d,RecursiveMode::NonRecursive);}
+                    if let (Some(w),Some(d))=(&mut watcher,&profiles_dir) {let _=w.watch(d,RecursiveMode::NonRecursive);}
                     let _=tx.send(Event::Session(session.as_ref().map(|p|p.to_string_lossy().into_owned()),tail.session.clone()));
                     send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent);
                     let _=tx.send(Event::Stack(stack(&cwd,session.as_deref())));
@@ -526,6 +549,7 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
                 Ok(Local::Changed(e))=>{
                     if !matches!(e.kind,notify::EventKind::Create(_)|notify::EventKind::Modify(_)|notify::EventKind::Remove(_)) {continue}
                     if session.as_ref().and_then(|p|agent_dir(&p.to_string_lossy())).is_some_and(|d|is_task_file(&e,&d)) {roster_deadline=Some(Instant::now()+Duration::from_millis(300));}
+                    else if profiles_dir.as_ref().is_some_and(|d|is_profiles_file(&e,d)) {roster_deadline=Some(Instant::now()+Duration::from_millis(300));}
                     else if session.as_ref().is_some_and(|p|is_new_session_file(&e,p)) {if let Ok(Some(p))=pane(&socket,&pane_id) {let _=tx.send(Event::Pane(p));}}
                     else if session.as_ref().is_some_and(|p|e.paths.contains(p)) {if let Some(p)=&session {let _=read_tail(p,&mut tail); let _=tx.send(Event::Session(Some(p.to_string_lossy().into_owned()),tail.session.clone()));}}
                     else if e.paths.iter().any(|p|{let name=p.file_name().unwrap_or_default(); name=="HEAD"||name=="index"||p.components().any(|c|c.as_os_str()=="refs")}) {git_deadline=Some(Instant::now()+Duration::from_millis(300));}
@@ -836,6 +860,37 @@ mod tests {
         assert!(is_task_file(&event("/a/agent/gentle-agents/tasks/t1.json"),&dir));
         assert!(!is_task_file(&event("/a/agent/sessions/p/s.jsonl"),&dir));
         assert!(!is_task_file(&event("/a/agent/gentle-agents/tasks-otra/t1.json"),&dir),"no es la carpeta de tareas");
+    }
+    #[test]
+    fn profiles_store_reads_a_fixture_and_refuses_links_and_garbage() {
+        let dir=std::env::temp_dir().join(format!("gs3-profstore-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
+        // The store the package really writes: kind, version, profiles by name, and a global active.
+        let store=json!({"kind":"gentle-pi.agent_model_profiles","version":1,"active":"b",
+            "profiles":{"a":{"orchestrator":{"model":"m1"}},"b":{"worker":"m2"}}});
+        fs::write(dir.join("profiles.json"),store.to_string()).unwrap();
+        let read=profiles_store(Some(dir.join("profiles.json"))).unwrap();
+        assert_eq!(profiles(Some(&read)).iter().map(|p|(p.name.as_str(),p.active)).collect::<Vec<_>>(),[("a",false),("b",true)]);
+        assert_eq!(profiles_store(None),None,"ruta desconocida");
+        assert_eq!(profiles_store(Some(dir.join("missing.json"))),None,"archivo ausente");
+        fs::write(dir.join("array.json"),"[]").unwrap();
+        assert_eq!(profiles_store(Some(dir.join("array.json"))),None,"un array no es el store");
+        fs::write(dir.join("broken.json"),"{").unwrap();
+        assert_eq!(profiles_store(Some(dir.join("broken.json"))),None,"JSON roto");
+        std::os::unix::fs::symlink(dir.join("profiles.json"),dir.join("link.json")).unwrap();
+        assert_eq!(profiles_store(Some(dir.join("link.json"))),None,"nunca se sigue un enlace simbólico");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn only_the_profiles_store_file_counts() {
+        let dir=PathBuf::from("/cfg");
+        let event=|p:&str|notify::Event{kind:notify::EventKind::Create(notify::event::CreateKind::File),paths:vec![PathBuf::from(p)],attrs:Default::default()};
+        assert!(is_profiles_file(&event("/cfg/profiles.json"),&dir));
+        // The package swaps the store through a temp sibling: that rename is the real signal.
+        assert!(is_profiles_file(&event("/cfg/.profiles.json.abc.tmp"),&dir));
+        assert!(!is_profiles_file(&event("/cfg/models.json"),&dir));
+        assert!(!is_profiles_file(&event("/cfg/profiles.export.json"),&dir));
+        assert!(!is_profiles_file(&event("/sub/profiles.json"),&dir),"sólo la carpeta del store");
     }
     #[test]
     fn engram_connection_is_read_only() {
