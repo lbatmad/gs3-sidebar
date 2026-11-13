@@ -47,6 +47,8 @@ pub struct Ui {
     /// MEDIA · `⌁ Pistas`: index of the first track row the card shows. A playlist longer than the
     /// card's window scrolls here, inside its own frame, instead of pushing YouTube out of reach.
     pub track_scroll: usize,
+    /// Which 25 rows of the graph the GIT card is showing.
+    pub git_scroll: usize,
     pub yt_lists: Option<String>, pub video_scroll: usize,
     /// Explicit click on the Flameshot icon; main consumes this intent off the render path.
     pub screenshot: bool,
@@ -67,7 +69,7 @@ impl Ui {
 pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, ScrollTo(usize), GitView(GitView), Branch(Option<String>), File(String),
     /// MEDIA · `⌁ Pistas`: the index of the first track row to show, so the wheel can scroll a long
     /// playlist inside its card.
-    ScrollList(usize), ScrollVideos(usize), YtLists, YtOpenPlaylist(String), YtPlayVideo(usize), Commit(String),
+    ScrollList(usize), ScrollVideos(usize), ScrollGraph(usize), YtLists, YtOpenPlaylist(String), YtPlayVideo(usize), Commit(String),
     /// TREE: toggle a folder, fold every folder, open a changed file's diff in GIT, select an unchanged file.
     Dir(String), Fold, Inspect(String), Pick(String), MoreCommits(usize), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot,
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
@@ -128,6 +130,7 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::Edit => ui.editing = Some(ui.config.name.clone()),
         Action::ScrollTo(n) => ui.scroll[ui.tab.index()] = n,
         Action::ScrollList(n) => ui.track_scroll = n,
+        Action::ScrollGraph(n) => ui.git_scroll = n,
         Action::GitView(v) => ui.git_view = v,
         // Clicking the selected branch again (or ✕) closes the inspector and its file.
         Action::Branch(b) => { ui.git_file = None; ui.git_commit = None; ui.git_branch = if b.is_some() && b == ui.git_branch { None } else { b }; }
@@ -300,10 +303,15 @@ impl Card {
 }
 
 pub struct Hit { pub row: usize, pub x0: usize, pub x1: usize, pub action: Action }
+/// What a card's own list is: the wheel scrolls the list the hand is over, and each one keeps its offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListKind { Tracks, Videos, Graph }
 /// A card that scrolls its own rows: its first screen row, how many rows it shows, and where the list
 /// stands. Screen rows are absolute, like [`Hit`], so the wheel can tell which card the pointer is on.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ListWindow { pub top: usize, pub height: usize, pub scroll: usize, pub max_scroll: usize, pub videos: bool }
+pub struct ListWindow { pub top: usize, pub height: usize, pub scroll: usize, pub max_scroll: usize, pub kind: ListKind }
+/// The rows of the graph the GIT card shows at once: it is a window, not the whole history.
+pub const GRAPH_ROWS: usize = 25;
 pub struct Frame { pub lines: Vec<Vec<Seg>>, pub hits: Vec<Hit>, pub tab_row: usize, pub scroll: usize, pub max_scroll: usize, pub cover_pos: Option<(usize, usize)>, pub youtube_rect: Option<crate::media::CellRect>, pub lists: Vec<ListWindow> }
 /// The narrowest region under the cursor wins (a title toggle beats its whole row).
 pub fn click(f: &Frame, col: usize, row: usize) -> Option<Action> {
@@ -338,7 +346,7 @@ pub fn wheel(f: &Frame, row: usize, down: bool) -> Option<Action> {
     // sections below it would be unreachable.
     if let Some(l) = f.lists.iter().find(|l| (l.top..l.top + l.height).contains(&row)) {
         let n = if down { (l.scroll + 3).min(l.max_scroll) } else { l.scroll.saturating_sub(3) };
-        if n != l.scroll { return Some(if l.videos { Action::ScrollVideos(n) } else { Action::ScrollList(n) }) }
+        if n != l.scroll { return Some(match l.kind { ListKind::Graph => Action::ScrollGraph(n), ListKind::Videos => Action::ScrollVideos(n), ListKind::Tracks => Action::ScrollList(n) }) }
     }
     let n = if down { (f.scroll + 3).min(f.max_scroll) } else { f.scroll.saturating_sub(3) };
     (n != f.scroll).then_some(Action::ScrollTo(n))
@@ -368,7 +376,8 @@ impl Body {
         if !collapsed {
             if let Some(range) = &c.video { self.video = Some(start + 1 + range.start..start + 1 + range.end); }
             // Title included: the whole visible card takes the wheel, which is where the hand is.
-            if let Some((scroll, max_scroll)) = c.list { self.lists.push(ListWindow { top: start, height: c.rows.len() + 1, scroll, max_scroll, videos: c.id == "videos" }); }
+            if let Some((scroll, max_scroll)) = c.list { let kind = match c.id { "videos" => ListKind::Videos, "git" => ListKind::Graph, _ => ListKind::Tracks };
+            self.lists.push(ListWindow { top: start, height: c.rows.len() + 1, scroll, max_scroll, kind }); }
             for (i, x0, x1, a) in c.hits { self.hits.push(Hit { row: start + 1 + i, x0: PAD + x0, x1: PAD + x1, action: a }); }
             self.lines.extend(c.rows);
         }
@@ -455,7 +464,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     // half scrolled out only owns the rows still on screen.
     let lists = body.lists.into_iter().filter_map(|l| {
         let top = l.top.max(scroll); let end = (l.top + l.height).min(scroll + view);
-        (end > top).then(|| ListWindow { top: top - scroll + top_rows, height: end - top, scroll: l.scroll, max_scroll: l.max_scroll, videos: l.videos })
+        (end > top).then(|| ListWindow { top: top - scroll + top_rows, height: end - top, scroll: l.scroll, max_scroll: l.max_scroll, kind: l.kind })
     }).collect();
     let video = body.video;
     let lines = head.into_iter().chain(body.lines.into_iter().skip(scroll).take(view))
@@ -641,7 +650,15 @@ fn git_card(s: &State, w: usize) -> Card {
     match ui.git_view {
         GitView::Graph => {
             c.row(vec![], vec![]); c.row(vec![seg(dash(&g.branch), Text)], status_badge(g)); c.row(vec![], vec![]);
-            for l in &g.graph {
+            // A window of 25 rows and the wheel walks back: slicing rows (not commits) keeps the ASCII
+            // connectors aligned with the commits they join, and the title says which slice is on screen.
+            let total = g.graph.len();
+            let max_scroll = total.saturating_sub(GRAPH_ROWS);
+            let scroll = ui.git_scroll.min(max_scroll);
+            let end = (scroll + GRAPH_ROWS).min(total);
+
+            let visible = g.graph.get(scroll..end).unwrap_or(&[]);
+            for l in visible {
                 // The hash a row draws is the only thing a click can name, so the row itself is the hit.
                 let hash = split_graph(l).map(|(_, h, _, _)| h.to_string());
                 let open = hash.as_deref().is_some_and(|h| ui.git_commit.as_deref() == Some(h));
@@ -650,6 +667,13 @@ fn git_card(s: &State, w: usize) -> Card {
                 c.row(segs, vec![]);
                 if let Some(h) = hash { c.on_click(Action::Commit(h)); }
             }
+            // Which slice is on screen. A row of its own, because the title already carries the switch and
+            // the rail is 48 columns wide.
+            if total > 0 {
+                c.row(vec![seg(if total > GRAPH_ROWS { "↕ " } else { "  " }, Dim), seg(format!("{}-{end}/{total}", scroll + 1), Dim)], vec![]);
+            }
+            // The whole card takes the wheel, like the MEDIA lists: the hand is on it.
+            c.list = Some((scroll, max_scroll));
             // One page at a time: the row says how many more there are, and reaching the end of the body asks
             // for the same page on its own. Fewer commits than the page means the repository ended.
             if g.commits.len() >= g.log_limit && g.log_limit < crate::sources::LOG_MAX {
@@ -2636,6 +2660,26 @@ mod tests {
         // Fewer commits than the page: the repository ended, so there is nothing more to ask for.
         s.git.commits.truncate(3);
         assert!(!render_lines(&s, 60).iter().any(|l| l.contains("cargar")), "sin más commits no hay fila");
+    }
+
+    #[test]
+    fn the_graph_shows_a_window_of_25_and_the_wheel_walks_back() {
+        let mut s = sample();
+        s.ui.tab = Tab::Git;
+        s.git.graph = (0..60).map(|i| format!("* abc{i:04} commit {i}")).collect();
+        s.git.commits = (0..60).map(|i| format!("abc{i:04} commit {i}")).collect();
+        s.git.log_limit = 60;
+        let f = frame(&s, 60, 60);
+        let l = render_lines(&s, 60);
+        assert!(l.iter().any(|x| x.contains("commit 24")), "la ventana llega hasta la 25");
+        assert!(!l.iter().any(|x| x.contains("commit 40")), "y no dibuja las 60");
+        assert!(l.iter().any(|x| x.contains("↕ 1-25/60")), "una fila dice qué tramo se ve");
+        // The wheel over the card walks the window, not the body of the page.
+        let (_, y) = at(&f, "commit 3");
+        assert_eq!(wheel(&f, y, true), Some(Action::ScrollGraph(3)));
+        assert!(apply(&mut s, Event::Ui(Action::ScrollGraph(3))));
+        assert_eq!(s.ui.git_scroll, 3);
+        assert!(render_lines(&s, 60).iter().any(|x| x.contains("4-28/60")), "el tramo se sigue");
     }
 
     #[test]
