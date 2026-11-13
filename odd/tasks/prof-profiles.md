@@ -16,12 +16,18 @@ S2. "si hay varios perfiles en gentle:profiles que se muestren en una card arrib
     seleccionarlos de acuerdo al caso": `Card::new("profiles", …)` como primera tarjeta de la
     pestaña, una fila por perfil con el nombre y el dato distintivo que existe en el store real
     (cantidad de roles; el modelo del host si entra), sólo cuando el store tiene más de un perfil.
-S3. El clic en una fila de perfil hace sólo el efecto admisible (b): "dejar el nombre seleccionado
-    visible para el humano". No abre la pantalla ni envía nada.
-S4. "Un clic en un perfil no escribe nada en disco (verificable con `git status` y con el mtime del
-    store antes/después)". "Prohibido: escribir el store, cambiar el perfil activo, inventar
-    `/gentle:profiles <nombre>`, o reimplementar la pantalla de Pi. Si creés que hace falta más,
-    pará y preguntá."
+S3. El clic en una fila de perfil con nombre válido (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, sin
+    `__proto__`/`constructor`/`prototype`, la regla `isValidProfileName` de Pi) envía al pane del agente
+    `/gentle:profiles publish <nombre>` por el mismo camino del botón (focus + texto + Enter, throttle
+    1 s). Pi lo ejecuta y escribe/quita la **declaración del repositorio**
+    (`<worktree-root>/.pi/gentle-ai/profile.json`, commiteable): es un **toggle** — otro clic sobre el
+    perfil fijado lo quita. Con nombre inválido el clic queda como selección visual (la anterior S3),
+    sin enviar nada. (Reescrita por L5/L6: la S3 original decía «sólo selección visual».)
+S4. "El rail no escribe configuración": el proceso HUD sigue sin escribir stores ni pins; el único
+    efecto del clic de S3 es enviar texto al pane, y quien escribe la declaración es el agente de Pi
+    ejecutando su propio comando (elegido por el humano en L6). `profiles.json` nunca se escribe desde
+    el rail. "Prohibido: escribir el store [desde el rail], cambiar el perfil activo global, o
+    reimplementar la pantalla de Pi." (Reescrita por L5/L6.)
 S5. "Con 1 perfil, la pestaña no gana ruido": no se dibuja la card de perfiles; queda el botón de S1
     (decisión: con 0 o 1 perfil la card no aparece; el botón siempre).
 S6. "Con 3 perfiles en el store, PROF muestra una card arriba con 3 filas legibles en 48 columnas".
@@ -45,6 +51,15 @@ S10. "Actualizás `docs/tabs.md` (sección PROF), `gs3/hud/README.md` (fila 3:PR
 S11. "No tocar `sensitive()`, ni el gate de TREE, ni el render de markdown/código. No romper S1–S13
     de `odd/tasks/tree-preview.md` ni sus tests. Nada de mouse hover (no hay modo 1003 en este
     rail). Todo clic explícito. No `git push`, no mergear a main sin que te lo pidan."
+S12. El rail lee las dos capas de pin y muestra la ganadora (sólo lectura, `agent-profile-pin.ts`):
+    pin de clon `<git-common-dir>/gentle-ai/profile-pin.json`, declaración del repo
+    `<worktree-root>/.pi/gentle-ai/profile.json`, ambas `{kind: "gentle-pi.agent_model_profile_pin",
+    version: 1, profile: <nombre>}`; gana la primera capa válida cuyo nombre exista en el store
+    (clon antes que repo; nombre ausente = stale, no tapa la otra capa). Viaja en `Roster` (campo
+    `pinned`), se vigila con notify sobre los directorios + debounce 300 ms (escritura atómica por
+    rename), y se muestra: `◆` en la fila de la card ⌁ Perfiles y un renglón en Profiles & Clusters que
+    dice qué perfil usan los lanzamientos de subagentes (el orquestador nunca cambia por diseño de
+    Pi).
 
 ## Tasks
 
@@ -55,6 +70,9 @@ S11. "No tocar `sensitive()`, ni el gate de TREE, ni el render de markdown/códi
 | T3 | S1, S4 | botón `[ ▸ profiles ]`, Action, worker con throttle, pedidos `pane.focus` + `pane.send_keys` (`ui.rs`, `sources.rs`, `main.rs`) | 7343f60 |
 | T4 | S10 | `--help`, `docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md` | fdbc7b6 |
 | T5 | S9 | verificación real: `cargo test`, `--once` con el store de esta máquina, `scripts/build-hud.sh` + copia a `~/.local/bin`, sidecar, pane | c645f09 (evidencia en L4) |
+| T6 | S12 | lectura de las dos capas de pin (precedencia, staleness), `Roster::pinned`, watcher de los directorios de pin (`core.rs`, `sources.rs`) | |
+| T7 | S3, S4, S12 | clic = `publish <nombre>` con nombre válido (toggle), `◆` en la fila pineada, renglón de anuncio en Profiles & Clusters, worker por nombre (`ui.rs`, `sources.rs`, `main.rs`) | |
+| T8 | S3, S12 | docs (`docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md`, `--help`) y verificación real del toggle | |
 
 Riesgo: ninguno de los seis ítems. El rail sigue sin escribir configuración (sólo lee el store y
 envía un literal fijo al pane, la misma autoridad que el model picker ya ejerce con F9); sin
@@ -162,6 +180,39 @@ L4 (verificación real de T5, honesta):
 - Lo que quedó sin probar automáticamente: el clic de mouse sobre el botón en el rail (el pty del
   entorno no entrega mouse); el camino probado es idéntico al del model picker ya existente
   (misma Action, mismo consumo en main, mismo worker con throttle) y cada tramo tiene test.
+
+L5 (cambio de requisito del humano, textual):
+
+> el radiobutton de perfiles no cambia los perfiles en la card Profiles & Clusters, la idea es
+> que los agentes tomen el perfil del radiobutton seleccionado
+
+Choca con S3/S4 (clic = sólo selección visual, sin escritura). Decisión pedida al humano:
+
+L6 (decisión del humano, elegida entre publish / sólo abrir la pantalla / sólo leer el pin):
+
+> publish <nombre> desde el rail — un clic envía '/gentle:profiles publish <nombre>' al pane
+> (texto literal + Enter). Fija la declaración para este repo, que sus subagentes usen ese perfil;
+> otro clic sobre el mismo la quita (es un toggle). La card muestra el perfil fijado.
+
+Descubrimiento fino delegado (explorer, evidencia `path:line` en `agent-profile-pin.ts`,
+`agent-profiles.ts`, `gentle-ai.ts`):
+
+- Capas de pin: clon `<git-common-dir>/gentle-ai/profile-pin.json` (dentro del gitdir, no
+  commiteado, compartido por los worktrees de la clonada) y repo
+  `<worktree-root>/.pi/gentle-ai/profile.json` (commiteable; reglas de gitignore sugeridas en
+  `REPO_PROFILE_DECLARATION_GITIGNORE_RULES`). Ambas
+  `{kind:"gentle-pi.agent_model_profile_pin",version:1,profile:<nombre>}`; escritura atómica por
+  rename (`writeJsonFileAtomicallySync`, idempotente por bytes iguales).
+- `publish <name>` → `{type:"pin",source:"repo"}` escribe/quita la declaración del repo (toggle);
+  el ítem de menú «Usar en este repositorio» → `{type:"pin",source:"local"}` escribe el pin de clon.
+- Precedencia local→repo (`profilePinLayers`, `evaluateProfilePin`): gana la primera capa válida
+  cuyo nombre sea clave del store; inválida (kind/version/nombre) o stale (nombre ausente) se
+  salta sin tapar la otra.
+- Efecto: `readEffectiveModelConfig` = pin ?? routing global; `profileRoleEntries` filtra
+  `orchestrator`, así que los **lanzamientos de subagentes** resuelven el perfil pineado y el
+  orquestador nunca cambia.
+- `isValidProfileName`: `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` + rechazo de `__proto__`,
+  `constructor`, `prototype` — la regla de envío del rail.
 - D8 (id de la card): el pedido decía `Card::new("profiles", …)`, pero `profiles` ya es la clave de
   collapse de la card existente ("Profiles & Clusters"); dos cards con la misma clave se plegarían
   juntas. La card nueva usa el id `profiles-store` y título `⌁ Perfiles` (las filas de la solapa están
