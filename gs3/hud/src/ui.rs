@@ -32,7 +32,7 @@ pub struct Ui {
     /// Where CONFIG is persisted (`--config`); `None` keeps changes in memory only.
     pub config_path: Option<PathBuf>, pub save: bool, pub save_error: Option<String>,
     /// GIT tab: graph or branches view, branch being diffed against HEAD, file whose diff is previewed.
-    pub git_view: GitView, pub git_branch: Option<String>, pub git_file: Option<String>,
+    pub git_view: GitView, pub git_branch: Option<String>, pub git_file: Option<String>, pub git_commit: Option<String>,
     /// TREE tab: expanded folders (sorted, root-relative) and the selected file.
     pub tree_open: Vec<String>, pub tree_pick: Option<String>,
     /// Explicit model-section click; main consumes this intent off the render path.
@@ -63,7 +63,7 @@ impl Ui {
 pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, ScrollTo(usize), GitView(GitView), Branch(Option<String>), File(String),
     /// MEDIA · `⌁ Pistas`: the index of the first track row to show, so the wheel can scroll a long
     /// playlist inside its card.
-    ScrollList(usize), ScrollVideos(usize), YtLists, YtOpenPlaylist(String), YtPlayVideo(usize),
+    ScrollList(usize), ScrollVideos(usize), YtLists, YtOpenPlaylist(String), YtPlayVideo(usize), Commit(String),
     /// TREE: toggle a folder, fold every folder, open a changed file's diff in GIT, select an unchanged file.
     Dir(String), Fold, Inspect(String), Pick(String), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot,
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
@@ -126,7 +126,13 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::ScrollList(n) => ui.track_scroll = n,
         Action::GitView(v) => ui.git_view = v,
         // Clicking the selected branch again (or ✕) closes the inspector and its file.
-        Action::Branch(b) => { ui.git_file = None; ui.git_branch = if b.is_some() && b == ui.git_branch { None } else { b }; }
+        Action::Branch(b) => { ui.git_file = None; ui.git_commit = None; ui.git_branch = if b.is_some() && b == ui.git_branch { None } else { b }; }
+        // A commit opens its own file list; clicking the same commit again closes it.
+        Action::Commit(h) => {
+            if !crate::core::is_hash(&h) { return }
+            ui.git_file = None; ui.git_branch = None;
+            ui.git_commit = if ui.git_commit.as_deref() == Some(h.as_str()) { None } else { Some(h) };
+        }
         Action::File(f) => ui.git_file = if ui.git_file.as_ref() == Some(&f) { None } else { Some(f) },
         Action::Dir(d) => { let o = &mut ui.tree_open; match o.iter().position(|x| *x == d) { Some(i) => { o.remove(i); } None => { o.push(d); o.sort(); } } }
         Action::Fold => ui.tree_open.clear(),
@@ -422,7 +428,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
         && crate::cover::ready(s.media.spotify.cover_url.as_deref(), s.media.spotify.cover_png.as_deref(), true, true);
     match ui.tab {
         Tab::Main => { voice_row(&mut body, s.voice, cw, ui.config.plain_controls); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); }
-        Tab::Git => { body.push(ui, git_card(s, cw)); body.push(ui, worktree_card(s, cw)); body.push(ui, pr_card(s, cw)); }
+        Tab::Git => { body.push(ui, git_card(s, cw)); if let Some(c) = commit_card(s, cw) { body.push(ui, c); } body.push(ui, worktree_card(s, cw)); body.push(ui, pr_card(s, cw)); }
         Tab::Prof => body.push(ui, profiles_card(s, cw)),
         Tab::Mem => { for c in [engram_card(s, cw), handoff_card(s, cw), stack_card(s, cw), tools_card(s, cw), mcp_card(s, cw)] { body.push(ui, c); } }
         Tab::Tree => body.push(ui, tree_card(s, cw)),
@@ -630,7 +636,15 @@ fn git_card(s: &State, w: usize) -> Card {
     match ui.git_view {
         GitView::Graph => {
             c.row(vec![], vec![]); c.row(vec![seg(dash(&g.branch), Text)], status_badge(g)); c.row(vec![], vec![]);
-            for l in &g.graph { c.row(graph_line(l), vec![]); }
+            for l in &g.graph {
+                // The hash a row draws is the only thing a click can name, so the row itself is the hit.
+                let hash = split_graph(l).map(|(_, h, _, _)| h.to_string());
+                let open = hash.as_deref().is_some_and(|h| ui.git_commit.as_deref() == Some(h));
+                let mut segs = graph_line(l);
+                if open { segs.insert(0, seg("▸ ", PinkBright)); }
+                c.row(segs, vec![]);
+                if let Some(h) = hash { c.on_click(Action::Commit(h)); }
+            }
             if g.added + g.deleted > 0 {
                 let n = g.counts.modified + g.counts.staged;
                 c.row(vec![], vec![]);
@@ -667,7 +681,7 @@ fn diff_rows(c: &mut Card, s: &State, path: &str) {
     let (d, ui) = (&s.detail, &s.ui);
     let note = |c: &mut Card, t: &str| c.row(vec![seg(format!("  {t}"), Dim)], vec![]);
     if sensitive(path) { return note(c, "contenido oculto · posible secreto") }
-    if d.file != ui.git_file || d.branch != ui.git_branch { return note(c, "cargando diff…") }
+    if d.file != ui.git_file || d.branch != ui.git_branch || d.commit != ui.git_commit { return note(c, "cargando diff…") }
     let lines = &d.diff[d.diff.iter().position(|l| l.starts_with("@@")).unwrap_or(0)..];
     if lines.is_empty() { return note(c, "sin cambios de texto") }
     for l in lines.iter().take(DIFF_ROWS) {
@@ -693,6 +707,33 @@ fn file_rows(c: &mut Card, s: &State, files: &[FileChange]) {
         if s.ui.git_file.as_deref() == Some(f.path.as_str()) { diff_rows(c, s, &f.path); }
     }
 }
+/// What a commit touched: the files it changed, and the diff of the one that is open. A commit is read
+/// from what the graph printed, so the card says "cargando…" until the answer for that exact hash lands.
+fn commit_card(s: &State, w: usize) -> Option<Card> {
+    use Tone::*;
+    let hash = s.ui.git_commit.as_ref()?;
+    let d = &s.detail;
+    let close = Some(Action::Commit(hash.clone()));
+    let mut c = Card::new("commit", vec![seg("◆ commit ", Gold), seg(hash.clone(), Yellow)], w);
+    c.extra = vec![(seg("[ ", Dim), close.clone()), (seg("✕", Coral), close.clone()), (seg(" ]", Dim), close)];
+    if d.commit.as_deref() != Some(hash.as_str()) { c.row(vec![seg("  cargando…", Dim)], vec![]); return Some(c) }
+    if let Some(e) = &d.error { c.row(vec![seg(format!("  {e}"), Coral)], vec![]); }
+    if d.files.is_empty() && d.error.is_none() { c.row(vec![seg("  sin archivos", Dim)], vec![]); }
+    for f in &d.files {
+        let (b, t) = match f.kind { FileKind::Modified => ("M", Yellow), FileKind::Added => ("A", Mint), FileKind::Deleted => ("D", Coral), FileKind::Untracked => ("?", Pink), FileKind::Conflict => ("U", Coral) };
+        let mut right = vec![seg("[", Dim), seg("diff", Pink), seg("]", Dim)];
+        if f.added > 0 { right.extend([seg(" ", Text), seg(format!("+{}", f.added), Mint)]); }
+        if f.deleted > 0 { right.extend([seg(" ", Text), seg(format!("−{}", f.deleted), Coral)]); }
+        c.row(vec![seg(b, t), seg("  ", Text), seg(f.path.clone(), Cyan)], right);
+        c.on_click(Action::File(f.path.clone()));
+        if s.ui.git_file.as_deref() == Some(f.path.as_str()) { diff_rows(&mut c, s, &f.path); }
+    }
+    if d.added + d.deleted > 0 {
+        c.row(vec![seg(format!("  +{}", d.added), Mint), seg(" ", Text), seg(format!("−{}", d.deleted), Coral)], vec![]);
+    }
+    Some(c)
+}
+
 /// Working tree changes, or (a branch selected in Ramas) that branch's diff against HEAD.
 fn worktree_card(s: &State, w: usize) -> Card {
     use Tone::*;
@@ -2249,6 +2290,31 @@ mod tests {
         apply(&mut s, Event::Ui(Action::Branch(None))); assert_eq!((s.ui.git_branch.clone(), s.ui.git_file.clone()), (None, None));
         find(&render_lines(&s, 42), "📁 Working Tree");
         apply(&mut s, Event::Ui(Action::Branch(Some("main".into())))); apply(&mut s, Event::Ui(Action::Branch(Some("main".into())))); assert_eq!(s.ui.git_branch, None, "same branch toggles");
+    }
+
+    #[test]
+    fn a_click_on_a_commit_row_opens_the_files_it_touched() {
+        let mut s = sample(); s.ui.tab = Tab::Git; s.ui.git_view = GitView::Graph;
+        s.git.graph = vec!["* a1b2c3d (HEAD -> main) top".into()];
+        let f = frame(&s, 60, 0);
+        let (x, y) = at(&f, "top");
+        assert_eq!(click(&f, x, y), Some(Action::Commit("a1b2c3d".into())), "the row names the commit it draws");
+        // Opening a commit clears the file and the branch: they answer different questions.
+        s.ui.git_file = Some("src/a.rs".into()); s.ui.git_branch = Some("dev".into());
+        apply(&mut s, Event::Ui(Action::Commit("a1b2c3d".into())));
+        assert_eq!((s.ui.git_commit.clone(), s.ui.git_file.clone(), s.ui.git_branch.clone()), (Some("a1b2c3d".into()), None, None));
+        // The same commit closes it, and anything that is not what git printed never opens one.
+        apply(&mut s, Event::Ui(Action::Commit("a1b2c3d".into())));
+        assert_eq!(s.ui.git_commit, None, "same commit toggles");
+        apply(&mut s, Event::Ui(Action::Commit("--upload-pack=x".into())));
+        assert_eq!(s.ui.git_commit, None, "a line cannot smuggle an option into git");
+        // The card lists what the commit touched, and a file in that list opens its diff.
+        s.detail.commit = Some("a1b2c3d".into());
+        s.detail.files = vec![FileChange { path: "src/a.rs".into(), kind: FileKind::Modified, added: 2, deleted: 1 }];
+        apply(&mut s, Event::Ui(Action::Commit("a1b2c3d".into())));
+        let f = frame(&s, 60, 0);
+        let (x, y) = at(&f, "src/a.rs");
+        assert_eq!(click(&f, x, y), Some(Action::File("src/a.rs".into())), "the commit's own file list is clickable");
         s.detail.files.clear(); s.ui.git_branch = Some("main".into()); s.detail.branch = Some("main".into()); find(&render_lines(&s, 42), "✔ Sin diferencias con HEAD");
     }
     #[test]

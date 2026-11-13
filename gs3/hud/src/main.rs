@@ -62,8 +62,8 @@ fn main()->Result<()> {
     thread::spawn(move||{for e in data_rx {if bridge.send(Message::Data(e)).is_err(){break}}});
     let local=sources::local(a.cwd.clone(),a.socket.clone(),a.pane.clone(),data_tx.clone()); let details=sources::details(a.cwd.clone(),data_tx.clone()); let pr=sources::prs(a.cwd.clone(),data_tx.clone());
     // GIT inspector: ask for a branch/file diff when the selection changes, and again when the repo changes under it.
-    let request=|s:&State|{let u=&s.ui; (u.git_branch.is_some()||u.git_file.is_some()).then(||sources::DetailRequest{branch:u.git_branch.clone(),file:u.git_file.clone(),
-        untracked:u.git_branch.is_none() && s.git.files.iter().any(|f|Some(&f.path)==u.git_file.as_ref() && f.kind==FileKind::Untracked)})};
+    let request=|s:&State|{let u=&s.ui; (u.git_branch.is_some()||u.git_file.is_some()||u.git_commit.is_some()).then(||sources::DetailRequest{branch:u.git_branch.clone(),file:u.git_file.clone(),commit:u.git_commit.clone(),
+        untracked:u.git_branch.is_none() && u.git_commit.is_none() && s.git.files.iter().any(|f|Some(&f.path)==u.git_file.as_ref() && f.kind==FileKind::Untracked)})};
     let mut asked:Option<sources::DetailRequest>=None;
     // TREE: scan only while the tab is shown — again when folders open/close, on `r`, and when the repo changes.
     let trees=sources::trees(a.cwd.clone(),data_tx.clone()); let mut scanned:Option<Vec<String>>=None;

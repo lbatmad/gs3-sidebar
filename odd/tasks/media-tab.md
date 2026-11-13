@@ -513,3 +513,20 @@ only a *start* counts: both engines report while they play, and pausing on every
 pause each other in turns. 151 tests green (new: starting one source pauses the other, both directions,
 the silent case and the plain report case). Not verified end to end: no Spotify device was playing in
 this session, so the Spotify-side path is proven by the rule's test and the code path only.
+
+L63. Human: "veamos lo de git, que me tiene que mostrar al hacer click en alguno de los commits?" Asked
+instead of choosing, and the answer was: the list of files the commit touched, and then the diff of the
+one you click. Until now the graph was plain text with no hits at all — the commit hash was drawn and
+thrown away.
+
+What a click does now: a row in `Grafo` names the commit it draws (`Action::Commit(hash)`), the open one
+is marked `▸`, and a `◆ commit <hash>` card lists what it touched (`M/A/D/?`, `[diff]`, `+n −n`, totals)
+with the selected file's diff inline, the same rows the working tree uses. Opening a commit clears the
+file and branch selections because they answer different questions; clicking the same commit again, or
+`[ ✕ ]`, closes it. `Detail` now carries the commit it belongs to, so a late answer for another hash
+shows "cargando…" instead of the wrong list. Anything that is not lowercase hex of 7 to 40 digits is
+refused before it reaches an argument list (`core::is_hash`), so a graph line cannot smuggle an option
+into git. 152 tests green (new: a click on a commit row opens the files it touched). The new test was
+written after the implementation, so no RED was observed for it; the live check below is what proves it.
+Seen live on this repo: clicking `38f04f8` listed `gs3/hud/src/ui.rs +8 −4` and `odd/tasks/media-tab.md`,
+and clicking the first file showed its hunk inside the card.

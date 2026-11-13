@@ -89,11 +89,11 @@ pub fn trees(cwd:PathBuf,tx:Sender<Event>)->Sender<Vec<String>> {
 }
 /// What the GIT tab inspects: a branch diffed against HEAD and/or one file (untracked files are read directly).
 #[derive(Clone, Debug, PartialEq)]
-pub struct DetailRequest { pub branch:Option<String>, pub file:Option<String>, pub untracked:bool }
+pub struct DetailRequest { pub branch:Option<String>, pub file:Option<String>, pub commit:Option<String>, pub untracked:bool }
 const DIFF_KEEP:usize=2000; const UNTRACKED_MAX:u64=64*1024;
 fn diff_lines(d:&mut Detail,text:&str) {let all:Vec<&str>=text.lines().collect(); d.more=all.len().saturating_sub(DIFF_KEEP); d.diff=all.into_iter().take(DIFF_KEEP).map(str::to_owned).collect();}
 pub fn detail(cwd:&Path,r:&DetailRequest)->Detail {
-    let mut d=Detail{branch:r.branch.clone(),file:r.file.clone(),..Detail::default()};
+    let mut d=Detail{branch:r.branch.clone(),file:r.file.clone(),commit:r.commit.clone(),..Detail::default()};
     let Some(root)=git_root(cwd) else {d.error=Some("not a git repo".into()); return d};
     if let Some(b)=&r.branch {
         let range=format!("HEAD...{b}");
@@ -102,9 +102,17 @@ pub fn detail(cwd:&Path,r:&DetailRequest)->Detail {
             Err(e)=>d.error=Some(e.to_string()),
         }
     }
+    if let Some(c)=r.commit.as_deref().filter(|c|crate::core::is_hash(c)) {
+        d.commit=Some(c.to_string());
+        match git(&root,&["show","--name-status","-z","--no-renames","--format=",c]) {
+            Ok(s)=>{d.files=parse_name_status(&s); if let Ok(n)=git(&root,&["show","--numstat","-z","--no-renames","--format=",c]) {(d.added,d.deleted)=apply_numstat(&mut d.files,&n);}}
+            Err(e)=>d.error=Some(e.to_string()),
+        }
+    } else if r.commit.is_some() { d.error=Some("hash inválido".into()); }
     let Some(f)=&r.file else {return d};
     // Never read nor diff what may hold credentials (the UI says so instead).
     if sensitive(f) {return d}
+    let Some(c)=r.commit.as_deref().filter(|c|crate::core::is_hash(c)) else {
     let out=match &r.branch {
         Some(b)=>git(&root,&["diff","--no-renames","--end-of-options",&format!("HEAD...{b}"),"--",f]),
         None if r.untracked=>{
@@ -122,6 +130,8 @@ pub fn detail(cwd:&Path,r:&DetailRequest)->Detail {
         None=>git(&root,&["diff","HEAD","--no-renames","--",f]),
     };
     match out {Ok(s)=>diff_lines(&mut d,&s),Err(e)=>d.diff=vec![format!("error: {e}")]}
+    return d };
+    match git(&root,&["show","--no-renames","--format=",c,"--",f]) {Ok(s)=>diff_lines(&mut d,&s),Err(e)=>d.diff=vec![format!("error: {e}")]}
     d
 }
 /// Inspector worker: only the latest pending request is answered (clicks may outrun git).
@@ -546,7 +556,7 @@ mod tests {
         assert!(g.files.iter().any(|f|f.path=="sub/n.txt"),"root-relative paths from a subdirectory: {:?}",g.files);
         assert!(g.graph[0].contains("(HEAD -> main)") && g.commits.len()==1 && g.commits[0].ends_with(" base"),"{:?}",g.graph);
         assert_eq!(g.branches.iter().map(|b|(b.name.as_str(),b.current)).collect::<Vec<_>>(),[("main",true),("feat",false)]);
-        let req=|b:Option<&str>,f:Option<&str>,u|DetailRequest{branch:b.map(Into::into),file:f.map(Into::into),untracked:u};
+        let req=|b:Option<&str>,f:Option<&str>,u|DetailRequest{branch:b.map(Into::into),file:f.map(Into::into),commit:None,untracked:u};
         let d=detail(&dir.join("sub"),&req(None,Some("f.txt"),false)); assert!(d.diff.iter().any(|l|l=="-b") && d.diff.iter().any(|l|l=="+c"),"{:?}",d.diff);
         assert_eq!(detail(&dir,&req(None,Some("sub/n.txt"),true)).diff,["@@ archivo nuevo @@","+new"]);
         assert!(detail(&dir,&req(None,Some(".env"),true)).diff.is_empty(),"secrets are never read");
