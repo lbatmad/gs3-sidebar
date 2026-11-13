@@ -96,6 +96,10 @@ struct Cells { w: i64, h: i64, cols: i64, rows: i64 }
 /// `GS3_HUD_GRID_TOP` overrides it for a terminal whose chrome is a different height.
 const GRID_TOP: i64 = 38;
 
+/// The padding the terminal leaves on each side of the grid, in the same pixels. Measured: a 1920 px
+/// window drawing 8 px cells holds 239 of them, not 240, so eight pixels of it are not cells at all.
+const GRID_SIDE: i64 = 4;
+
 /// The size of one cell of this pane, in the pixels the window list reports. The terminal answers with
 /// the grid it is drawing, so this needs no font, no scale factor and no permission. Some terminals
 /// leave the pixel half of the answer empty; a cell is a few pixels wide and a few more tall.
@@ -120,7 +124,7 @@ fn grid_of(frame: Frame, area: CellRect, pane: CellRect, cells: Option<Cells>) -
         return Grid { x: fx, y: fy, cell_w: (fw / area_w).max(1), cell_h: (fh / area_h).max(1), skip_x: 0, skip_y: 0, inset_x: 0, inset_y: 0 }
     };
     let top = std::env::var("GS3_HUD_GRID_TOP").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(GRID_TOP);
-    let cols = (fw / c.w).max(1);
+    let cols = ((fw - GRID_SIDE * 2).max(c.w) / c.w).max(1);
     let rows = ((fh - top).max(c.h) / c.h).max(1);
     Grid {
         // The frame is a few pixels wider than the whole cells in it, padded on both sides.
@@ -826,10 +830,10 @@ mod tests {
         let card = CellRect::new(0, 21, 39, 10);
         let cells = Cells { w: 8, h: 17, cols: 50, rows: 56 };
         let grid = grid_of(frame, area, pane, Some(cells));
-        assert_eq!((grid.x, grid.y), (0, 63), "the grid starts below the title bar, not at the frame's corner");
-        assert_eq!((grid.skip_x, grid.skip_y), (31, 1), "the area starts past the sidebar and the tab bar");
+        assert_eq!((grid.x, grid.y), (4, 63), "the grid starts inside the frame, below the title bar");
+        assert_eq!((grid.skip_x, grid.skip_y), (30, 1), "the area starts past the sidebar and the tab bar");
         assert_eq!((grid.inset_x, grid.inset_y), (1, 1), "the pane's own grid starts inside its border");
-        assert_eq!(geometry(grid, area, pane, card).as_deref(), Some("312x170+1512+454"));
+        assert_eq!(geometry(grid, area, pane, card).as_deref(), Some("312x170+1508+454"));
     }
 
     #[test]

@@ -452,3 +452,18 @@ On the live rail the signal ended the process instead of replacing it, and herdr
 it: the escape is not verified and is not shipped. Restarting the rail after an install stays a manual
 start, which is why the placement below was proven from the pure function plus measured inputs rather
 than from a fresh window.
+
+L58. Human, with the vertical now right: "corrido a la derecha, saliendo de la tarjeta, decime si no
+lo podes hacer y listo." Two horizontal errors, both hidden until the scale was corrected:
+
+- the picture's rect used 16% of the inner width on the left and 2% on the right (`VIDEO_RIGHT_PCT`),
+  a pair that only looked centred while the window was drawn 15% too wide. With true cells the picture
+  started nine cells in and ended flush against the card's right border, i.e. hanging off it.
+- `grid_of` divided the frame's width by the cell width and got 240 columns; the terminal draws 239,
+  because eight pixels of the window are padding and not cells. That put every column 4 px to the right
+  and made the layout area's own offset one cell too large.
+
+Fix: `VIDEO_INSET_PCT` on both sides (the picture is centred, and a UI test now pins left margin ==
+right margin), and `GRID_SIDE = 4` so the grid is measured between its paddings: 239x59 cells from
+1912x1003 px. The mapping was then checked against the screen: the pane's own edges and the card's
+right border land within 1-2 px of the computed columns (1493 predicted 1492, 1892 predicted 1892).
