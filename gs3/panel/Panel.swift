@@ -185,6 +185,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextV
         scroll.autoresizingMask = [.width, .height]
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = false
         scroll.autoresizingMask = [.width, .height]
         scroll.drawsBackground = false
         scroll.backgroundColor = background
@@ -208,9 +209,16 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextV
             self?.reload()
         }
         view.isVerticallyResizable = true
+        // No wrapping and no width tracking: a long diff line runs off to the right and the horizontal
+        // scroller brings it back, so a whole file can be read at full width.
         view.isHorizontallyResizable = true
+        view.isVerticallyResizable = true
+        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.textContainer?.widthTracksTextView = false
+        view.textContainer?.lineFragmentPadding = 0
         view.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        // Only the height follows the window: a width-tracking view would rewrap and kill the scroller.
+        view.autoresizingMask = [.height]
 
         scroll.documentView = view
         let card = CardView(frame: NSRect(x: 0, y: 0, width: rect.width, height: rect.height))
