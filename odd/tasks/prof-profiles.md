@@ -54,7 +54,7 @@ S11. "No tocar `sensitive()`, ni el gate de TREE, ni el render de markdown/códi
 | T2 | S2, S3, S5, S6, S7, S8 | card `profiles` arriba de la card PROF, selección visual, degradación a 42/36 con `width_of` (`gs3/hud/src/ui.rs`) | bd2b47e |
 | T3 | S1, S4 | botón `[ ▸ profiles ]`, Action, worker con throttle, pedidos `pane.focus` + `pane.send_keys` (`ui.rs`, `sources.rs`, `main.rs`) | 7343f60 |
 | T4 | S10 | `--help`, `docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md` | fdbc7b6 |
-| T5 | S9 | verificación real: `cargo test`, `--once` con el store de esta máquina, `scripts/build-hud.sh` + copia a `~/.local/bin`, sidecar, pane | pendiente |
+| T5 | S9 | verificación real: `cargo test`, `--once` con el store de esta máquina, `scripts/build-hud.sh` + copia a `~/.local/bin`, sidecar, pane | c645f09 (evidencia en L4) |
 
 Riesgo: ninguno de los seis ítems. El rail sigue sin escribir configuración (sólo lee el store y
 envía un literal fijo al pane, la misma autoridad que el model picker ya ejerce con F9); sin
