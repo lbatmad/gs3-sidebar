@@ -400,3 +400,22 @@ pure centring and no compensating nudge. The uncommitted `TITLEBAR_PX = 14` nudg
 double compensation that never converged. L54's centred block stands as it was at `80d7d16`. Still
 open and NOT claimed: `geometry()` maps rows through the window frame instead of the text grid, which is
 why a correctly centred cell rect can still draw off, and a size change still rebuilds mpv.
+
+L56. Human: "la verdad que me tenes harto, un puto video tenes que centrar y ahora se tapa la
+busqueda" — and then "que quede la pantalla ahi ... Que se mantenga a esa distancia de buscar y del
+titulo. Y si lo de spotify crece de tamaño que respete el video la distancia de buscar."
+
+Root cause, found in the engine and not in the layout: `needs_move` answered `Movement::Move` when the
+block kept its size and only changed row, and `move_window` answered a `Move` by recording the new
+rectangle and returning. The window was never moved. Everything that grows above the video — a Spotify
+playlist, a search result, an expanded card — pushes the YouTube card down, so the window stayed where
+the card used to be and sat over `buscar`. That is the whole complaint, and no amount of reservation
+tuning could have fixed it from `ui.rs`.
+
+Fix: `Movement` is `None` or `Rebuild`; a block that moved is rebuilt exactly like one that resized,
+at the same video and the same position, because mpv offers no in-place move and the only
+permission-free placement is at start. The wait is now a settle timer keyed to the wanted rectangle
+(`settled`): a block still moving restarts it, so a layout that lands over several frames spends one
+rebuild instead of one every 300 ms. The picture itself is untouched — `VIDEO_ROWS = 12`,
+`VIDEO_ROWS_TALL = 10`, pure centring — because the human asked for the picture to stay where it is.
+148 tests green (new: a block that keeps moving spends no rebuild).

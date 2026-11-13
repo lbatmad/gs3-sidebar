@@ -182,33 +182,48 @@ hit ? String(hit.kCGWindowOwnerPID|0) : "";"#);
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Movement { None, Move, Rebuild }
+enum Movement { None, Rebuild }
 
+/// Whether the window is where the card is. A block that moved needs a new window just as much as one
+/// that resized, so both answer `Rebuild`: a variant that preserved the window kept it over `buscar`.
 fn needs_move(used: Option<CellRect>, want: Option<CellRect>, visible: bool) -> Movement {
     if !visible || want.is_none() || used == want { return Movement::None }
-    match (used, want) {
-        (Some(a), Some(b)) if a.width == b.width && a.height == b.height => Movement::Move,
-        _ => Movement::Rebuild,
+    Movement::Rebuild
+}
+
+/// How long a wanted block must stay still before one rebuild is spent on it.
+const SETTLE: Duration = Duration::from_millis(300);
+
+/// Whether the wait for a wanted block has been spent. The wait restarts whenever the block asks for a
+/// different place: a playlist loading or a wheel over the body shifts it several frames running, and
+/// each of those frames used to spend the wait on a rebuild that was already stale.
+fn settled(pending: &mut Option<(CellRect, Instant)>, want: CellRect, now: Instant) -> bool {
+    match *pending {
+        Some((asked, at)) if asked == want => {
+            if now.saturating_duration_since(at) < SETTLE { return false }
+            *pending = None;
+            true
+        }
+        _ => { *pending = Some((want, now)); false }
     }
 }
 
-/// Keep playback on position-only changes; mpv's runtime geometry property was measured to do nothing.
-/// Size changes rebuild at the same video and position, debounced during scrolling.
-fn move_window(player: &mut Option<Player>, y: &mut Youtube, card: Option<CellRect>, visible: bool, moved_at: &mut Option<Instant>, socket: &std::path::Path) {
+/// Put the window on the block the card is using now, moving or resizing alike: the block sits below the
+/// Spotify card and below `buscar`, so anything that grows above it (a playlist, a search result, an
+/// expanded card) moves it, and a window left where the block used to be covers the search row.
+///
+/// mpv's window cannot be repositioned in place: its runtime `geometry` property is a no-op on this
+/// build and it has no move command, and the only permission-free way to place a window of another
+/// process is to start it there. So a moved block gets a fresh window at the same video and the same
+/// position, debounced so a card that settles in several frames is rebuilt once.
+fn move_window(player: &mut Option<Player>, y: &mut Youtube, card: Option<CellRect>, visible: bool, moved_at: &mut Option<(CellRect, Instant)>, socket: &std::path::Path) {
     let Some(p) = player.as_mut() else { *moved_at = None; return };
     match needs_move(p.geom, card, visible) {
         Movement::None => { *moved_at = None; return }
-        Movement::Move => {
-            trace!("move: pid={} used={:?} want={card:?} action=preserve (runtime geometry unsupported)", p.child.id(), p.geom);
-            p.geom = card;
-            *moved_at = None;
-            return;
-        }
         Movement::Rebuild => {}
     }
-    let since = moved_at.get_or_insert_with(Instant::now);
-    if since.elapsed() < Duration::from_millis(300) { return }
-    *moved_at = None;
+    let Some(want) = card else { *moved_at = None; return };
+    if !settled(moved_at, want, Instant::now()) { return }
     let used = p.geom;
     // Record the block this rebuild is for before anything can fail. A return path that left the old
     // value behind rebuilds again on the next tick, and a rebuild every tick killed and respawned mpv
@@ -625,7 +640,7 @@ pub fn media(tx: Sender<Event>, socket: PathBuf) -> Sender<MediaCmd> {
         let mut watch: Option<(Child, Arc<AtomicI64>)> = None;
         let mut last_poll = Instant::now();
         let mut card: Option<CellRect> = None;
-        let mut moved_at: Option<Instant> = None;
+        let mut moved_at: Option<(CellRect, Instant)> = None;
         let mut missing_ticks: u8 = 0;
         let mut last_verify = Instant::now();
         let mut tab: Option<String> = None;
@@ -680,7 +695,7 @@ mod tests {
         let b = CellRect::new(3, 24, 40, 10);
         let c = CellRect::new(3, 24, 41, 10);
         assert_eq!(format!("{:?}", needs_move(Some(a), Some(a), true)), "None");
-        assert_eq!(format!("{:?}", needs_move(Some(a), Some(b), true)), "Move");
+        assert_eq!(format!("{:?}", needs_move(Some(a), Some(b), true)), "Rebuild");
         assert_eq!(format!("{:?}", needs_move(Some(a), Some(c), true)), "Rebuild");
     }
 
@@ -766,7 +781,7 @@ mod tests {
     fn a_block_that_moved_asks_for_a_new_player() {
         let a = CellRect::new(3, 20, 40, 10);
         let b = CellRect::new(3, 24, 40, 10);
-        assert_eq!(needs_move(Some(a), Some(b), true), Movement::Move);
+        assert_eq!(needs_move(Some(a), Some(b), true), Movement::Rebuild);
         assert_eq!(needs_move(Some(a), Some(a), true), Movement::None);
         assert_eq!(needs_move(Some(a), Some(b), false), Movement::None);
         assert_eq!(needs_move(None, None, true), Movement::None);
@@ -775,6 +790,22 @@ mod tests {
         // kill-and-respawn of mpv that stole the keyboard from the rail and left the sidebar frozen.
         assert_eq!(needs_move(Some(b), Some(b), true), Movement::None);
         assert_eq!(needs_move(Some(b), Some(b), false), Movement::None);
+    }
+
+    #[test]
+    fn a_block_that_keeps_moving_spends_no_rebuild() {
+        let a = CellRect::new(3, 20, 40, 10);
+        let b = CellRect::new(3, 24, 40, 10);
+        let t0 = Instant::now();
+        let mut pending = None;
+        // Still moving: every new place restarts the wait instead of spending it on a stale rebuild.
+        assert!(!settled(&mut pending, a, t0));
+        assert!(!settled(&mut pending, b, t0 + Duration::from_millis(200)));
+        assert!(!settled(&mut pending, a, t0 + Duration::from_millis(400)));
+        assert!(!settled(&mut pending, a, t0 + Duration::from_millis(500)));
+        // It stopped: exactly one rebuild, and the next frame starts a fresh wait.
+        assert!(settled(&mut pending, a, t0 + Duration::from_millis(801)));
+        assert!(!settled(&mut pending, a, t0 + Duration::from_millis(900)));
     }
 
     #[test]
