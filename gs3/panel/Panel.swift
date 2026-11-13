@@ -1,7 +1,8 @@
-// gs3-panel: the rail's own window for text it cannot fit in a 50-column pane — a commit with its files
-// and the diff of one of them, today. mpv already proves that a window of another process can be placed
-// without permissions; this one is the same idea for text: the HUD writes what it wants shown to a file,
-// says where, and this program draws it. Closing it is the window's own X, or Esc.
+// gs3-panel: the rail's own window for what it cannot fit in a 50-column pane — a commit with its files
+// and the diff of one of them, or the text or image of the file clicked in TREE. mpv already proves that a
+// window of another process can be placed without permissions; this one is the same idea: the HUD writes
+// what it wants shown to a file (or, for an image, just names it), says where, and this program draws it.
+// Closing it is the window's own X, or Esc.
 //
 // It is a plain single-file AppKit program on purpose: no bundle, no storyboard, no Dock icon.
 import AppKit
@@ -17,11 +18,12 @@ func fail(_ message: String) -> Never {
     exit(2)
 }
 
-let usage = "usage: gs3-panel [--geometry WxH+X+Y] [--socket <path>] <file>"
+let usage = "usage: gs3-panel [--geometry WxH+X+Y] [--socket <path>] [--image] <file>"
 
 var geometry: NSRect?
 var path: String?
 var hud: String?
+var image = false
 var args = CommandLine.arguments.dropFirst()
 while let arg = args.popFirst() {
     switch arg {
@@ -39,13 +41,23 @@ while let arg = args.popFirst() {
         geometry = NSRect(x: x, y: y, width: numbers[0], height: numbers[1])
     case "--socket":
         hud = args.popFirst()
+    case "--image":
+        // Drawn, not read: an image's bytes never travel through the rail.
+        image = true
     default:
         path = arg
     }
 }
 
 guard let file = path else { fail("no file to show. " + usage) }
-guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { fail("cannot read \(file)") }
+// An image is decoded by AppKit; a text file is read here, and a colour-coded diff arrives as text too.
+var text = ""
+if image {
+    guard NSImage(contentsOfFile: file) != nil else { fail("cannot read \(file)") }
+} else {
+    guard let read = try? String(contentsOfFile: file, encoding: .utf8) else { fail("cannot read \(file)") }
+    text = read
+}
 // No geometry: a centred 70% x 62% of the screen, shifted left so the window sits over the chat rather
 // than over the rail. A text window belongs to the screen, not to a pane's cell grid.
 let rect = geometry ?? {
@@ -146,12 +158,16 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextV
     var reloader: Timer?
     let path: String?
     let hud: String?
+    let image: Bool
+    var picture: NSImageView?
+    var stamp: Date?
 
-    init(text: String, rect: NSRect, path: String?, hud: String?) {
+    init(text: String, rect: NSRect, path: String?, hud: String?, image: Bool) {
         self.text = text
         self.rect = rect
         self.path = path
         self.hud = hud
+        self.image = image
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -169,7 +185,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextV
             backing: .buffered,
             defer: false
         )
-        window.title = "gs3 · commit"
+        window.title = image ? "gs3 · imagen" : "gs3 · commit"
         window.delegate = self
         window.isReleasedWhenClosed = false
         window.isMovableByWindowBackground = true
@@ -181,6 +197,44 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextV
         let background = NSColor(calibratedRed: 13 / 255, green: 22 / 255, blue: 36 / 255, alpha: 1)
         window.backgroundColor = background
 
+        let card = CardView(frame: NSRect(x: 0, y: 0, width: rect.width, height: rect.height))
+        card.autoresizingMask = [.width, .height]
+        window.contentView = card
+        if image { imageContent(card) } else { textContent(card, window) }
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        self.window = window
+    }
+
+    /// An image as the window's whole content, keeping its proportions whatever size the window has.
+    func imageContent(_ card: CardView) {
+        let view = NSImageView(frame: NSRect(x: 10, y: 10, width: rect.width - 20, height: rect.height - 20))
+        view.autoresizingMask = [.width, .height]
+        view.imageScaling = .scaleProportionallyDown
+        view.imageAlignment = .alignCenter
+        view.image = path.flatMap { NSImage(contentsOfFile: $0) }
+        card.addSubview(view)
+        picture = view
+        // A borderless window has no system close button: the ✕ here and Esc are the way out, like the
+        // text window's ✕, which arrives inside the text the rail wrote.
+        let close = NSButton(frame: NSRect(x: rect.width - 38, y: rect.height - 38, width: 26, height: 26))
+        close.title = "✕"
+        close.isBordered = false
+        close.contentTintColor = NSColor(calibratedRed: 251 / 255, green: 113 / 255, blue: 133 / 255, alpha: 1)
+        close.target = self
+        close.action = #selector(dismiss)
+        // Pinned to the top-right corner as the window is resized.
+        close.autoresizingMask = [.minXMargin, .minYMargin]
+        card.addSubview(close)
+        // The rail names the same file again when the image changes under it.
+        reloader = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+            self?.reloadImage()
+        }
+    }
+
+    /// What the rail wrote: a diff, or the text of a file clicked in TREE, with the colours it carries.
+    func textContent(_ card: CardView, _ window: NSWindow) {
+        let background = NSColor(calibratedRed: 13 / 255, green: 22 / 255, blue: 36 / 255, alpha: 1)
         let scroll = NSScrollView(frame: NSRect(x: 1, y: 1, width: rect.width - 2, height: rect.height - 2))
         scroll.autoresizingMask = [.width, .height]
         scroll.hasVerticalScroller = true
@@ -221,15 +275,22 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextV
         view.autoresizingMask = [.height]
 
         scroll.documentView = view
-        let card = CardView(frame: NSRect(x: 0, y: 0, width: rect.width, height: rect.height))
-        card.autoresizingMask = [.width, .height]
         card.addSubview(scroll)
-        window.contentView = card
-        window.makeKeyAndOrderFront(nil)
         view.delegate = self
         window.makeFirstResponder(view)
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        self.window = window
+    }
+
+    @objc func dismiss() {
+        exit(0)
+    }
+
+    /// Follow an image that changed on disk: the rail keeps pointing at the same path.
+    func reloadImage() {
+        guard let file = path else { return }
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: file))?[.modificationDate] as? Date
+        guard let date = stamp, date != self.stamp else { return }
+        self.stamp = date
+        picture?.image = NSImage(contentsOfFile: file)
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -284,7 +345,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextV
 let app = NSApplication.shared
 // Accessory: no Dock icon, and the terminal keeps its own focus when the window goes away.
 app.setActivationPolicy(.accessory)
-let delegate = Delegate(text: text, rect: rect, path: file, hud: hud)
+let delegate = Delegate(text: text, rect: rect, path: file, hud: hud, image: image)
 app.delegate = delegate
 NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
     if event.keyCode == 53 { exit(0) }  // Esc
