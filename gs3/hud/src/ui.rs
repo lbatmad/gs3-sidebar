@@ -800,8 +800,12 @@ pub fn panel_text(d: &Detail, hash: &str) -> String {
         for (old, new) in pairs(&d.diff) {
             let hunk = old.as_deref().is_some_and(|l| l.starts_with("@@"));
             if hunk {
+                // Inside its own column, never across: a header that spans both panels reads as text
+                // overflowing into the other side, which is exactly what the two panels avoid.
                 let text = old.unwrap_or_default().replace('\t', "    ");
-                out.push_str(&format!("{}\n", sgr(Blue, &wrap_text(&text, COL * 2).join(" "))));
+                for chunk in wrap_text(&text, COL) {
+                    out.push_str(&format!("{}{}\n", cell(Blue, &chunk, COL), sgr(Dim, "│")));
+                }
                 continue
             }
             let gone = old.clone().unwrap_or_default().replace('\t', "    ");
