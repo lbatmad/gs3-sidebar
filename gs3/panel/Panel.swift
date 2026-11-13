@@ -182,10 +182,16 @@ func attributed(_ text: String) -> NSAttributedString {
     let plain = NSColor(calibratedWhite: 0.93, alpha: 1)
     let out = NSMutableAttributedString()
     var colour = plain
+    var bold = false
+    var italic = false
     var line = ""
     func flush() {
         guard !line.isEmpty else { return }
-        out.append(NSAttributedString(string: line, attributes: [.font: font, .foregroundColor: colour]))
+        // Bold and italic arrive as their own SGR codes: a keyword is bold in the rail, and a comment slants.
+        var drawn = font
+        if bold { drawn = NSFontManager.shared.convert(drawn, toHaveTrait: .boldFontMask) }
+        if italic { drawn = NSFontManager.shared.convert(drawn, toHaveTrait: .italicFontMask) }
+        out.append(NSAttributedString(string: line, attributes: [.font: drawn, .foregroundColor: colour]))
         line = ""
     }
     let chars = Array(text)
@@ -205,7 +211,15 @@ func attributed(_ text: String) -> NSAttributedString {
                 if parts.count == 5, parts[0] == 38, parts[1] == 2 {
                     colour = NSColor(calibratedRed: CGFloat(parts[2]) / 255, green: CGFloat(parts[3]) / 255, blue: CGFloat(parts[4]) / 255, alpha: 1)
                 } else if parts.isEmpty || parts[0] == 0 {
-                    colour = plain
+                    colour = plain; bold = false; italic = false
+                } else if parts == [1] {
+                    bold = true
+                } else if parts == [3] {
+                    italic = true
+                } else if parts == [22] {
+                    bold = false
+                } else if parts == [23] {
+                    italic = false
                 }
                 i = j + 1
                 continue
