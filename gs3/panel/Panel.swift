@@ -50,7 +50,7 @@ guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { fail(
 // than over the rail. A text window belongs to the screen, not to a pane's cell grid.
 let rect = geometry ?? {
     let screen = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-    let w = screen.width * 0.70
+    let w = screen.width * 0.78
     let h = screen.height * 0.62
     let x = max(0, screen.origin.x + (screen.width - w) / 2 - screen.width * 0.14)
     let y = max(0, screen.origin.y + (screen.height - h) / 2)

@@ -728,8 +728,13 @@ fn cell(tone: Tone, text: &str, width: usize) -> String {
 fn pairs(diff: &[String]) -> Vec<(Option<String>, Option<String>)> {
     let mut rows = Vec::new();
     let mut i = 0;
+    let mut in_hunk = false;
     while i < diff.len() {
         let line = &diff[i];
+        // `git show` opens with its own header (`diff --git`, `index`, `---`, `+++`, modes, renames).
+        // It says nothing about the change and would print twice, once per column, before every file.
+        if !in_hunk && ["diff --git ", "index ", "--- ", "+++ ", "new file mode ", "deleted file mode ", "old mode ", "new mode ", "similarity index ", "rename from ", "rename to ", "Binary files "].iter().any(|p| line.starts_with(p)) { i += 1; continue }
+        if line.starts_with("@@") { in_hunk = true }
         let removed = line.starts_with('-') && !line.starts_with("---");
         let added = line.starts_with('+') && !line.starts_with("+++");
         if removed {
@@ -779,7 +784,7 @@ pub fn panel_text(d: &Detail, hash: &str) -> String {
     use Tone::*;
     // Half of the window at its default width (70% of a 1920 px screen, 12 pt monospace ≈ 185 columns):
     // both panels get the same size, and each one wraps inside it.
-    const COL: usize = 90;
+    const COL: usize = 80;
     let mut out = format!("{} {} {} {}\n\n", sgr(Gold, &format!("◆ commit {hash}")), sgr(Muted, "["), sgr(Coral, "✕"), sgr(Muted, "] [-]"));
     if d.files.is_empty() { out.push_str(&sgr(Dim, "  sin archivos")); out.push('\n'); }
     for f in &d.files {
