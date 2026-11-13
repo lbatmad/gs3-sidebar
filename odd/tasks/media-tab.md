@@ -476,3 +476,11 @@ agent's HOME is `gs-root/shell/home`, so every install of this session landed in
 "nothing changed" was literally true. Install to the absolute user path, or pass `--prefix` explicitly.
 Proven after installing there: the live window asks for `256x170+1580+454` (32 cells wide, on a whole
 cell row) where the stale one asked `312x170+1584+…`.
+
+L60. Human: "horrible como quedó, no tuviste mejor idea que dejar un cuadrado espantoso, con un monton de
+espacio a la izquierda y derecha." The 16% insets left the picture 32 of the card's 48 cells — a square
+with two empty bands. The block was designed for a full-bleed picture all along (its own comment: twelve
+rows of the inner width is the closest a 46-column card gets to 16:9). The picture now takes the block
+whole: `x = PAD+1`, `width = cw-2`, `height = r.len()`, no insets on either axis. Live rect is
+`368x204+1524+607` — 46 cells by 12 rows, 1.8:1, from the card's inner border to the border column,
+which is what the measured border columns predict (1524 left, 1892 right).
