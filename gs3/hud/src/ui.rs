@@ -1123,6 +1123,10 @@ fn profiles_card(s: &State, w: usize) -> Card {
         // card clipped it to "Task Man". If even "Tareas" does not fit beside them, they get their own row.
         if width_of(&title) + width_of(&right) + 2 <= w.saturating_sub(2) { c.row(title, right) }
         else { c.row(title, vec![]); c.row(vec![], right); }
+        // How long a task takes, on average: the number that says whether the machine is working or waiting.
+        if !r.avg.is_empty() {
+            c.row(vec![seg("   ⏱ ", Dim), seg(format!("{} promedio · {} medidas", r.avg, r.measured), Dim)], vec![]);
+        }
         // Every task alive right now, newest first, with how long it has been going.
         for t in r.running.iter().take(5) {
             c.row(vec![seg("   ▶ ", Text), seg(t.text.clone(), Text), seg(format!(" · {}", t.elapsed), Dim)], vec![]);
@@ -2361,7 +2365,7 @@ mod tests {
     fn roster_sample() -> State {
         let mut s = sample();
         let a = |n: &str, m: &str, t: &str| Agent { name: n.into(), model: m.into(), thinking: t.into() };
-        s.roster = Some(Roster { model: "cpamc/gpt-6.1-sol".into(), thinking: "medium".into(), total: 6, done: 5, failed: 0, active: 1, running: vec![Running { text: "gentle-ai-worker · build".into(), elapsed: "3m".into() }],
+        s.roster = Some(Roster { model: "cpamc/gpt-6.1-sol".into(), thinking: "medium".into(), total: 6, done: 5, failed: 0, active: 1, running: vec![Running { text: "gentle-ai-worker · build".into(), elapsed: "3m".into() }], avg: "4m".into(), measured: 81,
             agents: vec![a("gentle-ai-explore", "cpamc/gpt-6.1-sol", "medium"), a("jd-judge-a", "x/claude-opus-high", "high"), a("my-helper", "y/long-model-name-v2", "xhigh"), a("review-risk", "", "")], ..Roster::default() });
         s
     }
@@ -2400,6 +2404,7 @@ mod tests {
         let counters = find(&l, "📋 Tareas");
         assert!(counters.contains("5 ✓ · 1 en curso"), "{counters}");
         assert!(l.iter().any(|x| x.contains("▶ gentle-ai-worker · build") && x.contains("· 3m")), "la fila de la tarea viva dice hace cuánto corre");
+        assert!(l.iter().any(|x| x.contains("⏱ 4m promedio · 81 medidas")), "y el promedio de las terminadas");
         // Failures are said out loud, and every running task is listed, not just the newest.
         let mut f = roster_sample();
         if let Some(r) = f.roster.as_mut() {

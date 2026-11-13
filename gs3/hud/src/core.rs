@@ -260,6 +260,8 @@ pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>
     /// Task history: everything read, what finished, what failed, and what is running right now (newest
     /// first, `agent · label`). `done + failed + active` is what the window shows of `total`.
     pub total:usize, pub done:usize, pub failed:usize, pub active:usize, pub running:Vec<Running>,
+    /// How long a finished task took on average, and over how many tasks that was measured.
+    pub avg:String, pub measured:usize,
     pub profile_source:String, pub configured_host:Option<Agent> }
 /// One subagent: model/thinking from its frontmatter (`model`, `effort`/`thinking`), else its latest task, else the host.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -284,13 +286,18 @@ pub fn roster(settings:&Value,agents:&[(String,String)],tasks:&[Value],now_ms:u6
     // The clock is a parameter: a roster built from the same files at the same instant is the same value.
     let describe=|t:&&Value|Running{
         text:format!("{} · {}",text(t,"agent"),text(t,"label")),
-        elapsed:elapsed(now_ms.saturating_sub(t["createdAt"].as_u64().unwrap_or(now_ms))),
+        // `startedAt`, not `createdAt`: a task waits in the queue before it runs, and that wait is not work.
+        elapsed:elapsed(now_ms.saturating_sub(t["startedAt"].as_u64().or_else(||t["createdAt"].as_u64()).unwrap_or(now_ms))),
     };
+    // Only tasks that really ran and really ended: `endedAt - startedAt`, averaged. A task without both
+    // timestamps is not measured instead of counted as zero.
+    let measured:Vec<u64>=tasks.iter().filter_map(|t|{let a=t["startedAt"].as_u64()?; let b=t["endedAt"].as_u64()?; (b>=a).then_some(b-a)}).collect();
+    let avg=if measured.is_empty(){String::new()}else{elapsed(measured.iter().sum::<u64>()/measured.len() as u64)};
     let running:Vec<Running>=tasks.iter().rev().filter(|t|live(t)).map(describe).collect();
     Roster{model,thinking,agents:list,total:tasks.len(),
         done:tasks.iter().filter(|t|text(t,"status")=="completed").count(),
         failed:tasks.iter().filter(|t|text(t,"status")=="failed").count(),
-        active:running.len(),running,..Roster::default()}
+        active:running.len(),running,avg,measured:measured.len(),..Roster::default()}
 }
 /// Global configured assignments from `/gentle:profiles`, never task/MD model guesses.
 /// Keep the host defaults above unchanged: STATUS also consumes them.
@@ -640,13 +647,14 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
             ("x".to_string(),"---\nname: gentle-ai-explore\nmodel: other/fast-1\neffort: low\n---\n".to_string()),
             ("review-risk".to_string(),"no frontmatter".to_string())];
         let tasks=vec![json!({"agent":"jd-judge-a","status":"completed","label":"old","model":"cpamc/m-old","thinking":"high","createdAt":1}),
-            json!({"agent":"jd-judge-a","status":"failed","label":"new","model":"cpamc/m-new","thinking":"xhigh","createdAt":5}),
-            json!({"agent":"gentle-ai-explore","status":"running","label":"r","model":"cpamc/ignored","thinking":"high","createdAt":3}),
+            json!({"agent":"jd-judge-a","status":"failed","label":"new","model":"cpamc/m-new","thinking":"xhigh","createdAt":5,"startedAt":1000,"endedAt":181000}),
+            json!({"agent":"gentle-ai-explore","status":"running","label":"r","model":"cpamc/ignored","thinking":"high","createdAt":3,"startedAt":4000}),
             json!({"agent":"gone","status":"completed","label":"g","createdAt":2})];
         let r=roster(&settings,&agents,&tasks,10_000);
         assert_eq!((r.model.as_str(),r.thinking.as_str(),r.total,r.done,r.active),("cpamc/gpt-6.1-sol","medium",4,2,1));
         assert_eq!((r.failed,r.active),(1,1),"una falla y una viva");
-        assert_eq!(r.running,[Running{text:"gentle-ai-explore · r".into(),elapsed:"9s".into()}],"la viva se nombra y dice hace cuánto corre");
+        assert_eq!(r.running,[Running{text:"gentle-ai-explore · r".into(),elapsed:"6s".into()}],"la viva se nombra y dice hace cuánto corre");
+        assert_eq!((r.avg.as_str(),r.measured),("3m",1),"el promedio de las que se midieron");
         assert_eq!((elapsed(0).as_str(),elapsed(12_000).as_str(),elapsed(360_000).as_str(),elapsed(3_840_000).as_str(),elapsed(90_000_000).as_str()),("0s","12s","6m","1h 4m","1d 1h"),"granularidad de un vistazo");
         let a=|n:&str|r.agents.iter().find(|a|a.name==n).unwrap().clone();
         assert_eq!(r.agents.iter().map(|a|a.name.as_str()).collect::<Vec<_>>(),["gentle-ai-explore","jd-judge-a","review-risk"]);
