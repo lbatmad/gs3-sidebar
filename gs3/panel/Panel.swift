@@ -98,6 +98,21 @@ func attributed(_ text: String) -> NSAttributedString {
     return out
 }
 
+/// The rail draws its sections as rounded cards on the terminal's own background; a window that ignored
+/// that read as a piece of another application. This is the same card: the same navy, the same one-pixel
+/// border, the same corner radius, with the text inset inside it.
+final class CardView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 9, yRadius: 9)
+        NSColor(calibratedRed: 13 / 255, green: 22 / 255, blue: 36 / 255, alpha: 0.98).setFill()
+        path.fill()
+        NSColor(calibratedRed: 51 / 255, green: 65 / 255, blue: 85 / 255, alpha: 1).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+}
+
 final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDelegate {
     let text: String
     let rect: NSRect
@@ -127,20 +142,24 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextV
         window.delegate = self
         window.isReleasedWhenClosed = false
         window.isMovableByWindowBackground = true
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
         window.level = .floating
 
         let background = NSColor(calibratedRed: 13 / 255, green: 22 / 255, blue: 36 / 255, alpha: 1)
         window.backgroundColor = background
 
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: rect.width, height: rect.height))
+        let scroll = NSScrollView(frame: NSRect(x: 1, y: 1, width: rect.width - 2, height: rect.height - 2))
+        scroll.autoresizingMask = [.width, .height]
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
         scroll.autoresizingMask = [.width, .height]
-        scroll.drawsBackground = true
+        scroll.drawsBackground = false
         scroll.backgroundColor = background
 
         let view = NSTextView(frame: NSRect(x: 0, y: 0, width: rect.width, height: rect.height))
-        view.textContainerInset = NSSize(width: 10, height: 8)
+        view.textContainerInset = NSSize(width: 12, height: 10)
         view.isEditable = false
         view.isSelectable = true
         view.drawsBackground = true
@@ -161,7 +180,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextV
         view.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
 
         scroll.documentView = view
-        window.contentView = scroll
+        let card = CardView(frame: NSRect(x: 0, y: 0, width: rect.width, height: rect.height))
+        card.autoresizingMask = [.width, .height]
+        card.addSubview(scroll)
+        window.contentView = card
         window.makeKeyAndOrderFront(nil)
         view.delegate = self
         window.makeFirstResponder(view)

@@ -717,13 +717,14 @@ fn sgr(tone: Tone, text: &str) -> String {
 
 pub fn panel_text(d: &Detail, hash: &str) -> String {
     use Tone::*;
-    let mut out = format!("{}  {}  {}\n\n", sgr(Gold, &format!("◆ commit {hash}")), sgr(Coral, "✕"), sgr(Dim, "[esc]"));
+    let mut out = format!("{} {} {} {}\n\n", sgr(Gold, &format!("◆ commit {hash}")), sgr(Muted, "["), sgr(Coral, "✕"), sgr(Muted, "] [-]"));
     if d.files.is_empty() { out.push_str(&sgr(Dim, "  sin archivos")); out.push('\n'); }
     for f in &d.files {
         let (letter, tone) = match f.kind { FileKind::Modified => ("M", Yellow), FileKind::Added => ("A", Mint), FileKind::Deleted => ("D", Coral), FileKind::Untracked => ("?", Pink), FileKind::Conflict => ("U", Coral) };
-        out.push_str(&format!("{} {} {} {}\n",
+        out.push_str(&format!("{} {} {} {} {}\n",
             sgr(tone, letter),
             sgr(Cyan, &f.path),
+            sgr(Pink, "[diff]"),
             sgr(Mint, &format!("+{}", f.added)),
             sgr(Coral, &format!("-{}", f.deleted))));
     }
