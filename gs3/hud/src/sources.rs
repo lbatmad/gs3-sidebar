@@ -89,6 +89,8 @@ pub fn trees(cwd:PathBuf,tx:Sender<Event>)->Sender<Vec<String>> {
 }
 /// Extensions the window draws as an image instead of reading as text.
 const IMAGE_EXT:[&str;10]=["png","jpg","jpeg","gif","webp","bmp","tif","tiff","ico","heic"];
+/// Extensions the window renders as a document instead of drawing the bytes as raw text.
+const MARKDOWN_EXT:[&str;2]=["md","markdown"];
 /// Ceiling for a previewed text file: past it the window shows the head and says how much it left out.
 pub const PREVIEW_MAX:u64=256*1024;
 /// Ceiling for an image: the window decodes it, so a file that big is refused instead of read into memory.
@@ -117,7 +119,8 @@ pub fn preview(root:&Path,rel:&str)->Preview {
         Err(e)=>refused(&format!("no se pudo leer: {e}")),
         Ok(b) if b.contains(&0)=>refused("archivo binario (no se muestra)"),
         Ok(mut b)=>{let cut=b.len() as u64>PREVIEW_MAX; b.truncate(PREVIEW_MAX as usize);
-            Preview::Text{path:rel.into(),body:String::from_utf8_lossy(&b).into_owned(),cut}}
+            let body=String::from_utf8_lossy(&b).into_owned();
+            if MARKDOWN_EXT.contains(&ext.as_str()) {Preview::Markdown{path:rel.into(),body,cut}} else {Preview::Text{path:rel.into(),body,cut}}}
     }
 }
 /// TREE preview worker: reads off the draw loop and answers only the newest click.
@@ -181,7 +184,7 @@ pub fn detail(cwd:&Path,r:&DetailRequest)->Detail {
 /// What the rail asks its own window to do. The window is another process, so it has to be owned: a
 /// thread keeps the child and kills it when the selection moves or the rail goes away, exactly like the
 /// video window's player.
-pub enum PanelCmd { Show { hash: String, text: String, geometry: Option<String> }, Image { key: String, file: PathBuf }, Hide }
+pub enum PanelCmd { Show { hash: String, text: String, geometry: Option<String> }, Markdown { key: String, text: String, cut: bool }, Image { key: String, file: PathBuf }, Hide }
 /// The panel binary: next to the rail first (the installer puts both in the same bin, and that directory is
 /// not always on the PATH the pane inherits), then the PATH itself.
 fn panel_bin()->Option<PathBuf> {
@@ -227,6 +230,19 @@ pub fn panel(socket: PathBuf, agent_pane: String, events: Sender<Event>) -> Send
                     args.push("--socket".to_string()); args.push(hud_socket.to_string_lossy().into_owned());
                     let spawned = std::process::Command::new(bin).args(args).arg(&path).spawn();
                     if let Ok(child) = spawned { open = Some((hash, child)); }
+                }
+                // A markdown file: the window renders it, because headings and tables as raw text are the
+                // one thing a rail with 50 columns cannot show. Same window; it is just told what it is.
+                PanelCmd::Markdown { key, text, cut } => {
+                    let path = std::env::temp_dir().join(format!("gs3-panel-{}.md", std::process::id()));
+                    if open.as_ref().is_some_and(|(up, _)| *up == key) { let _ = fs::write(&path, text); continue }
+                    close(&mut open);
+                    let Some(bin) = panel_bin() else { continue };
+                    if fs::write(&path, text).is_err() { continue }
+                    let mut args = vec!["--socket".to_string(), hud_socket.to_string_lossy().into_owned(), "--markdown".to_string()];
+                    if cut { args.push("--cut".to_string()) }
+                    let spawned = std::process::Command::new(bin).args(args).arg(&path).spawn();
+                    if let Ok(child) = spawned { open = Some((key, child)); }
                 }
                 // A TREE image: the window reads and draws the file itself, so the bytes never enter the rail.
                 PanelCmd::Image { key, file } => {
@@ -700,9 +716,10 @@ mod tests {
     #[test]
     fn preview_reads_text_and_refuses_what_must_never_show() {
         let dir=std::env::temp_dir().join(format!("gs3-preview-{}",std::process::id())); let _=fs::remove_dir_all(&dir);
-        for d in ["src","assets"] {fs::create_dir_all(dir.join(d)).unwrap();}
+        for d in ["src","assets","docs"] {fs::create_dir_all(dir.join(d)).unwrap();}
         fs::write(dir.join("src/main.rs"),"fn main() {}\n").unwrap();
         fs::write(dir.join("assets/logo.png"),[0x89u8,0x50,0x4e,0x47]).unwrap();
+        fs::write(dir.join("docs/guia.md"),"# Guía\n\ntexto\n").unwrap();
         fs::write(dir.join("app.bin"),[0u8,1,2,3]).unwrap();
         fs::write(dir.join("secrets.yml"),"k: v\n").unwrap();
         fs::write(dir.join(".env"),"TOKEN=1\n").unwrap();
@@ -710,6 +727,8 @@ mod tests {
         assert_eq!(preview(&dir,"src/main.rs"),Preview::Text{path:"src/main.rs".into(),body:"fn main() {}\n".into(),cut:false});
         // An image is never read here: the path travels and the window draws it.
         assert_eq!(preview(&dir,"assets/logo.png"),Preview::Image{path:"assets/logo.png".into(),file:dir.join("assets/logo.png")});
+        // Markdown is read as text but announced as such, so the window renders it instead of showing source.
+        assert_eq!(preview(&dir,"docs/guia.md"),Preview::Markdown{path:"docs/guia.md".into(),body:"# Guía\n\ntexto\n".into(),cut:false});
         for p in ["secrets.yml",".env","link.rs","src","../outside","/etc/passwd","src//main.rs","missing.rs"] {
             assert!(matches!(preview(&dir,p),Preview::Refused{..}),"{p} se mostro");
         }
@@ -718,8 +737,12 @@ mod tests {
         let big=fs::File::create(dir.join("huge.png")).unwrap(); big.set_len(IMAGE_MAX+1).unwrap(); drop(big);
         assert!(matches!(preview(&dir,"huge.png"),Preview::Refused{..}),"una imagen de 32 MiB o mas no se abre");
         // A long text file is cut at the ceiling and says so instead of being refused.
-        fs::write(dir.join("big.md"),"x".repeat(PREVIEW_MAX as usize+10)).unwrap();
-        let Preview::Text{body,cut,..}=preview(&dir,"big.md") else {panic!("big.md no es texto")};
+        fs::write(dir.join("big.txt"),"x".repeat(PREVIEW_MAX as usize+10)).unwrap();
+        let Preview::Text{body,cut,..}=preview(&dir,"big.txt") else {panic!("big.txt no es texto")};
+        assert!(cut && body.len()==PREVIEW_MAX as usize);
+        // So is a long markdown file, which is still markdown after the cut.
+        fs::write(dir.join("docs/big.md"),"# t\n".repeat(PREVIEW_MAX as usize/4+4)).unwrap();
+        let Preview::Markdown{body,cut,..}=preview(&dir,"docs/big.md") else {panic!("big.md no es markdown")};
         assert!(cut && body.len()==PREVIEW_MAX as usize);
         fs::remove_dir_all(&dir).unwrap();
     }

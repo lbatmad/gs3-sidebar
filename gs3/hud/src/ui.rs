@@ -840,6 +840,8 @@ pub fn preview_text(p: &Preview) -> String {
         // Never reached in practice (an image is drawn by the window, not written here), kept so the
         // function is total and a caller that got it wrong says so instead of drawing nothing.
         Preview::Image { path, .. } => format!("{}{}", head("🖼 archivo"), sgr(Cyan, path)),
+        // Same: markdown goes to the window as a document, never as the text this function builds.
+        Preview::Markdown { path, .. } => format!("{}{}", head("◆ markdown"), sgr(Cyan, path)),
         Preview::Refused { path, note } => format!("{}{}\n\n{}\n", head("🗒 archivo"), sgr(Cyan, path), sgr(Coral, note)),
         Preview::Text { path, body, cut } => {
             // No wrapping: the window scrolls sideways, so every line keeps the columns it was written with.
@@ -867,6 +869,8 @@ pub fn panel_show(s: &State) -> Option<(String, usize, PanelCmd)> {
             match p {
                 // The window reads and draws the image itself: its bytes never cross the rail.
                 Preview::Image { file, .. } => (key.clone(), 0, PanelCmd::Image { key, file: file.clone() }),
+                // Markdown crosses as source and the window renders it: headings and tables are the point.
+                Preview::Markdown { body, cut, .. } => (key.clone(), body.len(), PanelCmd::Markdown { key, text: body.clone(), cut: *cut }),
                 other => { let text = preview_text(other); let n = text.len(); (key.clone(), n, PanelCmd::Show { hash: key, text, geometry: None }) }
             }
         }),
@@ -2528,6 +2532,11 @@ mod tests {
         let Some((key, _, PanelCmd::Show { text, .. })) = panel_show(&s) else { panic!("no window for a text file") };
         assert_eq!(key, "file:src/main.rs");
         assert!(text.contains("src/main.rs") && text.contains("fn main() {}"));
+        // Markdown goes as source and a separate mode: the window renders it, the rail does not flatten it.
+        s.preview = Some(Preview::Markdown { path: "docs/guia.md".into(), body: "# Título\n".into(), cut: true });
+        s.ui.tree_pick = Some("docs/guia.md".into());
+        let Some((key, _, PanelCmd::Markdown { text, cut, .. })) = panel_show(&s) else { panic!("no window for markdown") };
+        assert_eq!((key.as_str(), text.as_str(), cut), ("file:docs/guia.md", "# Título\n", true));
         // Leaving TREE closes it.
         s.ui.tab = Tab::Main;
         assert!(panel_show(&s).is_none());

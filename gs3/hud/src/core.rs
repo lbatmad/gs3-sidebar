@@ -223,13 +223,15 @@ pub struct TreeNode { pub name:String, pub rel:String, pub dir:bool, pub count:u
 pub enum Preview {
     /// Text already read by the rail; `cut` when only the head of a long file fits in the window.
     Text { path:String, body:String, cut:bool },
+    /// Markdown, read by the rail and rendered by the window (never drawn as raw text).
+    Markdown { path:String, body:String, cut:bool },
     /// An image the window draws itself, so its bytes never travel through the rail.
     Image { path:String, file:PathBuf },
     /// Shown instead of the file, with the reason.
     Refused { path:String, note:String },
 }
 impl Preview {
-    pub fn path(&self)->&str { match self { Preview::Text{path,..}|Preview::Image{path,..}|Preview::Refused{path,..}=>path } }
+    pub fn path(&self)->&str { match self { Preview::Text{path,..}|Preview::Markdown{path,..}|Preview::Image{path,..}|Preview::Refused{path,..}=>path } }
 }
 /// PROF roster: host defaults (`settings.json`), subagents (`agents/*.md`) and their task history.
 #[derive(Clone, Debug, Default, PartialEq)]
