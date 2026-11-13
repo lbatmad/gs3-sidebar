@@ -484,3 +484,10 @@ rows of the inner width is the closest a 46-column card gets to 16:9). The pictu
 whole: `x = PAD+1`, `width = cw-2`, `height = r.len()`, no insets on either axis. Live rect is
 `368x204+1524+607` — 46 cells by 12 rows, 1.8:1, from the card's inner border to the border column,
 which is what the measured border columns predict (1524 left, 1892 right).
+
+L61. Human: "dejale algo de espacio a los costados ... dejá de presuponer y preguntame si lo que pensas
+esta bien." Asked, with the card's inner width spelled out in cells and pixels, and the answer was one
+cell per side. `VIDEO_SIDE = 1`: the picture is `inner - 2` cells wide, one cell in from each inner
+border, the full twelve rows tall. Live rect `352x204+1532+607` — 44x12 cells, 1.73:1, right edge 1884
+against the border column at 1892. The lesson is in the question, not the pixels: the margins, the
+width and the height are the human's call, not something to re-derive from a comment in the file.

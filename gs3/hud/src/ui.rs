@@ -341,6 +341,9 @@ const PAD: usize = 1;
 /// the window was drawn 15% too wide: with true cells they are empty bands beside a square video.
 const VIDEO_ROWS: usize = 12;
 const VIDEO_ROWS_TALL: usize = VIDEO_ROWS;
+/// One cell of air on each side of the picture, the margin the human asked for by name: full bleed
+/// looked like a wall and sixteen percent looked like a square in the middle of the card.
+const VIDEO_SIDE: usize = 1;
 struct Body { lines: Vec<Vec<Seg>>, hits: Vec<Hit>, glued: bool, lists: Vec<ListWindow>, video: Option<std::ops::Range<usize>> }
 impl Body {
     fn push(&mut self, ui: &Ui, c: Card) {
@@ -448,7 +451,8 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
         .map(|l| { if l.is_empty() { return l } let mut p = vec![seg(" ".repeat(PAD), Text)]; p.extend(l); fit(p, w) }).collect();
     let cover_pos = show_cover.then(|| (PAD + 2, top_rows + 1 - scroll));
     let youtube_rect = video.filter(|r| cw > 4 && r.start >= scroll && r.end <= scroll + view).map(|r| {
-        crate::media::CellRect::new((PAD + 1) as u32, (top_rows + r.start - scroll) as u32, cw.saturating_sub(2).max(1) as u32, VIDEO_ROWS_TALL.min(r.len()) as u32)
+        let inner = cw.saturating_sub(2);
+        crate::media::CellRect::new((PAD + 1 + VIDEO_SIDE) as u32, (top_rows + r.start - scroll) as u32, inner.saturating_sub(VIDEO_SIDE * 2).max(1) as u32, VIDEO_ROWS_TALL.min(r.len()) as u32)
     });
     Frame { lines, hits, tab_row, scroll, max_scroll, cover_pos, youtube_rect, lists }
 }
@@ -1370,9 +1374,9 @@ mod tests {
         let r = playing.youtube_rect.unwrap();
         let width = 42usize;
         let inner = width - 2 * PAD - 2;
-        assert_eq!(r.x as usize, PAD + 1, "left edge at the card's inner border");
-        assert_eq!(r.width as usize, inner, "and the width of the whole inner span");
-        assert_eq!((r.x + r.width) as usize, width - 1 - PAD, "ending where the right border starts");
+        assert_eq!(r.x as usize, PAD + 1 + VIDEO_SIDE, "left edge one cell in from the inner border");
+        assert_eq!(r.width as usize, inner - VIDEO_SIDE * 2, "and the same cell of air on the right");
+        assert_eq!((r.x + r.width) as usize, width - 1 - PAD - VIDEO_SIDE, "never touching the right border");
         assert_eq!(r.height as usize, VIDEO_ROWS_TALL);
         assert!(playing.lines.len() > idle.lines.len(), "the block is real rows, not an invisible promise");
     }
