@@ -93,3 +93,13 @@ forma visible es la ventana, y `--snapshot` permite verla sin abrirla.
 
 Verificación visual: `gs3-panel --snapshot out.png --width 900 --markdown <archivo.md>`, que dibuja lo mismo
 que la ventana en un PNG para mirarlo (y sirve para las capturas del README).
+
+L4 (reporte del humano, textual):
+
+> el md README.MD se ve mal en algunas partes, fue el único, quizas tiene algo diferente
+
+Diagnóstico: el README abre con HTML crudo (`<div align="center">`, badges `<a>`+`<img>`, `<br>`), que CommonMark
+entrega como texto literal; el resto de los `.md` del repo no lo usa. Además la ventana titularizaba el archivo
+temporal del rail (`gs3-panel-<pid>.md`) en vez del nombre real. Se corrigió dentro de S7: normalización de HTML a
+Markdown fuera de los bloques de código (badge → `🖼 alt`, `<a>` → enlace, `<img>` → `🖼 alt`, `<br>` → salto, resto
+de etiquetas fuera, entidades decodificadas) y `--title` para que el encabezado muestre la ruta relativa.
