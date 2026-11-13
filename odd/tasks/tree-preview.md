@@ -103,3 +103,30 @@ entrega como texto literal; el resto de los `.md` del repo no lo usa. Además la
 temporal del rail (`gs3-panel-<pid>.md`) en vez del nombre real. Se corrigió dentro de S7: normalización de HTML a
 Markdown fuera de los bloques de código (badge → `🖼 alt`, `<a>` → enlace, `<img>` → `🖼 alt`, `<br>` → salto, resto
 de etiquetas fuera, entidades decodificadas) y `--title` para que el encabezado muestre la ruta relativa.
+
+## Addendum · resaltado de código
+
+L5 (pedido del humano, textual):
+
+> para los archivos que son de leguajes de programacion, se puede agregarles el resaltado por colores de sus palabras claves? debe existir un sitio web con esa info y diseño o alguna extension de visual studio code, que tenga almacenada cuales son las palabras claves de cada lenguaje y asignarles colores, tambien de acuerdo al tipo de sentencia asignarles otro color, o la tipo de dato, etc. Busca, fijate que encontras, y mostrame un plan para implementarlo
+
+L6 (decisión del humano, textual): «dale» → se implementó el camino C (syntect + two-face), el más fiel, tras medirlo:
++1,7 MB de binario, 54 crates y 11 s de compilación release; emite el mismo SGR de 24 bits que el panel ya parsea.
+
+S8. Un archivo fuente se muestra **resaltado por su gramática** (no por tablas de palabras escritas a mano):
+    palabras clave, tipos, strings, números, comentarios (itálica), funciones y macros, con la paleta del rail.
+    La decisión es de la gramática: una palabra dentro de un string o un comentario nunca se pinta como palabra
+    clave, y el estado del lenguaje se mantiene entre líneas (un comentario de bloque cubre sus líneas). Un archivo
+    sin gramática sigue saliendo como texto. El resaltado es léxico, no semántico.
+S9. Un `ESC` dentro de un archivo se muestra como `␛` y nunca llega al parser SGR de la ventana; vale para el
+    preview de TREE y para los diffs. El panel honra `1` (negrita) y `3` (itálica) además de `38;2;r;g;b` y `0`.
+
+| # | Spec | Ruta | Commit |
+|---|------|------|--------|
+| T10 | S8, S9 | `syntax.rs` con `syntect` + `two-face` y el tema de la paleta | b8283b3 |
+| T11 | S8, S9 | `Preview::Code`, `sources::neutral`, `ui::code_text` y el cableado | b8283b3 |
+| T12 | S9 | `attributed()` del panel honra negrita e itálica | 6ec691e |
+| T13 | S8 | ayuda, `docs/tabs.md`, READMEs, `CHANGELOG` | f07a22a |
+
+Verificación visual hecha: `--snapshot` del preview real de `src/syntax.rs` (Rust), `extensions/copy-commands/index.ts`
+(TypeScript) y de un README con HTML. Los tres se miraron. `cargo test`: 162 pasan (6 tests nuevos de gramática).
