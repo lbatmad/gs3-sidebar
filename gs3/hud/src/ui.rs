@@ -758,11 +758,26 @@ fn pairs(diff: &[String]) -> Vec<(Option<String>, Option<String>)> {
     rows
 }
 
+/// Break a line into cells of at most `width` characters. A long line is folded inside its own column
+/// instead of running through the separator into the other one, which is what made the left side of a
+/// long change print on top of the right.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for ch in text.chars() {
+        if line.chars().count() >= width && width > 0 { out.push(std::mem::take(&mut line)); }
+        line.push(ch);
+    }
+    out.push(line);
+    out
+}
+
 /// The text the rail hands to its own window: the commit, the files it touched, and then a two-panel
-/// comparison of the file that is open — the old lines on the left, the new ones on the right.
+/// comparison of the file that is open — the old lines on the left, the new ones on the right, each
+/// side wrapped inside its own column so a long line never crosses over.
 pub fn panel_text(d: &Detail, hash: &str) -> String {
     use Tone::*;
-    const LEFT: usize = 58;
+    const COL: usize = 58;
     let mut out = format!("{} {} {} {}\n\n", sgr(Gold, &format!("◆ commit {hash}")), sgr(Muted, "["), sgr(Coral, "✕"), sgr(Muted, "] [-]"));
     if d.files.is_empty() { out.push_str(&sgr(Dim, "  sin archivos")); out.push('\n'); }
     for f in &d.files {
@@ -779,20 +794,25 @@ pub fn panel_text(d: &Detail, hash: &str) -> String {
     }
     if !d.diff.is_empty() {
         out.push('\n');
-        out.push_str(&format!("{}│{}\n", cell(Dim, "  antes", LEFT), sgr(Dim, "  ahora")));
+        out.push_str(&format!("{}│{}\n", cell(Dim, "  antes", COL), sgr(Dim, "  ahora")));
         for (old, new) in pairs(&d.diff) {
-            let left = match &old {
-                Some(l) if l.starts_with("@@") => cell(Blue, l, LEFT + 58),
-                Some(l) => cell(if l.starts_with('-') { Coral } else { Text }, &l.replace('\t', "    "), LEFT),
-                None => cell(Text, "", LEFT),
-            };
-            let right = match (&new, &old) {
-                (Some(r), _) if old.as_deref().is_some_and(|l| l.starts_with("@@")) => String::new(),
-                (Some(r), _) => sgr(if r.starts_with('+') { Mint } else { Text }, &r.replace('\t', "    ")),
-                (None, _) => String::new(),
-            };
-            let rule = if new.is_none() && old.as_deref().is_some_and(|l| l.starts_with("@@")) { "" } else { "│" };
-            out.push_str(&format!("{left}{}{right}\n", sgr(Dim, rule)));
+            let hunk = old.as_deref().is_some_and(|l| l.starts_with("@@"));
+            if hunk {
+                let text = old.unwrap_or_default().replace('\t', "    ");
+                out.push_str(&format!("{}\n", sgr(Blue, &wrap_text(&text, COL * 2).join(" "))));
+                continue
+            }
+            let gone = old.clone().unwrap_or_default().replace('\t', "    ");
+            let now = new.clone().unwrap_or_default().replace('\t', "    ");
+            let left_tone = if gone.starts_with('-') { Coral } else { Text };
+            let right_tone = if now.starts_with('+') { Mint } else { Text };
+            let left = wrap_text(&gone, COL);
+            let right = wrap_text(&now, COL);
+            for k in 0..left.len().max(right.len()) {
+                let l = left.get(k).map(String::as_str).unwrap_or("");
+                let r = right.get(k).map(String::as_str).unwrap_or("");
+                out.push_str(&format!("{}{}{}\n", cell(left_tone, l, COL), sgr(Dim, "│"), if r.is_empty() { String::new() } else { sgr(right_tone, r) }));
+            }
         }
     }
     out
