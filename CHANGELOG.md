@@ -6,7 +6,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 
 ### Añadido
 
-- `PROF` · el bloque **Task Manager** dice la verdad del historial: `N ✓` completadas, `N ✗` fallidas y `N en curso` (antes `81/100` se leía como si el resto estuviera pendiente), y lista **cada** tarea viva con su `▶ agente · label · 6m`, no sólo la última, con el tiempo que lleva corriendo. El título ahora es `📋 Tareas`: «Task Manager» más los contadores no entraba en 42 columnas y la tarjeta lo recortaba a «Task Man»; si tampoco entran juntos, los contadores bajan a su propia fila en vez de cortarse. La carpeta `gentle-agents/tasks` está vigilada con debounce de 300 ms: lanzás cinco subtareas y las ves aparecer como en curso, sin apretar `r`.
+- `PROF` · el bloque **Task Manager** dice la verdad del historial: `N ✓` completadas, `N ✗` fallidas y `N en curso` (antes `81/100` se leía como si el resto estuviera pendiente), y lista **cada** tarea viva con su `▶ agente · label · 6m`, no sólo la última, con el tiempo que lleva corriendo, más una fila `⏱ 1m promedio · N medidas` con la duración media de las terminadas (`endedAt - startedAt`). El título ahora es `📋 Tareas`: «Task Manager» más los contadores no entraba en 42 columnas y la tarjeta lo recortaba a «Task Man»; si tampoco entran juntos, los contadores bajan a su propia fila en vez de cortarse. La carpeta `gentle-agents/tasks` está vigilada con debounce de 300 ms: lanzás cinco subtareas y las ves aparecer como en curso, sin apretar `r`.
 
 - `GIT` · el grafo es una **ventana de 25 filas** (la fila `↕ 1-25/60` dice el tramo) en vez de dibujar toda la historia: la rueda sobre la tarjeta camina hacia atrás y, al llegar al final de lo leído, pide la página siguiente (duplicando, hasta 300). También se puede con la fila `⋯ cargar N más`. Una llamada `git log -n` por página, ninguna por scroll, y un refresco no encoge la lista abierta.
 
@@ -21,6 +21,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 - `MEDIA` · YouTube suma `🔍 listas`: busca listas públicas por nombre, muestra sus videos en la tarjeta `⌁ Videos` (ventana de diez filas con rueda y rango visible) y un clic arranca en esa fila, siguiendo con el siguiente video hasta el final de la lista.
 
 ### Corregido
+
+- Las capturas `mpv-shot*.jpg` salen del control de versiones y entran al `.gitignore`: son archivos de trabajo que deja mpv al probar la ventana del video, no parte del proyecto.
 
 - `GIT` · las filas `[diff]` de la ventana de un commit vuelven a ser clicables: el patrón del panel exigía dos espacios de relleno y la barra escribe uno, así que nunca coincidía. Verificado contra el texto real: 5 de 5 filas enlazan.
 

@@ -199,6 +199,8 @@ S13. El bloque `📋 Task Manager` de PROF cuenta el historial de tareas del age
 | T19 | S13 | `Roster { failed, running }`, el conteo en `core::roster` y la tarjeta con ✓/✗/en curso | d85abf4 |
 | T20 | S13 | watcher de `gentle-agents/tasks` con `roster_deadline` y `is_task_file` | d85abf4 |
 | T21 | S13 | `📋 Tareas` medido con `width_of`, `Running { text, elapsed }` y `core::elapsed` | 15ef85e |
+| T22 | S13 | `avg`/`measured` en `Roster` y la fila `⏱ … promedio` | 78e5ae6 |
+| T23 | — | `mpv-shot*.jpg` fuera del índice y en `.gitignore` | 7bbb5f7 |
 
 L11 (pedido del humano, textual):
 
@@ -208,3 +210,12 @@ S13 suma: el título del bloque es `📋 Tareas` (corto, medido con `width_of`; 
 lado, bajan a su propia fila en vez de recortarse a «Task Man») y cada tarea viva dice cuánto lleva corriendo
 (`· 6m`, `· 1h 4m`). El tiempo lo calcula `core::roster` con un `now_ms` explícito —el reloj entra como
 parámetro, así un roster es función pura de sus archivos y su instante— y `core::elapsed` lo formatea.
+
+L12 (pedido del humano, textual):
+
+> las dos
+
+S13 suma el promedio: `⏱ 1m promedio · 104 medidas`, medido entre `startedAt` y `endedAt` (el tiempo de cola
+no cuenta), y el tiempo de una tarea viva pasa a contar desde `startedAt`, no desde `createdAt`. Fuera de PROF:
+las capturas `mpv-shot*.jpg` de la raíz salen del índice (`git rm --cached`) y entran al `.gitignore`; los
+assets de `docs/assets/` siguen versionados.
