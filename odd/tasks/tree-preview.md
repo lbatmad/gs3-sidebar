@@ -152,3 +152,19 @@ S11. El mensaje es contenido del usuario: se neutraliza su `ESC` como el resto d
 | T14 | S10, S11 | `Detail { author, date, message }` + `git show -s` en `sources::detail` | 4e23160 |
 | T15 | S10 | `ui::panel_text` con el bloque del mensaje y `wrap_words` | 4e23160 |
 | T16 | S10 | `decorate()` del panel: las filas `[diff]` vuelven a enlazar | 45d3042 |
+| T17 | S12 | `Git::log_limit`, `git_log(limit)`, `Local::More`, `Action::MoreCommits`, la fila de la tarjeta y el pedido al llegar al final | 50ffbe8 |
+
+## Addendum · páginas del grafo
+
+L8 (pedido del humano, textual):
+
+> anda bien, pero veo que la lista de commits solo muestra un número fijo de commits, se puede hacer scroll?
+
+S12. El grafo de GIT pide 30 commits y pide la página siguiente al llegar al final del cuerpo con la rueda,
+     o al hacer clic en la fila `⋯ cargar N más`; duplica el pedido hasta 300. Una sola llamada `git log -n`
+     por página (en el worker), ninguna por scroll. Menos commits que la página significa repositorio agotado
+     y la fila desaparece. Un `Refresh` conserva la página abierta: la lista no se encoge bajo la rueda.
+
+| # | Spec | Ruta | Commit |
+|---|------|------|--------|
+

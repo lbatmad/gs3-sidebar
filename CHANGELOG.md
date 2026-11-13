@@ -6,6 +6,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 
 ### Añadido
 
+- `GIT` · el grafo ya no se queda en los 30 commits: al llegar al final de la pestaña con la rueda pide la página siguiente (y también con la fila `⋯ cargar N más`), duplicando el pedido hasta 300. Una llamada `git log -n` por página, ninguna por scroll, y un refresco no encoge la lista que ya está abierta.
+
 - `GIT` · la ventana de un commit muestra ahora **el mensaje completo** encima de los archivos: autor, cuándo y el cuerpo entero envuelto a 100 columnas (antes sólo se veía el asunto del grafo). Se lee sin abrir un editor y sin pasar el mouse: un clic en el commit.
 
 - `TREE` resalta el código de los archivos fuente con las gramáticas de Sublime embebidas (`syntect` + `two-face`, ~200 lenguajes): palabras clave, tipos, strings, números, comentarios, funciones y macros, con la paleta del rail (dorado/cian/menta/ámbar/gris) y negrita/itálica. No hay listas de palabras a mano ni red: una palabra dentro de un string o un comentario nunca se pinta como palabra clave porque la decide la gramática, y el estado del lenguaje se mantiene entre líneas (un comentario de bloque cubre sus líneas). Lo que no tiene gramática sigue saliendo como texto. El `ESC` que traiga un archivo se muestra como `␛` y nunca llega al parser SGR de la ventana.
