@@ -6,7 +6,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 
 ### Añadido
 
-- `GIT` · el grafo ya no se queda en los 30 commits: al llegar al final de la pestaña con la rueda pide la página siguiente (y también con la fila `⋯ cargar N más`), duplicando el pedido hasta 300. Una llamada `git log -n` por página, ninguna por scroll, y un refresco no encoge la lista que ya está abierta.
+- `GIT` · el grafo es una **ventana de 25 filas** (la fila `↕ 1-25/60` dice el tramo) en vez de dibujar toda la historia: la rueda sobre la tarjeta camina hacia atrás y, al llegar al final de lo leído, pide la página siguiente (duplicando, hasta 300). También se puede con la fila `⋯ cargar N más`. Una llamada `git log -n` por página, ninguna por scroll, y un refresco no encoge la lista abierta.
 
 - `GIT` · la ventana de un commit muestra ahora **el mensaje completo** encima de los archivos: autor, cuándo y el cuerpo entero envuelto a 100 columnas (antes sólo se veía el asunto del grafo). Se lee sin abrir un editor y sin pasar el mouse: un clic en el commit.
 

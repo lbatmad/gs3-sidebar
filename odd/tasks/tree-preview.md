@@ -152,7 +152,8 @@ S11. El mensaje es contenido del usuario: se neutraliza su `ESC` como el resto d
 | T14 | S10, S11 | `Detail { author, date, message }` + `git show -s` en `sources::detail` | 4e23160 |
 | T15 | S10 | `ui::panel_text` con el bloque del mensaje y `wrap_words` | 4e23160 |
 | T16 | S10 | `decorate()` del panel: las filas `[diff]` vuelven a enlazar | 45d3042 |
-| T17 | S12 | `Git::log_limit`, `git_log(limit)`, `Local::More`, `Action::MoreCommits`, la fila de la tarjeta y el pedido al llegar al final | 50ffbe8 |
+| T17 | S12 | `Git::log_limit`, `git_log(limit)`, `Local::More`, `Action::MoreCommits` | 50ffbe8 |
+| T18 | S12 | ventana de 25 filas: `ListKind::Graph`, `Action::ScrollGraph`, `GRAPH_ROWS`, la fila `↕ 1-25/N` y el pedido de página al llegar al final de lo leído | 7000942 |
 
 ## Addendum · páginas del grafo
 
@@ -168,3 +169,14 @@ S12. El grafo de GIT pide 30 commits y pide la página siguiente al llegar al fi
 | # | Spec | Ruta | Commit |
 |---|------|------|--------|
 
+
+L9 (corrección del humano, textual):
+
+> que muestre los ultimos 25, qie no se muestren todos, para eso el scroll querido
+
+S12 (reescrita). La tarjeta del grafo es una **ventana de 25 filas** (el rango en su propia fila, `↕ 1-25/60`, porque el título ya lleva el selector Grafo/Ramas): no dibuja
+     toda la historia. La rueda sobre la tarjeta mueve la ventana (`Action::ScrollGraph`, como las listas de
+     MEDIA), no el cuerpo de la pestaña. Al llegar al final de lo leído pide la página siguiente (30 → 60 → …
+     hasta 300, una llamada `git log -n` por página, ninguna por scroll), y la fila `⋯ cargar N más` hace lo
+     mismo a mano. Menos commits que la página = repositorio agotado; un `Refresh` conserva la página y el
+     tramo abiertos.
