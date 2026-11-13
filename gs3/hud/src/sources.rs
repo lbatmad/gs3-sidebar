@@ -370,6 +370,12 @@ pub fn roster_of(session:&Path)->Option<Roster> {
     let (models,source)=profile_models(profile_models_path(&dir));
     Some(configured_roster(roster(&settings,&agents,&tasks),models.as_ref(),source))
 }
+/// A change inside the task history: Gentle AI rewrites one JSON per subagent task when it launches and
+/// again when it ends, so watching that directory is what makes "en curso" mean something.
+pub fn is_task_file(e:&notify::Event,agent_dir:&Path)->bool {
+    let dir=agent_dir.join("gentle-agents").join("tasks");
+    e.paths.iter().any(|p|p.starts_with(&dir))
+}
 /// MCP servers configured for the session's Pi agent dir (`mcp.json`); names only.
 pub fn mcp(session:&Path)->Option<Vec<Mcp>> {
     let dir=agent_dir(&session.to_string_lossy())?;
@@ -483,6 +489,8 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
             if let Ok(common)=fs::read_to_string(dir.join("commondir")) {let _=w.watch(&dir.join(common.trim()).join("refs"),RecursiveMode::Recursive);}
         }
         let mut session:Option<PathBuf>=None; let mut tail=Tail::default(); let mut git_deadline:Option<Instant>=None;
+        // The task history has its own debounce: five tasks writing at once must not mean five reads.
+        let mut roster_deadline:Option<Instant>=None; let mut tasks_dir:Option<PathBuf>=None;
         // Last MCP list sent; matches State::new so unchanged lists are never re-sent.
         let mut mcp_sent:Option<Vec<Mcp>>=None;
         let send_mcp=|session:&Option<PathBuf>,sent:&mut Option<Vec<Mcp>>|{let now=session.as_deref().and_then(mcp); if now!=*sent {*sent=now.clone(); let _=tx.send(Event::Mcp(now));}};
@@ -491,29 +499,41 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
         let mut page=LOG_PAGE;
         let send_roster=|session:&Option<PathBuf>,sent:&mut Option<Roster>|{let now=session.as_deref().and_then(roster_of); if now!=*sent {*sent=now.clone(); let _=tx.send(Event::Roster(now));}};
         loop {
-            let msg=match git_deadline {Some(t)=>rx.recv_timeout(t.saturating_duration_since(Instant::now())),None=>rx.recv().map_err(|_|mpsc::RecvTimeoutError::Disconnected)};
+            let deadline=match (git_deadline,roster_deadline) {(None,None)=>None,(Some(a),None)=>Some(a),(None,Some(b))=>Some(b),(Some(a),Some(b))=>Some(a.min(b))};
+            let msg=match deadline {Some(t)=>rx.recv_timeout(t.saturating_duration_since(Instant::now())),None=>rx.recv().map_err(|_|mpsc::RecvTimeoutError::Disconnected)};
             match msg {
                 // The graph keeps the page it was asked for: a refresh must not shrink the list under the wheel.
                 Ok(Local::More(n))=>{page=n.clamp(LOG_PAGE,LOG_MAX); let _=tx.send(Event::Git(git_log(&cwd,page)));}
-                Ok(Local::Refresh)=>{let _=tx.send(Event::Git(git_log(&cwd,page))); let _=tx.send(Event::Engram(engram(&cwd))); send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent); let _=tx.send(Event::Stack(stack(&cwd,session.as_deref())));}
+                Ok(Local::Refresh)=>{
+                    // The tasks directory only exists after the first task: watching it again costs nothing.
+                    if let (Some(w),Some(d))=(&mut watcher,&tasks_dir) {let _=w.watch(d,RecursiveMode::NonRecursive);}
+                    let _=tx.send(Event::Git(git_log(&cwd,page))); let _=tx.send(Event::Engram(engram(&cwd))); send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent); let _=tx.send(Event::Stack(stack(&cwd,session.as_deref())));}
                 Ok(Local::Session(path))=>{
                     if let (Some(w),Some(p))=(&mut watcher,&session) {let _=w.unwatch(p.parent().unwrap_or(p));}
+                    if let (Some(w),Some(d))=(&mut watcher,&tasks_dir) {let _=w.unwatch(d);}
                     session=path.map(PathBuf::from); tail=Tail::default();
                     if let Some(p)=&session {
                         if let Some(w)=&mut watcher {let _=w.watch(p.parent().unwrap_or(p),RecursiveMode::NonRecursive);}
                         let _=read_tail(p,&mut tail);
                     }
+                    tasks_dir=session.as_deref().and_then(|p|agent_dir(&p.to_string_lossy())).map(|d|d.join("gentle-agents").join("tasks"));
+                    if let (Some(w),Some(d))=(&mut watcher,&tasks_dir) {let _=w.watch(d,RecursiveMode::NonRecursive);}
                     let _=tx.send(Event::Session(session.as_ref().map(|p|p.to_string_lossy().into_owned()),tail.session.clone()));
                     send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent);
                     let _=tx.send(Event::Stack(stack(&cwd,session.as_deref())));
                 }
                 Ok(Local::Changed(e))=>{
                     if !matches!(e.kind,notify::EventKind::Create(_)|notify::EventKind::Modify(_)|notify::EventKind::Remove(_)) {continue}
-                    if session.as_ref().is_some_and(|p|is_new_session_file(&e,p)) {if let Ok(Some(p))=pane(&socket,&pane_id) {let _=tx.send(Event::Pane(p));}}
+                    if session.as_ref().and_then(|p|agent_dir(&p.to_string_lossy())).is_some_and(|d|is_task_file(&e,&d)) {roster_deadline=Some(Instant::now()+Duration::from_millis(300));}
+                    else if session.as_ref().is_some_and(|p|is_new_session_file(&e,p)) {if let Ok(Some(p))=pane(&socket,&pane_id) {let _=tx.send(Event::Pane(p));}}
                     else if session.as_ref().is_some_and(|p|e.paths.contains(p)) {if let Some(p)=&session {let _=read_tail(p,&mut tail); let _=tx.send(Event::Session(Some(p.to_string_lossy().into_owned()),tail.session.clone()));}}
                     else if e.paths.iter().any(|p|{let name=p.file_name().unwrap_or_default(); name=="HEAD"||name=="index"||p.components().any(|c|c.as_os_str()=="refs")}) {git_deadline=Some(Instant::now()+Duration::from_millis(300));}
                 }
-                Err(mpsc::RecvTimeoutError::Timeout)=>{git_deadline=None; let _=tx.send(Event::Git(git_snapshot(&cwd)));}
+                Err(mpsc::RecvTimeoutError::Timeout)=>{
+                    let now=Instant::now();
+                    if git_deadline.is_some_and(|t|t<=now) {git_deadline=None; let _=tx.send(Event::Git(git_snapshot(&cwd)));}
+                    if roster_deadline.is_some_and(|t|t<=now) {roster_deadline=None; send_roster(&session,&mut roster_sent);}
+                }
                 Err(_)=>break
             }
         }
@@ -789,6 +809,34 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
+    fn a_task_file_updates_the_roster_without_pressing_r() {
+        let root=std::env::temp_dir().join(format!("gs3-roster-{}",std::process::id())); let _=fs::remove_dir_all(&root);
+        let agent=root.join("agent"); let sessions=agent.join("sessions").join("proj"); let tasks=agent.join("gentle-agents").join("tasks");
+        fs::create_dir_all(&sessions).unwrap(); fs::create_dir_all(&tasks).unwrap();
+        let session=sessions.join("s.jsonl"); fs::write(&session,"").unwrap();
+        let (tx,rx)=mpsc::channel();
+        let local=local(root.clone(),std::env::temp_dir().join("gs3-roster.sock"),"p".into(),tx);
+        let _=local.send(Local::Session(Some(session.to_string_lossy().into_owned())));
+        // Gentle AI writes the task when it launches it: the roster must hear about it on its own.
+        fs::write(tasks.join("t1.json"),json!({"task":{"agent":"gentle-ai-worker","label":"corriendo","status":"running"}}).to_string()).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(5);
+        let mut alive:Option<Roster>=None;
+        while Instant::now()<deadline {
+            if let Ok(Event::Roster(Some(r)))=rx.recv_timeout(Duration::from_millis(200)) { if r.active==1 {alive=Some(r); break} }
+        }
+        let r=alive.expect("un archivo de tarea nuevo tiene que llegar por el watcher, sin apretar r");
+        assert_eq!(r.running,["gentle-ai-worker · corriendo"],"y decir cuál está viva");
+        let _=fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn only_paths_inside_the_task_history_count() {
+        let dir=PathBuf::from("/a/agent");
+        let event=|p:&str|notify::Event{kind:notify::EventKind::Create(notify::event::CreateKind::File),paths:vec![PathBuf::from(p)],attrs:Default::default()};
+        assert!(is_task_file(&event("/a/agent/gentle-agents/tasks/t1.json"),&dir));
+        assert!(!is_task_file(&event("/a/agent/sessions/p/s.jsonl"),&dir));
+        assert!(!is_task_file(&event("/a/agent/gentle-agents/tasks-otra/t1.json"),&dir),"no es la carpeta de tareas");
+    }
+    #[test]
     fn engram_connection_is_read_only() {
         let path=std::env::temp_dir().join(format!("gs3-hud-readonly-{}.db",std::process::id()));
         {let db=Connection::open(&path).unwrap(); db.execute_batch("CREATE TABLE observations(project TEXT, deleted_at TEXT); INSERT INTO observations VALUES('test',NULL);").unwrap();}
@@ -798,3 +846,4 @@ mod tests {
         drop(db); fs::remove_file(path).unwrap();
     }
 }
+

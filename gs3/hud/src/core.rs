@@ -243,7 +243,11 @@ impl Preview {
 }
 /// PROF roster: host defaults (`settings.json`), subagents (`agents/*.md`) and their task history.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>, pub total:usize, pub done:usize, pub active:usize, pub current:Option<String>, pub profile_source:String, pub configured_host:Option<Agent> }
+pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>,
+    /// Task history: everything read, what finished, what failed, and what is running right now (newest
+    /// first, `agent · label`). `done + failed + active` is what the window shows of `total`.
+    pub total:usize, pub done:usize, pub failed:usize, pub active:usize, pub running:Vec<String>,
+    pub profile_source:String, pub configured_host:Option<Agent> }
 /// One subagent: model/thinking from its frontmatter (`model`, `effort`/`thinking`), else its latest task, else the host.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Agent { pub name:String, pub model:String, pub thinking:String }
@@ -264,8 +268,12 @@ pub fn roster(settings:&Value,agents:&[(String,String)],tasks:&[Value])->Roster 
     }).collect();
     list.sort_by(|a,b|a.name.cmp(&b.name));
     let live=|t:&&&Value|matches!(text(t,"status"),"running"|"queued"|"pending"|"waiting"|"starting");
-    let current=tasks.iter().rev().find(live).map(|t|format!("{} · {}",text(t,"agent"),text(t,"label")));
-    Roster{model,thinking,agents:list,total:tasks.len(),done:tasks.iter().filter(|t|text(t,"status")=="completed").count(),active:tasks.iter().filter(live).count(),current,..Roster::default()}
+    let describe=|t:&&Value|format!("{} · {}",text(t,"agent"),text(t,"label"));
+    let running:Vec<String>=tasks.iter().rev().filter(|t|live(t)).map(describe).collect();
+    Roster{model,thinking,agents:list,total:tasks.len(),
+        done:tasks.iter().filter(|t|text(t,"status")=="completed").count(),
+        failed:tasks.iter().filter(|t|text(t,"status")=="failed").count(),
+        active:running.len(),running,..Roster::default()}
 }
 /// Global configured assignments from `/gentle:profiles`, never task/MD model guesses.
 /// Keep the host defaults above unchanged: STATUS also consumes them.
@@ -620,7 +628,7 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
             json!({"agent":"gone","status":"completed","label":"g","createdAt":2})];
         let r=roster(&settings,&agents,&tasks);
         assert_eq!((r.model.as_str(),r.thinking.as_str(),r.total,r.done,r.active),("cpamc/gpt-6.1-sol","medium",4,2,1));
-        assert_eq!(r.current.as_deref(),Some("gentle-ai-explore · r"));
+        assert_eq!((r.failed,r.active,r.running.iter().map(String::as_str).collect::<Vec<_>>()),(1,1,vec!["gentle-ai-explore · r"]),"una falla, una viva, y la viva se nombra");
         let a=|n:&str|r.agents.iter().find(|a|a.name==n).unwrap().clone();
         assert_eq!(r.agents.iter().map(|a|a.name.as_str()).collect::<Vec<_>>(),["gentle-ai-explore","jd-judge-a","review-risk"]);
         assert_eq!(a("gentle-ai-explore"),Agent{name:"gentle-ai-explore".into(),model:"other/fast-1".into(),thinking:"low".into()});
@@ -638,7 +646,7 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
             "review-refuter":"canonical/refuter","review-validator":{},
             "bad\u{1b}role":"canonical/nope","unsafe":{"model":"bad\nmodel","thinking":"invalid"}});
         let r=configured_roster(original.clone(),Some(&values),"/gentle:profiles · global");
-        assert_eq!((&r.model,&r.thinking,r.total,r.done,r.active,&r.current),(&original.model,&original.thinking,original.total,original.done,original.active,&original.current));
+        assert_eq!((&r.model,&r.thinking,r.total,r.done,r.failed,r.active,&r.running),(&original.model,&original.thinking,original.total,original.done,original.failed,original.active,&original.running),"los contadores de tareas no se reescriben con los perfiles");
         assert_eq!(r.configured_host.unwrap(),Agent{name:"orchestrator".into(),model:"canonical/host".into(),thinking:"high".into()});
         let a=|name:&str|r.agents.iter().find(|a|a.name==name).unwrap();
         assert_eq!((a("worker").model.as_str(),a("worker").thinking.as_str()),("canonical/worker","xhigh"));

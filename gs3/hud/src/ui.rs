@@ -1114,10 +1114,14 @@ fn profiles_card(s: &State, w: usize) -> Card {
     }
     if r.total > 0 {
         c.divider();
-        let mut right = vec![seg(format!("{}/{}", r.done, r.total), Mint)];
+        // Counted, not implied: `done/total` read as "the rest is pending" when the rest was failures.
+        let mut right = vec![seg(format!("{} ✓", r.done), Mint)];
+        if r.failed > 0 { right.push(seg(" · ", Text)); right.push(seg(format!("{} ✗", r.failed), Coral)); }
         if r.active > 0 { right.push(seg(" · ", Text)); right.push(seg(format!("{} en curso", r.active), Gold)); }
         c.row(vec![seg("📋 Task Manager", Pink)], right);
-        if let Some(t) = &r.current { c.row(vec![seg("   ▶ ", Text), seg(t.clone(), Text)], vec![]); }
+        // Every task alive right now, newest first: one is not "the" running task when five were launched.
+        for t in r.running.iter().take(5) { c.row(vec![seg("   ▶ ", Text), seg(t.clone(), Text)], vec![]); }
+        if r.running.len() > 5 { c.row(vec![seg(format!("   … {} más en curso", r.running.len() - 5), Dim)], vec![]); }
     }
     c
 }
@@ -2351,7 +2355,7 @@ mod tests {
     fn roster_sample() -> State {
         let mut s = sample();
         let a = |n: &str, m: &str, t: &str| Agent { name: n.into(), model: m.into(), thinking: t.into() };
-        s.roster = Some(Roster { model: "cpamc/gpt-6.1-sol".into(), thinking: "medium".into(), total: 6, done: 5, active: 1, current: Some("gentle-ai-worker · build".into()),
+        s.roster = Some(Roster { model: "cpamc/gpt-6.1-sol".into(), thinking: "medium".into(), total: 6, done: 5, failed: 0, active: 1, running: vec!["gentle-ai-worker · build".into()],
             agents: vec![a("gentle-ai-explore", "cpamc/gpt-6.1-sol", "medium"), a("jd-judge-a", "x/claude-opus-high", "high"), a("my-helper", "y/long-model-name-v2", "xhigh"), a("review-risk", "", "")], ..Roster::default() });
         s
     }
@@ -2378,7 +2382,7 @@ mod tests {
         let prof=on(&s,Tab::Prof,60); find(&prof,"/gentle:profiles · global");
         find(&prof,"profile-host (high)"); find(&prof,"profile-refuter");
         assert!(!prof.iter().any(|l|l.contains("long-model-name-v2") || l.contains("claude-opus")));
-        find(&prof,"5/6 · 1 en curso");
+        find(&prof,"5 ✓ · 1 en curso");
     }
     #[test]
     fn prof_tab_lists_host_and_subagents() {
@@ -2387,7 +2391,14 @@ mod tests {
         assert!(find(&l, "• gentle-ai-explore").ends_with("gpt-6.1-sol (medium) ║"));
         assert!(find(&l, "• jd-judge-a").contains("claude-opus (high)"), "-high suffix dropped like shortModelName");
         assert!(find(&l, "• review-risk").contains("— "), "missing model shows a dash");
-        assert!(find(&l, "📋 Task Manager").contains("5/6 · 1 en curso")); find(&l, "▶ gentle-ai-worker · build");
+        assert!(find(&l, "📋 Task Manager").contains("5 ✓ · 1 en curso")); find(&l, "▶ gentle-ai-worker · build");
+        // Failures are said out loud, and every running task is listed, not just the newest.
+        let mut f = roster_sample();
+        if let Some(r) = f.roster.as_mut() { r.failed = 2; r.active = 3; r.running = vec!["a · uno".into(), "b · dos".into(), "c · tres".into()]; }
+        let l = on(&f, Tab::Prof, 60);
+        let row = find(&l, "📋 Task Manager");
+        assert!(row.contains("5 ✓") && row.contains("2 ✗") && row.contains("3 en curso"), "{row}");
+        assert!(l.iter().any(|x| x.contains("▶ a · uno")) && l.iter().any(|x| x.contains("▶ c · tres")), "las tres vivas");
         // Family tones of the reference: ODD core cyan, Judgment Day gold, review mint, custom pink bullet + text.
         let mut p = s.clone(); p.ui.tab = Tab::Prof; let f = frame(&p, 60, 0); let tone = |needle: &str| f.lines.iter().flatten().find(|g| g.text == needle).map(|g| g.tone);
         assert_eq!((tone("gentle-ai-explore"), tone("jd-judge-a"), tone("review-risk"), tone("my-helper")), (Some(Tone::Cyan), Some(Tone::Gold), Some(Tone::Mint), Some(Tone::Text)));
