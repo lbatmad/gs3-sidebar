@@ -34,6 +34,8 @@ Todas las capturas son de una sesión de demostración. Con menos de 44 columnas
 
 ![PROF](assets/tab3.png)
 
+Cuando el store de perfiles tiene **más de uno**, una primera tarjeta **⌁ Perfiles** los lista: una fila por perfil con su nombre, la cantidad de roles que enruta y el modelo que le da al host (`orchestrator`) cuando lo configura; el perfil marcado como `active` en el store lleva `●` (un `active` huérfano no marca nada). Un clic sólo deja el nombre seleccionado (visible con `▸`); un segundo clic lo quita. **La barra es de sólo lectura**: no escribe el store ni cambia el perfil activo; para elegir de verdad, el botón de abajo abre la pantalla. Con un solo perfil no hay nada que elegir y la tarjeta no aparece. El store (`profiles.json` junto al `models.json` del mismo home de configuración) se vigila con un debounce de 300 ms, así que la lista sigue al archivo sin apretar `r`. Sólo se lee el formato propio del paquete (`kind` + `version` 1); un store de otra versión no se adivina. Los nombres se muestran saneados (sin caracteres de control) y jamás viajan como argumento de un comando.
+
 Una sola tarjeta, **Profiles & Clusters**, muestra las asignaciones globales configuradas en `/gentle:profiles`: lee su `models.json` canónico, no los modelos declarados en los `.md` ni los de tareas anteriores. Incluye los roles configurados `review-refuter` y `review-validator` aunque no tengan archivo MD. `orchestrator` se muestra aparte; los roles sin modelo explícito muestran `—`, sin inventar una asignación heredada. Los MD aportan solo nombres al inventario y las tareas conservan los contadores de **Task Manager**: `N ✓` completadas, `N ✗` fallidas (antes se contaban dentro del total sin decirlo) y `N en curso`, con una fila `▶ agente · label · 6m` por cada tarea viva (el tiempo es lo que lleva corriendo: `12s`, `6m`, `1h 4m`) y una fila `⏱ 1m promedio · 104 medidas` con lo que tarda una tarea terminada, medida entre `startedAt` y `endedAt` (una tarea sin ambas marcas no se cuenta como cero). Esa carpeta (`<agent home>/gentle-agents/tasks`) está vigilada con un debounce de 300 ms, así que una tarea aparece mientras corre y no recién al apretar `r`.
 
 El origen se indica como `/gentle:profiles · global`: es configuración, no prueba del modelo que ejecuta una sesión con pins o snapshots. `r` relee el archivo; no hace falta cambiar de sesión. No escribe perfiles ni modifica las selecciones de modelos, y el modelo de STATUS no cambia.
@@ -43,6 +45,8 @@ La ruta se toma de `GENTLE_PI_CONFIG_HOME` o del marcador absoluto `GENTLE_SHELL
 El launcher `gs3` reenvía al panel de la barra los routing homes que tenga en su propio entorno (`GENTLE_PI_CONFIG_HOME`, `GENTLE_SHELL_CONFIG_HOME`, `GENTLE_PI_AGENT_HOME`, `PI_CODING_AGENT_DIR`), solo cuando son absolutos: Gentle Shell reconstruye el entorno de Pi y el panel de la barra no lo hereda. Si ningún home llega, se aplica el layout bundleado de arriba.
 
 El renglón del host muestra los defaults de `settings.json` mientras el perfil no configure una entrada `orchestrator`; el perfil nunca reescribe el modelo de STATUS.
+
+Al pie de **Profiles & Clusters**, la fila **`▸ /gentle:profiles · abrir`** abre la pantalla de perfiles en el pane del agente: un clic enfoca el pane y le envía el comando literal (texto + Enter, por la API de herdr; nada se interpreta ni simula en la barra). Los clics repetidos dentro de 1 segundo se descartan, igual que el selector de modelos de MAIN. Abrir la pantalla es la única acción: la barra no aplica perfiles.
 
 ## 4 · MEM — memoria y entorno
 
