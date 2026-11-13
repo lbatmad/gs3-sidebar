@@ -87,6 +87,50 @@ pub fn trees(cwd:PathBuf,tx:Sender<Event>)->Sender<Vec<String>> {
         if tx.send(Event::Tree(tree(&cwd,open))).is_err() {break}
     }}); send
 }
+/// Extensions the window draws as an image instead of reading as text.
+const IMAGE_EXT:[&str;10]=["png","jpg","jpeg","gif","webp","bmp","tif","tiff","ico","heic"];
+/// Ceiling for a previewed text file: past it the window shows the head and says how much it left out.
+pub const PREVIEW_MAX:u64=256*1024;
+/// Ceiling for an image: the window decodes it, so a file that big is refused instead of read into memory.
+const IMAGE_MAX:u64=32*1024*1024;
+/// What a TREE click shows in the rail's own window: the file as text, the image itself, or why neither is
+/// allowed. The gate is the same one `detail` already applies: nothing outside the project, no symlink, no
+/// sensitive name, no binary — plus a size ceiling, because this reads the file instead of a diff.
+/// An image is never read here: its path travels and the window draws it.
+pub fn preview(root:&Path,rel:&str)->Preview {
+    let refused=|note:&str|Preview::Refused{path:rel.into(),note:note.into()};
+    if rel.is_empty()||rel.starts_with('/')||rel.split('/').any(|p|p.is_empty()||p=="..") {return refused("fuera del proyecto")}
+    if sensitive(rel) {return refused("archivo sensible (no se muestra)")}
+    let file=root.join(rel);
+    match fs::symlink_metadata(&file) {
+        Err(e)=>return refused(&format!("no se pudo leer: {e}")),
+        Ok(m) if m.file_type().is_symlink()=>return refused("enlace simbólico (no se sigue)"),
+        Ok(m) if m.is_dir()=>return refused("directorio, no archivo"),
+        Ok(_)=>{}
+    }
+    let ext=rel.rsplit_once('.').map(|(_,e)|e.to_ascii_lowercase()).unwrap_or_default();
+    if IMAGE_EXT.contains(&ext.as_str()) {
+        let len=fs::metadata(&file).map(|m|m.len()).unwrap_or(0);
+        return if len>IMAGE_MAX {refused(&format!("imagen de {} MiB (demasiado grande)",len/1024/1024))} else {Preview::Image{path:rel.into(),file}}
+    }
+    match fs::read(&file) {
+        Err(e)=>refused(&format!("no se pudo leer: {e}")),
+        Ok(b) if b.contains(&0)=>refused("archivo binario (no se muestra)"),
+        Ok(mut b)=>{let cut=b.len() as u64>PREVIEW_MAX; b.truncate(PREVIEW_MAX as usize);
+            Preview::Text{path:rel.into(),body:String::from_utf8_lossy(&b).into_owned(),cut}}
+    }
+}
+/// TREE preview worker: reads off the draw loop and answers only the newest click.
+pub fn previews(cwd:PathBuf,tx:Sender<Event>)->Sender<String> {
+    let (send,rx)=mpsc::channel::<String>();
+    thread::spawn(move||{
+        let root=git_root(&cwd).unwrap_or(cwd);
+        while let Ok(mut rel)=rx.recv() {
+            while let Ok(n)=rx.try_recv() {rel=n;}
+            if tx.send(Event::Preview(preview(&root,&rel))).is_err() {break}
+        }
+    }); send
+}
 /// What the GIT tab inspects: a branch diffed against HEAD and/or one file (untracked files are read directly).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DetailRequest { pub branch:Option<String>, pub file:Option<String>, pub commit:Option<String>, pub untracked:bool }
@@ -137,7 +181,12 @@ pub fn detail(cwd:&Path,r:&DetailRequest)->Detail {
 /// What the rail asks its own window to do. The window is another process, so it has to be owned: a
 /// thread keeps the child and kills it when the selection moves or the rail goes away, exactly like the
 /// video window's player.
-pub enum PanelCmd { Show { hash: String, text: String, geometry: Option<String> }, Hide }
+pub enum PanelCmd { Show { hash: String, text: String, geometry: Option<String> }, Image { key: String, file: PathBuf }, Hide }
+/// The panel binary: next to the rail first (the installer puts both in the same bin, and that directory is
+/// not always on the PATH the pane inherits), then the PATH itself.
+fn panel_bin()->Option<PathBuf> {
+    std::env::current_exe().ok().and_then(|e|e.parent().map(|d|d.join("gs3-panel"))).filter(|p|p.is_file()).or_else(||media::find_tool("gs3-panel"))
+}
 
 pub fn panel(socket: PathBuf, agent_pane: String, events: Sender<Event>) -> Sender<PanelCmd> {
     let (send, rx) = mpsc::channel::<PanelCmd>();
@@ -172,15 +221,22 @@ pub fn panel(socket: PathBuf, agent_pane: String, events: Sender<Event>) -> Send
                     // window, which follows the file, so clicking a file never moves or rebuilds it.
                     if open.as_ref().is_some_and(|(up, _)| *up == hash) { let _ = fs::write(&path, text); continue }
                     close(&mut open);
-                    // Next to the rail itself first: the installer puts both in the same bin, and that
-                    // directory is not always on the PATH the pane inherits.
-                    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("gs3-panel"))).filter(|p| p.is_file());
-                    let Some(bin) = beside.or_else(|| media::find_tool("gs3-panel")) else { continue };
+                    let Some(bin) = panel_bin() else { continue };
                     if fs::write(&path, text).is_err() { continue }
                     let mut args = geometry.map(|g| vec!["--geometry".to_string(), g]).unwrap_or_default();
                     args.push("--socket".to_string()); args.push(hud_socket.to_string_lossy().into_owned());
                     let spawned = std::process::Command::new(bin).args(args).arg(&path).spawn();
                     if let Ok(child) = spawned { open = Some((hash, child)); }
+                }
+                // A TREE image: the window reads and draws the file itself, so the bytes never enter the rail.
+                PanelCmd::Image { key, file } => {
+                    if open.as_ref().is_some_and(|(up, _)| *up == key) { continue }
+                    close(&mut open);
+                    let Some(bin) = panel_bin() else { continue };
+                    let spawned = std::process::Command::new(bin)
+                        .arg("--socket").arg(hud_socket.to_string_lossy().into_owned())
+                        .arg("--image").arg(&file).spawn();
+                    if let Ok(child) = spawned { open = Some((key, child)); }
                 }
             }
         }
@@ -639,6 +695,32 @@ mod tests {
         // A child opened under a closed parent is not scanned; a missing root is an error.
         assert!(tree(&dir,vec!["src/inner".into()]).nodes[0].children.is_empty());
         assert!(tree(&dir.join("missing"),vec![]).error.is_some());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn preview_reads_text_and_refuses_what_must_never_show() {
+        let dir=std::env::temp_dir().join(format!("gs3-preview-{}",std::process::id())); let _=fs::remove_dir_all(&dir);
+        for d in ["src","assets"] {fs::create_dir_all(dir.join(d)).unwrap();}
+        fs::write(dir.join("src/main.rs"),"fn main() {}\n").unwrap();
+        fs::write(dir.join("assets/logo.png"),[0x89u8,0x50,0x4e,0x47]).unwrap();
+        fs::write(dir.join("app.bin"),[0u8,1,2,3]).unwrap();
+        fs::write(dir.join("secrets.yml"),"k: v\n").unwrap();
+        fs::write(dir.join(".env"),"TOKEN=1\n").unwrap();
+        std::os::unix::fs::symlink(dir.join("src/main.rs"),dir.join("link.rs")).unwrap();
+        assert_eq!(preview(&dir,"src/main.rs"),Preview::Text{path:"src/main.rs".into(),body:"fn main() {}\n".into(),cut:false});
+        // An image is never read here: the path travels and the window draws it.
+        assert_eq!(preview(&dir,"assets/logo.png"),Preview::Image{path:"assets/logo.png".into(),file:dir.join("assets/logo.png")});
+        for p in ["secrets.yml",".env","link.rs","src","../outside","/etc/passwd","src//main.rs","missing.rs"] {
+            assert!(matches!(preview(&dir,p),Preview::Refused{..}),"{p} se mostro");
+        }
+        assert!(matches!(preview(&dir,"app.bin"),Preview::Refused{..}),"un binario no se muestra");
+        // An image too big to decode is refused instead of read into memory.
+        let big=fs::File::create(dir.join("huge.png")).unwrap(); big.set_len(IMAGE_MAX+1).unwrap(); drop(big);
+        assert!(matches!(preview(&dir,"huge.png"),Preview::Refused{..}),"una imagen de 32 MiB o mas no se abre");
+        // A long text file is cut at the ceiling and says so instead of being refused.
+        fs::write(dir.join("big.md"),"x".repeat(PREVIEW_MAX as usize+10)).unwrap();
+        let Preview::Text{body,cut,..}=preview(&dir,"big.md") else {panic!("big.md no es texto")};
+        assert!(cut && body.len()==PREVIEW_MAX as usize);
         fs::remove_dir_all(&dir).unwrap();
     }
     #[test]

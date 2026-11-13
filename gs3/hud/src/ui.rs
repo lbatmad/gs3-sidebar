@@ -3,6 +3,7 @@
 use crate::config::{clean_name, Config, NAME_MAX};
 use crate::core::*;
 use crate::media::{MediaCmd, SpotifyCmd, REDIRECT};
+use crate::sources::{PanelCmd, PREVIEW_MAX};
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
@@ -827,6 +828,50 @@ pub fn panel_text(d: &Detail, hash: &str) -> String {
         }
     }
     out
+}
+
+/// The window's text for a TREE click: what the file is, where it came from, and the file itself. Colour
+/// travels in the text, exactly like the diff's, so the window parses the same SGR it already parses, and
+/// the `✕` in the header is the close button it already knows.
+pub fn preview_text(p: &Preview) -> String {
+    use Tone::*;
+    let head = |title: &str| format!("{} {} {} {}\n\n", sgr(Gold, title), sgr(Muted, "["), sgr(Coral, "✕"), sgr(Muted, "] [-]"));
+    match p {
+        // Never reached in practice (an image is drawn by the window, not written here), kept so the
+        // function is total and a caller that got it wrong says so instead of drawing nothing.
+        Preview::Image { path, .. } => format!("{}{}", head("🖼 archivo"), sgr(Cyan, path)),
+        Preview::Refused { path, note } => format!("{}{}\n\n{}\n", head("🗒 archivo"), sgr(Cyan, path), sgr(Coral, note)),
+        Preview::Text { path, body, cut } => {
+            // No wrapping: the window scrolls sideways, so every line keeps the columns it was written with.
+            let mut out = format!("{}{}\n\n", head("🗒 archivo"), sgr(Cyan, path));
+            for line in body.lines() { out.push_str(&line.replace('\t', "    ")); out.push('\n'); }
+            if *cut { out.push_str(&format!("\n{}\n", sgr(Dim, &format!("… sólo los primeros {} KiB", PREVIEW_MAX / 1024)))); }
+            out
+        }
+    }
+}
+
+/// What the rail's own window should show, with the key that says "same answer as last time": the diff of
+/// the commit open in GIT, or the file picked in TREE. One window serves both tabs, and the rail has 50
+/// columns, so neither a diff nor an image fits in them.
+pub fn panel_show(s: &State) -> Option<(String, usize, PanelCmd)> {
+    match s.ui.tab {
+        Tab::Git => s.ui.git_commit.clone().filter(|h| s.detail.commit.as_deref() == Some(h.as_str())).map(|hash| {
+            let text = panel_text(&s.detail, &hash);
+            let n = text.len();
+            (hash.clone(), n, PanelCmd::Show { hash, text, geometry: None })
+        }),
+        // Only the answer for the file still picked: clicks may outrun a read.
+        Tab::Tree => s.preview.as_ref().filter(|p| s.ui.tree_pick.as_deref() == Some(p.path())).map(|p| {
+            let key = format!("file:{}", p.path());
+            match p {
+                // The window reads and draws the image itself: its bytes never cross the rail.
+                Preview::Image { file, .. } => (key.clone(), 0, PanelCmd::Image { key, file: file.clone() }),
+                other => { let text = preview_text(other); let n = text.len(); (key.clone(), n, PanelCmd::Show { hash: key, text, geometry: None }) }
+            }
+        }),
+        _ => None,
+    }
 }
 
 /// What a commit touched: the files it changed, and the diff of the one that is open. A commit is read
@@ -2448,6 +2493,44 @@ mod tests {
         let empty = plain(&panel_text(&Detail::default(), "a1b2c3d"));
         assert!(empty.contains("sin archivos"), "an empty commit says so: {empty}");
         s.detail.files.clear(); s.ui.git_branch = Some("main".into()); s.detail.branch = Some("main".into()); find(&render_lines(&s, 42), "✔ Sin diferencias con HEAD");
+    }
+    #[test]
+    fn the_window_shows_the_picked_file_and_what_it_cut() {
+        let plain = |t: &str| t.split("\u{1b}[").map(|p| p.splitn(2, 'm').nth(1).unwrap_or("")).collect::<String>();
+        let text = preview_text(&Preview::Text { path: "src/main.rs".into(), body: "fn main() {\n\tok();\n}\n".into(), cut: false });
+        let shown = plain(&text);
+        assert!(shown.starts_with("🗒 archivo [ ✕ ] [-]"), "{shown}");
+        assert!(shown.contains("src/main.rs") && shown.contains("fn main() {"), "{shown}");
+        assert!(shown.contains("    ok();"), "a tab keeps the columns it was written with: {shown}");
+        assert!(!shown.contains("sólo los primeros"), "nothing was cut: {shown}");
+        assert!(text.contains("\u{1b}[38;2;"), "the window needs the rail's own colour, or a file reads flat");
+        let cut = plain(&preview_text(&Preview::Text { path: "big.md".into(), body: "x".into(), cut: true }));
+        assert!(cut.contains("sólo los primeros 256 KiB"), "{cut}");
+        let refused = plain(&preview_text(&Preview::Refused { path: "secrets.yml".into(), note: "archivo sensible (no se muestra)".into() }));
+        assert!(refused.contains("secrets.yml") && refused.contains("no se muestra"), "the window says why: {refused}");
+    }
+    #[test]
+    fn one_window_serves_the_commit_and_the_picked_file() {
+        let mut s = sample();
+        assert!(panel_show(&s).is_none(), "MAIN opens nothing");
+        s.ui.tab = Tab::Git; s.ui.git_commit = Some("a1b2c3d".into()); s.detail.commit = Some("a1b2c3d".into());
+        assert!(matches!(panel_show(&s), Some((_, _, PanelCmd::Show { .. }))), "a commit has a window");
+        s.detail.commit = None;
+        assert!(panel_show(&s).is_none(), "no answer for that hash, no window");
+        // An image is handed over as a path, so the window draws it and the rail never reads its bytes.
+        s.ui.tab = Tab::Tree; s.ui.tree_pick = Some("assets/logo.png".into());
+        s.preview = Some(Preview::Image { path: "assets/logo.png".into(), file: "/repo/assets/logo.png".into() });
+        assert!(matches!(panel_show(&s), Some((ref k, _, PanelCmd::Image { .. })) if k == "file:assets/logo.png"));
+        // An answer for a file that is no longer the pick shows nothing: no window under the wrong name.
+        s.ui.tree_pick = Some("src/main.rs".into());
+        assert!(panel_show(&s).is_none());
+        s.preview = Some(Preview::Text { path: "src/main.rs".into(), body: "fn main() {}\n".into(), cut: false });
+        let Some((key, _, PanelCmd::Show { text, .. })) = panel_show(&s) else { panic!("no window for a text file") };
+        assert_eq!(key, "file:src/main.rs");
+        assert!(text.contains("src/main.rs") && text.contains("fn main() {}"));
+        // Leaving TREE closes it.
+        s.ui.tab = Tab::Main;
+        assert!(panel_show(&s).is_none());
     }
     #[test]
     fn clicking_tabs_and_wheel_on_the_bar() {

@@ -217,6 +217,20 @@ pub struct Tree { pub project:String, pub open:Vec<String>, pub nodes:Vec<TreeNo
 /// `rel` is relative to the git root (same as porcelain paths); `count` = visible entries of a directory.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TreeNode { pub name:String, pub rel:String, pub dir:bool, pub count:usize, pub children:Vec<TreeNode> }
+/// TREE tab: what a clicked file shows in the rail's own window. The gate (sensitive names, symlinks,
+/// directories, paths outside the project, binaries, size) is `sources::preview`; this is its answer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Preview {
+    /// Text already read by the rail; `cut` when only the head of a long file fits in the window.
+    Text { path:String, body:String, cut:bool },
+    /// An image the window draws itself, so its bytes never travel through the rail.
+    Image { path:String, file:PathBuf },
+    /// Shown instead of the file, with the reason.
+    Refused { path:String, note:String },
+}
+impl Preview {
+    pub fn path(&self)->&str { match self { Preview::Text{path,..}|Preview::Image{path,..}|Preview::Refused{path,..}=>path } }
+}
 /// PROF roster: host defaults (`settings.json`), subagents (`agents/*.md`) and their task history.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>, pub total:usize, pub done:usize, pub active:usize, pub current:Option<String>, pub profile_source:String, pub configured_host:Option<Agent> }
@@ -290,6 +304,8 @@ pub struct State {
     pub tree:Option<Tree>,
     /// GIT tab inspector (selected branch diff / file diff), fetched on demand.
     pub detail:Detail,
+    /// TREE tab: the file a click opened in the rail's window (its text, its image, or why neither).
+    pub preview:Option<Preview>,
     /// MEDIA tab: Spotify audio (upper section) and YouTube video (lower section).
     pub media:Media,
     pub quit:bool, pub refresh:bool, pub read_session:bool,
@@ -297,9 +313,9 @@ pub struct State {
     pub ui:Ui,
 }
 impl State {
-    pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),tree:None,detail:Detail::default(),media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
+    pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),tree:None,detail:Detail::default(),preview:None,media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
 }
-pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Tree(Tree), Detail(Detail), Media(Youtube), Spotify(Spotify), Ui(ui::Action), Key(ui::Key) }
+pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Tree(Tree), Detail(Detail), Preview(Preview), Media(Youtube), Spotify(Spotify), Ui(ui::Action), Key(ui::Key) }
 /// The rail never plays both at once: whichever source the human starts pauses the other. Spotify is
 /// device playback and the video is a separate mpv window, so nothing else coordinates them. Only a
 /// *start* counts: both engines keep reporting while they play, and pausing on every report would make
@@ -340,12 +356,16 @@ pub fn apply(s:&mut State,e:Event)->bool {
         // The commit is part of the selection: an answer for the working tree or another hash must not
         // replace the list the window is showing, or the window closes under the human's hands.
         Event::Detail(d) if (&d.branch,&d.file,&d.commit)==(&s.ui.git_branch,&s.ui.git_file,&s.ui.git_commit) => s.detail=d,
+        // Like Detail: only the answer for the file still picked is kept (the last click wins).
+        Event::Preview(p) if s.ui.tree_pick.as_deref()==Some(p.path()) => s.preview=Some(p),
         Event::Media(y) => s.media.youtube=y,
         Event::Spotify(v) => s.media.spotify=v,
         Event::Ui(a)=>{
-            let (branch,file)=(s.ui.git_branch.clone(),s.ui.git_file.clone()); ui::act(&mut s.ui,a);
+            let (branch,file,pick)=(s.ui.git_branch.clone(),s.ui.git_file.clone(),s.ui.tree_pick.clone()); ui::act(&mut s.ui,a);
             // A new selection never shows the previous answer.
             if s.ui.git_branch!=branch {s.detail=Detail::default();} else if s.ui.git_file!=file {s.detail.file=None; s.detail.diff.clear(); s.detail.more=0;}
+            // Same for the window: a new pick never shows the file picked before it.
+            if s.ui.tree_pick!=pick {s.preview=None;}
         }
         Event::Key(k)=>ui::key(s,k),
         _=>{}
@@ -495,6 +515,25 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
         assert_eq!(names,[("feat/x",true,false),("main",false,false),("gone",false,false),("origin/old",false,true)], "current first, remote-only after locals, no HEAD");
         assert_eq!((b[1].ahead,b[1].behind,b[1].date.as_str()),(2,1,"3d")); assert!(b[2].gone); assert_eq!((b[0].date.as_str(),b[3].date.as_str()),("5m","1y"));
         assert_eq!(graph_commits("* a1b2c3d (HEAD -> main, origin/main) top\n|\\  \n| * 9f8e7d6 side\n|/  \n* 1234567 base\n"),["a1b2c3d top","9f8e7d6 side","1234567 base"]);
+    }
+    #[test]
+    fn only_the_preview_of_the_picked_file_is_kept() {
+        let mut s = State::new("p".into(),".".into());
+        s.ui.tree_pick = Some("src/main.rs".into());
+        let shown = Preview::Text { path:"src/main.rs".into(), body:"fn main() {}\n".into(), cut:false };
+        assert!(apply(&mut s, Event::Preview(shown.clone())));
+        assert_eq!(s.preview.as_ref().map(Preview::path), Some("src/main.rs"));
+        // An answer for a file that is no longer the pick is dropped, like a stale scan.
+        let late = Preview::Text { path:"README.md".into(), body:"x".into(), cut:false };
+        assert!(!apply(&mut s, Event::Preview(late)));
+        assert_eq!(s.preview, Some(shown));
+        // A new pick never shows the previous file while the answer for the new one travels.
+        apply(&mut s, Event::Ui(ui::Action::Pick("Cargo.toml".into())));
+        assert!(s.preview.is_none());
+        // Clicking the same file again deselects it, and the window has nothing to show.
+        s.ui.tree_pick = Some("Cargo.toml".into());
+        apply(&mut s, Event::Ui(ui::Action::Pick("Cargo.toml".into())));
+        assert_eq!(s.ui.tree_pick, None);
     }
     #[test]
     fn sensitive_files_are_never_previewed() {
