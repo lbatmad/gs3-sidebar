@@ -419,3 +419,35 @@ permission-free placement is at start. The wait is now a settle timer keyed to t
 rebuild instead of one every 300 ms. The picture itself is untouched — `VIDEO_ROWS = 12`,
 `VIDEO_ROWS_TALL = 10`, pure centring — because the human asked for the picture to stay where it is.
 148 tests green (new: a block that keeps moving spends no rebuild).
+
+L57. Human: "quedó pisando el buscar, quedó lejos del título, eso quedar para el orto, y ya lo hiciste un
+monton de veces, estoy recaliente." L56's rebuild fixed the *stale* window; the *computed* rectangle was
+still wrong, so a rebuilt window landed in the wrong place every time. Measured on the live rail this
+time, instead of reasoning about it (`screencapture` + BMP rows, CoreGraphics bounds, herdr
+`pane.layout`, `TIOCGWINSZ` on the pane):
+
+- the terminal window is 1920x1055 at +0+25, but its text grid starts 38 px lower and draws 8x17 cells:
+  239x59 cells inside a 896/1013-px grid. `geometry()` was scaling cells into the *frame*, so every row
+  was offset up by the title bar and over-scaled by 18.19/17 (~7%).
+- the layout area is 209x58 of that grid (herdr spends a 30-column spaces sidebar and one tab row), and
+  a pane's rect is two cells bigger than the grid its program draws (its own border), so the card's
+  cells start one cell in from `pane.rect`.
+- the produced rectangle was 358x182+1442+406 for a card rect of (9, 21, 39, 10); the drawn card puts
+  that picture at 454..624. Landing 48 px (2.8 rows) high is exactly "pisando el buscar" — it covered
+  the search row and the blank row above its block — and left the 53 px void the human called "lejos del
+  título".
+- mpv itself is faithful: it landed at +1524+406 with height 182, i.e. exactly what the engine asked for.
+
+Fix: `geometry()` maps cells onto the grid, not onto the frame. `cells_px()` asks the pane's own terminal
+(`TIOCGWINSZ` on stdout) for the cell size and the grid it draws; `grid_of()` turns the CoreGraphics
+frame plus that answer into the grid origin (title bar is `GRID_TOP = 38`, `GS3_HUD_GRID_TOP` overrides
+it), how many cells the multiplexer spends before the area (`skip`), and the pane's border inset.
+Without a cell size it falls back to the old frame scaling, which is wrong by the chrome and better than
+nothing. The layout itself is untouched. 150 tests green (new: the video lands on the cells the card
+reserved — RED before the fix, printing the real `358x182+1442+406` — and the frame-scaling fallback).
+
+Reloading: a rebuilt HUD cannot take over its own pane, so `kill -USR1 <pid>` now re-execs the binary on
+disk in the same pane and with the same arguments, ending its children first (mpv and librespot outlive
+an image change, and an orphaned player is a window nobody can close). Verified for the same tree; the
+first reload after an install still needs a start of the new binary, because the running image is the
+one that has to answer the signal.

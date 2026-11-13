@@ -69,30 +69,95 @@ fn parse_layout(reply: &Value, id: &str) -> Option<(CellRect, CellRect)> {
     Some((area, rect(&pane["rect"])?))
 }
 
-fn geometry(win: (i64,i64,i64,i64), area: CellRect, pane: CellRect, card: CellRect) -> Option<String> {
-    if win.2 <= 0 || win.3 <= 0 || area.width == 0 || area.height == 0 || card.width == 0 || card.height == 0 { return None }
-    fn axis(origin: i64, size: i64, grid_start: u32, grid_size: u32, pane_start: u32, pane_size: u32, start: u32, length: u32) -> Option<(i64,i64)> {
-        let grid_start = i128::from(grid_start); let grid_end = grid_start + i128::from(grid_size);
-        let pane_start = i128::from(pane_start); let pane_end = pane_start + i128::from(pane_size);
-        let begin = (pane_start + i128::from(start)).max(grid_start);
+/// The text grid inside the terminal's window frame, in the pixels a window list reports: where its
+/// first cell starts, how big a cell is, and how many cells the multiplexer spends before the layout
+/// area's own origin.
+///
+/// The frame is *not* the grid. macOS puts a title bar above the grid and the terminal pads around it,
+/// and none of that is a cell, so scaling cells into the frame put every row several pixels too high:
+/// measured on the rail, a block at area row 21 landed 48 px above its own cells — over the rows above
+/// it and short of the rows below — and 15% too large at both axes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Grid {
+    x: i64, y: i64, cell_w: i64, cell_h: i64,
+    skip_x: i64, skip_y: i64, inset_x: i64, inset_y: i64,
+}
+
+/// The terminal window's screen rectangle, as a window list reports it.
+type Frame = (i64, i64, i64, i64);
+
+/// This pane's own grid, as its terminal reports it: how big a cell is, and how many of them it draws.
+/// The pane's layout rectangle is two cells bigger on each axis than this, because the multiplexer
+/// spends a cell of border on every side of a pane and the program inside only sees the content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Cells { w: i64, h: i64, cols: i64, rows: i64 }
+
+/// How much of the window sits above the first row of the grid. Measured on Ghostty with its tab bar;
+/// `GS3_HUD_GRID_TOP` overrides it for a terminal whose chrome is a different height.
+const GRID_TOP: i64 = 38;
+
+/// The size of one cell of this pane, in the pixels the window list reports. The terminal answers with
+/// the grid it is drawing, so this needs no font, no scale factor and no permission. Some terminals
+/// leave the pixel half of the answer empty; a cell is a few pixels wide and a few more tall.
+fn cells_px() -> Option<Cells> {
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } != 0 { return None }
+    let (cols, rows) = (i64::from(ws.ws_col), i64::from(ws.ws_row));
+    let (px, py) = (i64::from(ws.ws_xpixel), i64::from(ws.ws_ypixel));
+    if cols <= 0 || rows <= 0 || px <= 0 || py <= 0 { return None }
+    let (w, h) = (px / cols, py / rows);
+    ((3..=64).contains(&w) && (6..=128).contains(&h)).then_some(Cells { w, h, cols, rows })
+}
+
+/// Where the layout's cells are on screen, from the window frame and this pane's own grid.
+///
+/// Without that grid the frame is all there is, and the area is scaled into the whole of it: that is
+/// what this did before the grid was measured. It is wrong by the chrome, and better than nothing.
+fn grid_of(frame: Frame, area: CellRect, pane: CellRect, cells: Option<Cells>) -> Grid {
+    let (fx, fy, fw, fh) = frame;
+    let area_w = i64::from(area.width.max(1)); let area_h = i64::from(area.height.max(1));
+    let Some(c) = cells.filter(|c| c.w > 0 && c.h > 0) else {
+        return Grid { x: fx, y: fy, cell_w: (fw / area_w).max(1), cell_h: (fh / area_h).max(1), skip_x: 0, skip_y: 0, inset_x: 0, inset_y: 0 }
+    };
+    let top = std::env::var("GS3_HUD_GRID_TOP").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(GRID_TOP);
+    let cols = (fw / c.w).max(1);
+    let rows = ((fh - top).max(c.h) / c.h).max(1);
+    Grid {
+        // The frame is a few pixels wider than the whole cells in it, padded on both sides.
+        x: fx + (fw - cols * c.w) / 2, y: fy + top, cell_w: c.w, cell_h: c.h,
+        skip_x: (cols - area_w).max(0), skip_y: (rows - area_h).max(0),
+        inset_x: (i64::from(pane.width) - c.cols).max(0) / 2,
+        inset_y: (i64::from(pane.height) - c.rows).max(0) / 2,
+    }
+}
+
+fn geometry(grid: Grid, area: CellRect, pane: CellRect, card: CellRect) -> Option<String> {
+    if area.width == 0 || area.height == 0 || card.width == 0 || card.height == 0 { return None }
+    fn axis(origin: i64, cell: i64, skip: i64, area_start: u32, area_size: u32, pane_start: u32, pane_size: u32, start: u32, length: u32) -> Option<(i64,i64)> {
+        let grid_start = i128::from(area_start); let grid_end = grid_start + i128::from(area_size);
+        let pane_start = grid_start + i128::from(pane_start); let pane_end = pane_start + i128::from(pane_size);
+        let begin = (pane_start + i128::from(start)).max(grid_start).min(pane_end);
         let end = (pane_start + i128::from(start) + i128::from(length)).min(grid_end).min(pane_end);
         if begin >= end { return None }
-        let scale = |v: i128| (v - grid_start) * i128::from(size) / i128::from(grid_size);
+        let scale = |v: i128| i128::from(origin) + (i128::from(skip) + v) * i128::from(cell);
         let a = scale(begin); let b = scale(end);
         if b <= a { return None }
-        Some((i64::try_from(i128::from(origin) + a).ok()?, i64::try_from(b-a).ok()?))
+        Some((i64::try_from(a).ok()?, i64::try_from(b-a).ok()?))
     }
-    let (x,w) = axis(win.0,win.2,area.x,area.width,pane.x,pane.width,card.x,card.width)?;
-    let (y,h) = axis(win.1,win.3,area.y,area.height,pane.y,pane.height,card.y,card.height)?;
+    // The card speaks in the coordinates of what the pane draws, which starts inside its border.
+    let (px, pw) = (pane.x + u32::try_from(grid.inset_x).unwrap_or(0), pane.width.saturating_sub(u32::try_from(grid.inset_x * 2).unwrap_or(0)));
+    let (py, ph) = (pane.y + u32::try_from(grid.inset_y).unwrap_or(0), pane.height.saturating_sub(u32::try_from(grid.inset_y * 2).unwrap_or(0)));
+    let (x,w) = axis(grid.x,grid.cell_w,grid.skip_x,area.x,area.width,px,pw,card.x,card.width)?;
+    let (y,h) = axis(grid.y,grid.cell_h,grid.skip_y,area.y,area.height,py,ph,card.y,card.height)?;
     // Rust's own sign: mpv accepts `-20` and rejects `+-20`.
     Some(format!("{w}x{h}{x:+}{y:+}"))
 }
 
-fn placement(window: Option<(i64,i64,i64,i64)>, layout: Option<(CellRect,CellRect)>, card: Option<CellRect>) -> Result<String, &'static str> {
+fn placement(window: Option<Frame>, layout: Option<(CellRect,CellRect)>, card: Option<CellRect>) -> Result<String, &'static str> {
     let card = card.ok_or("sin área visible de YouTube")?;
     let (area,pane) = layout.ok_or("sin ubicación del panel")?;
-    let window = window.ok_or("sin ubicación de ventana del terminal")?;
-    geometry(window, area, pane, card).ok_or("área de video inválida")
+    let frame = window.ok_or("sin ubicación de ventana del terminal")?;
+    geometry(grid_of(frame, area, pane, cells_px()), area, pane, card).ok_or("área de video inválida")
 }
 
 /// The window belongs to the app that is in front, and only to it: this rail's video is always on top,
@@ -737,10 +802,45 @@ mod tests {
     fn pixel_geometry_scales_pane_origin_and_clamps() {
         let win = (10, 20, 1000, 500);
         let area = CellRect::new(0,0,100,50);
-        assert_eq!(geometry(win, area, CellRect::new(0,0,100,50), CellRect::new(10,5,20,10)).as_deref(), Some("200x100+110+70"));
-        assert_eq!(geometry((0,0,101,101), CellRect::new(0,0,10,10), CellRect::new(5,0,5,10), CellRect::new(0,0,2,2)).as_deref(), Some("20x20+50+0"));
-        assert_eq!(geometry(win, area, CellRect::new(90,40,10,10), CellRect::new(5,5,100,100)).as_deref(), Some("50x50+960+470"));
-        assert!(geometry(win, area, CellRect::new(100,0,1,1), CellRect::new(0,0,1,1)).is_none());
+        let full = CellRect::new(0,0,100,50);
+        let g = grid_of(win, area, full, None);
+        assert_eq!(geometry(g, area, full, CellRect::new(10,5,20,10)).as_deref(), Some("200x100+110+70"));
+        let odd = CellRect::new(0,0,10,10); let small = CellRect::new(5,0,5,10);
+        assert_eq!(geometry(grid_of((0,0,101,101), odd, small, None), odd, small, CellRect::new(0,0,2,2)).as_deref(), Some("20x20+50+0"));
+        let right = CellRect::new(90,40,10,10);
+        assert_eq!(geometry(grid_of(win, area, right, None), area, right, CellRect::new(5,5,100,100)).as_deref(), Some("50x50+960+470"));
+        let outside = CellRect::new(100,0,1,1);
+        assert!(geometry(grid_of(win, area, outside, None), area, outside, CellRect::new(0,0,1,1)).is_none());
+    }
+
+    #[test]
+    fn the_video_lands_on_the_cells_the_card_reserved() {
+        // Measured on the rail's own terminal (Ghostty on macOS): a 1920x1055 window whose text grid
+        // starts 38 px below its title bar and 4 px in, drawing 8x17 cells — a 239x59 grid. The layout
+        // area is 209x58, so the multiplexer spends 30 columns on its spaces sidebar and one row on its
+        // tab bar before the area's first cell. A ten-row picture at area row 21 belongs at grid rows
+        // 22..32 — screen rows 437..607, 170 px tall — not the 182 px the frame scaling asked for.
+        let frame = (0, 25, 1920, 1055);
+        let area = CellRect::new(0, 0, 209, 58);
+        let pane = CellRect::new(157, 0, 52, 58);
+        let card = CellRect::new(0, 21, 39, 10);
+        let cells = Cells { w: 8, h: 17, cols: 50, rows: 56 };
+        let grid = grid_of(frame, area, pane, Some(cells));
+        assert_eq!((grid.x, grid.y), (0, 63), "the grid starts below the title bar, not at the frame's corner");
+        assert_eq!((grid.skip_x, grid.skip_y), (31, 1), "the area starts past the sidebar and the tab bar");
+        assert_eq!((grid.inset_x, grid.inset_y), (1, 1), "the pane's own grid starts inside its border");
+        assert_eq!(geometry(grid, area, pane, card).as_deref(), Some("312x170+1512+454"));
+    }
+
+    #[test]
+    fn without_a_cell_size_the_frame_is_all_there_is() {
+        // Every terminal answers the pixel size of its grid, but not all of them: when the answer is
+        // empty this falls back to scaling the area into the whole window frame, which is what it did
+        // before the grid was measured. It is wrong by the chrome, and visibly better than nothing.
+        let frame = (10, 20, 1000, 500);
+        let area = CellRect::new(0, 0, 100, 50);
+        let pane = CellRect::new(0, 0, 100, 50);
+        assert_eq!(geometry(grid_of(frame, area, pane, None), area, pane, CellRect::new(10, 5, 20, 10)).as_deref(), Some("200x100+110+70"));
     }
 
     #[test]
@@ -750,7 +850,7 @@ mod tests {
         let area = CellRect::new(0, 0, 100, 50);
         let pane = CellRect::new(0, 0, 100, 50);
         let card = CellRect::new(10, 20, 40, 10);
-        let got = geometry((-120, -25, 1000, 500), area, pane, card).expect("geometry");
+        let got = geometry(grid_of((-120, -25, 1000, 500), area, pane, None), area, pane, card).expect("geometry");
         assert_eq!(got, "400x100-20+175");
         assert!(!got.contains("+-"), "{got}");
     }
