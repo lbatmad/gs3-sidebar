@@ -31,17 +31,23 @@ pub fn git_dir(root:&Path)->PathBuf {
     let p=root.join(".git");
     if p.is_file() {gitdir_target(root,&fs::read_to_string(&p).unwrap_or_default())} else {p}
 }
-pub fn git_snapshot(cwd:&Path)->Git {
+/// One page of the graph, and the ceiling: the rail is a rail, not a log viewer.
+pub const LOG_PAGE:usize=30; pub const LOG_MAX:usize=300;
+pub fn git_snapshot(cwd:&Path)->Git { git_log(cwd,LOG_PAGE) }
+/// The same snapshot with the graph asking for `limit` commits: the extra pages only change that number.
+pub fn git_log(cwd:&Path,limit:usize)->Git {
+    let limit=limit.clamp(1,LOG_MAX);
     let Some(root)=git_root(cwd) else {return Git{error:Some("not a git repo".into()),..Git::default()}};
     let head=fs::read_to_string(git_dir(&root).join("HEAD")).unwrap_or_default();
-    let mut g=Git{branch:head_name(&head),..Git::default()}; let mut errors=Vec::new();
+    let mut g=Git{branch:head_name(&head),log_limit:limit,..Git::default()}; let mut errors=Vec::new();
     // Porcelain paths are relative to the repository root: every command runs there.
     let cwd=root.as_path();
     match git(cwd,&["status","--porcelain=v1","-z","--no-renames","--untracked-files=all"]) {Ok(s)=>{let (files,counts)=parse_status(&s); g.dirty=Some(files.len()); g.files=files; g.counts=counts;},Err(e)=>errors.push(e.to_string())}
     // No commits yet: there is no HEAD to diff against.
     if let Ok(s)=git(cwd,&["diff","HEAD","--numstat","-z","--no-renames"]) {(g.added,g.deleted)=apply_numstat(&mut g.files,&s);}
     if let Ok(s)=git(cwd,&["rev-list","--left-right","--count","@{u}...HEAD"]) {let n:Vec<u64>=s.split_whitespace().filter_map(|x|x.parse().ok()).collect(); if n.len()==2 {g.ahead_behind=Some((n[1],n[0]));}}
-    match git(cwd,&["log","--graph","--oneline","--decorate=short","--color=never","-n","30"]) {
+    let n=limit.to_string();
+    match git(cwd,&["log","--graph","--oneline","--decorate=short","--color=never","-n",&n]) {
         Ok(s)=>{g.commits=graph_commits(&s); g.graph=s.lines().map(str::to_owned).collect();}
         Err(e) if e.to_string().contains("does not have any commits")=>{},
         Err(e)=>errors.push(e.to_string())
@@ -458,7 +464,7 @@ pub fn herdr(socket:PathBuf,id:String,tx:Sender<Event>) {
     });
 }
 
-pub enum Local { Refresh, Session(Option<String>), Changed(notify::Event) }
+pub enum Local { Refresh, Session(Option<String>), Changed(notify::Event), More(usize) }
 /// Pi creates a new session file on `/new` / `/resume`, but herdr does not always emit
 /// `pane_updated` for the change: a new `.jsonl` next to the bound session re-queries the pane.
 pub fn is_new_session_file(e:&notify::Event,session:&Path)->bool {
@@ -482,11 +488,14 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
         let send_mcp=|session:&Option<PathBuf>,sent:&mut Option<Vec<Mcp>>|{let now=session.as_deref().and_then(mcp); if now!=*sent {*sent=now.clone(); let _=tx.send(Event::Mcp(now));}};
         // Same rule for the PROF roster (agent dir files): only a changed roster becomes an event.
         let mut roster_sent:Option<Roster>=None;
+        let mut page=LOG_PAGE;
         let send_roster=|session:&Option<PathBuf>,sent:&mut Option<Roster>|{let now=session.as_deref().and_then(roster_of); if now!=*sent {*sent=now.clone(); let _=tx.send(Event::Roster(now));}};
         loop {
             let msg=match git_deadline {Some(t)=>rx.recv_timeout(t.saturating_duration_since(Instant::now())),None=>rx.recv().map_err(|_|mpsc::RecvTimeoutError::Disconnected)};
             match msg {
-                Ok(Local::Refresh)=>{let _=tx.send(Event::Git(git_snapshot(&cwd))); let _=tx.send(Event::Engram(engram(&cwd))); send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent); let _=tx.send(Event::Stack(stack(&cwd,session.as_deref())));}
+                // The graph keeps the page it was asked for: a refresh must not shrink the list under the wheel.
+                Ok(Local::More(n))=>{page=n.clamp(LOG_PAGE,LOG_MAX); let _=tx.send(Event::Git(git_log(&cwd,page)));}
+                Ok(Local::Refresh)=>{let _=tx.send(Event::Git(git_log(&cwd,page))); let _=tx.send(Event::Engram(engram(&cwd))); send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent); let _=tx.send(Event::Stack(stack(&cwd,session.as_deref())));}
                 Ok(Local::Session(path))=>{
                     if let (Some(w),Some(p))=(&mut watcher,&session) {let _=w.unwatch(p.parent().unwrap_or(p));}
                     session=path.map(PathBuf::from); tail=Tail::default();
@@ -698,6 +707,9 @@ mod tests {
         sh("git checkout -qb feat && printf 'x\\n' > g.txt && git add g.txt && git commit -qm side && git checkout -q main");
         sh("printf 'a\\nc\\n' > f.txt && printf 'new\\n' > sub/n.txt && printf 'S=1\\n' > .env && ln -s /etc/hostname link");
         let g=git_snapshot(&dir.join("sub"));
+        // Pages: one commit asked for is one commit read; the ceiling clamps a silly number.
+        let one=git_log(&dir,1); assert_eq!((one.commits.len(),one.log_limit),(1,1),"una página de uno");
+        assert_eq!(git_log(&dir,10_000).log_limit,LOG_MAX,"el techo manda");
         assert_eq!(g.error,None); assert_eq!((g.counts.modified,g.counts.untracked),(1,3)); assert_eq!((g.added,g.deleted),(1,1));
         assert!(g.files.iter().any(|f|f.path=="sub/n.txt"),"root-relative paths from a subdirectory: {:?}",g.files);
         assert!(g.graph[0].contains("(HEAD -> main)") && g.commits.len()==1 && g.commits[0].ends_with(" base"),"{:?}",g.graph);

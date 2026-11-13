@@ -35,6 +35,8 @@ pub struct Ui {
     pub config_path: Option<PathBuf>, pub save: bool, pub save_error: Option<String>,
     /// GIT tab: graph or branches view, branch being diffed against HEAD, file whose diff is previewed.
     pub git_view: GitView, pub git_branch: Option<String>, pub git_file: Option<String>, pub git_commit: Option<String>,
+    /// A bigger page of the graph was asked for by the wheel or by the card's own row.
+    pub git_more: Option<usize>,
     /// TREE tab: expanded folders (sorted, root-relative) and the selected file.
     pub tree_open: Vec<String>, pub tree_pick: Option<String>,
     /// Explicit model-section click; main consumes this intent off the render path.
@@ -67,7 +69,7 @@ pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, Scrol
     /// playlist inside its card.
     ScrollList(usize), ScrollVideos(usize), YtLists, YtOpenPlaylist(String), YtPlayVideo(usize), Commit(String),
     /// TREE: toggle a folder, fold every folder, open a changed file's diff in GIT, select an unchanged file.
-    Dir(String), Fold, Inspect(String), Pick(String), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot,
+    Dir(String), Fold, Inspect(String), Pick(String), MoreCommits(usize), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot,
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
     Search, PlayPause, PrevTrack, NextTrack, Seek(f64),
     /// MEDIA · Spotify: consent in the browser, renew the stored token, list playlists, open one.
@@ -138,6 +140,7 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::File(f) => ui.git_file = if ui.git_file.as_ref() == Some(&f) { None } else { Some(f) },
         Action::Dir(d) => { let o = &mut ui.tree_open; match o.iter().position(|x| *x == d) { Some(i) => { o.remove(i); } None => { o.push(d); o.sort(); } } }
         Action::Fold => ui.tree_open.clear(),
+        Action::MoreCommits(n) => ui.git_more = Some(n.min(crate::sources::LOG_MAX)),
         // Navigation only: the diff opens inside the HUD, in the GIT tab.
         Action::Inspect(p) => { ui.tree_pick = Some(p.clone()); ui.git_branch = None; ui.git_file = Some(p); act(ui, Action::Tab(Tab::Git)); }
         Action::Pick(p) => ui.tree_pick = if ui.tree_pick.as_ref() == Some(&p) { None } else { Some(p) },
@@ -646,6 +649,13 @@ fn git_card(s: &State, w: usize) -> Card {
                 if open { segs.insert(0, seg("▸ ", PinkBright)); }
                 c.row(segs, vec![]);
                 if let Some(h) = hash { c.on_click(Action::Commit(h)); }
+            }
+            // One page at a time: the row says how many more there are, and reaching the end of the body asks
+            // for the same page on its own. Fewer commits than the page means the repository ended.
+            if g.commits.len() >= g.log_limit && g.log_limit < crate::sources::LOG_MAX {
+                let next = (g.log_limit * 2).min(crate::sources::LOG_MAX);
+                c.row(vec![seg("⋯ ", Pink), seg(format!("cargar {} más", next - g.log_limit), Dim)], vec![]);
+                c.on_click(Action::MoreCommits(next));
             }
             if g.added + g.deleted > 0 {
                 let n = g.counts.modified + g.counts.staged;
@@ -2609,6 +2619,25 @@ mod tests {
         s.ui.tab = Tab::Main;
         assert!(panel_show(&s).is_none());
     }
+    #[test]
+    fn the_graph_offers_one_more_page_and_stops_when_the_repo_ends() {
+        let mut s = sample();
+        s.ui.tab = Tab::Git;
+        // A page that filled up: thirty asked, thirty read, so there may be more behind them.
+        s.git.graph = (0..30).map(|i| format!("* abc{i:04} commit {i}")).collect();
+        s.git.commits = (0..30).map(|i| format!("abc{i:04} commit {i}")).collect();
+        s.git.log_limit = 30;
+        let f = frame(&s, 60, 0);
+        let (x, y) = at(&f, "cargar 30 más");
+        let a = click(&f, x, y).expect("la fila de la página es clicable");
+        assert_eq!(a, Action::MoreCommits(60), "la página siguiente duplica el pedido");
+        assert!(apply(&mut s, Event::Ui(a)));
+        assert_eq!(s.ui.git_more, Some(60), "y el pedido sale al worker");
+        // Fewer commits than the page: the repository ended, so there is nothing more to ask for.
+        s.git.commits.truncate(3);
+        assert!(!render_lines(&s, 60).iter().any(|l| l.contains("cargar")), "sin más commits no hay fila");
+    }
+
     #[test]
     fn clicking_tabs_and_wheel_on_the_bar() {
         let mut s = sample(); let f = frame(&s, 60, 40);

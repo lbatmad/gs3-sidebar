@@ -73,6 +73,8 @@ pub struct Git {
     /// Working tree (`status --porcelain=v1 -z`) with `diff HEAD --numstat` line counts and totals.
     pub files:Vec<FileChange>, pub counts:Counts, pub added:u64, pub deleted:u64,
     pub branches:Vec<Branch>,
+    /// How many commits `git log` was asked for: the graph grows one page at a time, up to `LOG_MAX`.
+    pub log_limit:usize,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FileKind { #[default] Modified, Added, Deleted, Untracked, Conflict }
