@@ -368,7 +368,8 @@ pub fn roster_of(session:&Path)->Option<Roster> {
     let agents:Vec<(String,String)>=files("agents","md").into_iter().take(64).filter_map(|p|Some((p.file_stem()?.to_string_lossy().into_owned(),fs::read_to_string(&p).ok()?))).collect();
     let tasks:Vec<Value>=files("gentle-agents/tasks","json").into_iter().rev().take(200).filter_map(|p|serde_json::from_slice::<Value>(&fs::read(p).ok()?).ok()).map(|v|v["task"].clone()).filter(|t|t.is_object()).collect();
     let (models,source)=profile_models(profile_models_path(&dir));
-    Some(configured_roster(roster(&settings,&agents,&tasks),models.as_ref(),source))
+    let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_millis() as u64).unwrap_or(0);
+    Some(configured_roster(roster(&settings,&agents,&tasks,now),models.as_ref(),source))
 }
 /// A change inside the task history: Gentle AI rewrites one JSON per subagent task when it launches and
 /// again when it ends, so watching that directory is what makes "en curso" mean something.
@@ -825,7 +826,7 @@ mod tests {
             if let Ok(Event::Roster(Some(r)))=rx.recv_timeout(Duration::from_millis(200)) { if r.active==1 {alive=Some(r); break} }
         }
         let r=alive.expect("un archivo de tarea nuevo tiene que llegar por el watcher, sin apretar r");
-        assert_eq!(r.running,["gentle-ai-worker · corriendo"],"y decir cuál está viva");
+        assert_eq!(r.running.iter().map(|t|t.text.as_str()).collect::<Vec<_>>(),["gentle-ai-worker · corriendo"],"y decir cuál está viva");
         let _=fs::remove_dir_all(&root);
     }
     #[test]

@@ -1115,12 +1115,18 @@ fn profiles_card(s: &State, w: usize) -> Card {
     if r.total > 0 {
         c.divider();
         // Counted, not implied: `done/total` read as "the rest is pending" when the rest was failures.
+        let title = vec![seg("📋 Tareas", Pink)];
         let mut right = vec![seg(format!("{} ✓", r.done), Mint)];
-        if r.failed > 0 { right.push(seg(" · ", Text)); right.push(seg(format!("{} ✗", r.failed), Coral)); }
-        if r.active > 0 { right.push(seg(" · ", Text)); right.push(seg(format!("{} en curso", r.active), Gold)); }
-        c.row(vec![seg("📋 Task Manager", Pink)], right);
-        // Every task alive right now, newest first: one is not "the" running task when five were launched.
-        for t in r.running.iter().take(5) { c.row(vec![seg("   ▶ ", Text), seg(t.clone(), Text)], vec![]); }
+        if r.failed > 0 { right.extend([seg(" · ", Text), seg(format!("{} ✗", r.failed), Coral)]); }
+        if r.active > 0 { right.extend([seg(" · ", Text), seg(format!("{} en curso", r.active), Gold)]); }
+        // The title is short on purpose: "Task Manager" plus the counters did not fit in 42 columns and the
+        // card clipped it to "Task Man". If even "Tareas" does not fit beside them, they get their own row.
+        if width_of(&title) + width_of(&right) + 2 <= w.saturating_sub(2) { c.row(title, right) }
+        else { c.row(title, vec![]); c.row(vec![], right); }
+        // Every task alive right now, newest first, with how long it has been going.
+        for t in r.running.iter().take(5) {
+            c.row(vec![seg("   ▶ ", Text), seg(t.text.clone(), Text), seg(format!(" · {}", t.elapsed), Dim)], vec![]);
+        }
         if r.running.len() > 5 { c.row(vec![seg(format!("   … {} más en curso", r.running.len() - 5), Dim)], vec![]); }
     }
     c
@@ -2355,7 +2361,7 @@ mod tests {
     fn roster_sample() -> State {
         let mut s = sample();
         let a = |n: &str, m: &str, t: &str| Agent { name: n.into(), model: m.into(), thinking: t.into() };
-        s.roster = Some(Roster { model: "cpamc/gpt-6.1-sol".into(), thinking: "medium".into(), total: 6, done: 5, failed: 0, active: 1, running: vec!["gentle-ai-worker · build".into()],
+        s.roster = Some(Roster { model: "cpamc/gpt-6.1-sol".into(), thinking: "medium".into(), total: 6, done: 5, failed: 0, active: 1, running: vec![Running { text: "gentle-ai-worker · build".into(), elapsed: "3m".into() }],
             agents: vec![a("gentle-ai-explore", "cpamc/gpt-6.1-sol", "medium"), a("jd-judge-a", "x/claude-opus-high", "high"), a("my-helper", "y/long-model-name-v2", "xhigh"), a("review-risk", "", "")], ..Roster::default() });
         s
     }
@@ -2391,14 +2397,29 @@ mod tests {
         assert!(find(&l, "• gentle-ai-explore").ends_with("gpt-6.1-sol (medium) ║"));
         assert!(find(&l, "• jd-judge-a").contains("claude-opus (high)"), "-high suffix dropped like shortModelName");
         assert!(find(&l, "• review-risk").contains("— "), "missing model shows a dash");
-        assert!(find(&l, "📋 Task Manager").contains("5 ✓ · 1 en curso")); find(&l, "▶ gentle-ai-worker · build");
+        let counters = find(&l, "📋 Tareas");
+        assert!(counters.contains("5 ✓ · 1 en curso"), "{counters}");
+        assert!(l.iter().any(|x| x.contains("▶ gentle-ai-worker · build") && x.contains("· 3m")), "la fila de la tarea viva dice hace cuánto corre");
         // Failures are said out loud, and every running task is listed, not just the newest.
         let mut f = roster_sample();
-        if let Some(r) = f.roster.as_mut() { r.failed = 2; r.active = 3; r.running = vec!["a · uno".into(), "b · dos".into(), "c · tres".into()]; }
+        if let Some(r) = f.roster.as_mut() {
+            r.failed = 2; r.active = 3;
+            r.running = vec![
+                Running { text: "a · uno".into(), elapsed: "2m".into() },
+                Running { text: "b · dos".into(), elapsed: "1m".into() },
+                Running { text: "c · tres".into(), elapsed: "9s".into() },
+            ];
+        }
         let l = on(&f, Tab::Prof, 60);
-        let row = find(&l, "📋 Task Manager");
+        let row = find(&l, "📋 Tareas");
         assert!(row.contains("5 ✓") && row.contains("2 ✗") && row.contains("3 en curso"), "{row}");
-        assert!(l.iter().any(|x| x.contains("▶ a · uno")) && l.iter().any(|x| x.contains("▶ c · tres")), "las tres vivas");
+        assert!(l.iter().any(|x| x.contains("▶ a · uno") && x.contains("· 2m")) && l.iter().any(|x| x.contains("▶ c · tres")), "las tres vivas, con su tiempo");
+        // Narrow: the counters would not fit beside the title, so they take a row of their own instead of
+        // being clipped to "Task Man".
+        let narrow = on(&f, Tab::Prof, 36);
+        let i = narrow.iter().position(|x| x.contains("📋 Tareas")).unwrap();
+        assert!(!narrow[i].contains("✓"), "el título queda solo: {}", narrow[i]);
+        assert!(narrow[i + 1].contains("5 ✓") && narrow[i + 1].contains("2 ✗"), "y los contadores enteros: {}", narrow[i + 1]);
         // Family tones of the reference: ODD core cyan, Judgment Day gold, review mint, custom pink bullet + text.
         let mut p = s.clone(); p.ui.tab = Tab::Prof; let f = frame(&p, 60, 0); let tone = |needle: &str| f.lines.iter().flatten().find(|g| g.text == needle).map(|g| g.tone);
         assert_eq!((tone("gentle-ai-explore"), tone("jd-judge-a"), tone("review-risk"), tone("my-helper")), (Some(Tone::Cyan), Some(Tone::Gold), Some(Tone::Mint), Some(Tone::Text)));

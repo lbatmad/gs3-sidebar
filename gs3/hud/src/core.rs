@@ -241,12 +241,25 @@ pub enum Preview {
 impl Preview {
     pub fn path(&self)->&str { match self { Preview::Text{path,..}|Preview::Markdown{path,..}|Preview::Code{path,..}|Preview::Image{path,..}|Preview::Refused{path,..}=>path } }
 }
+/// A subagent task alive right now: what it is and how long it has been going.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Running { pub text:String, pub elapsed:String }
+/// `12s`, `6m`, `1h 4m`, `2d 3h` — the granularity a glance needs, never a raw millisecond count.
+pub fn elapsed(ms:u64)->String {
+    let s=ms/1000;
+    match s {
+        0..=59=>format!("{s}s"),
+        60..=3599=>format!("{}m",s/60),
+        3600..=86_399=>format!("{}h {}m",s/3600,(s%3600)/60),
+        _=>format!("{}d {}h",s/86_400,(s%86_400)/3600),
+    }
+}
 /// PROF roster: host defaults (`settings.json`), subagents (`agents/*.md`) and their task history.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>,
     /// Task history: everything read, what finished, what failed, and what is running right now (newest
     /// first, `agent · label`). `done + failed + active` is what the window shows of `total`.
-    pub total:usize, pub done:usize, pub failed:usize, pub active:usize, pub running:Vec<String>,
+    pub total:usize, pub done:usize, pub failed:usize, pub active:usize, pub running:Vec<Running>,
     pub profile_source:String, pub configured_host:Option<Agent> }
 /// One subagent: model/thinking from its frontmatter (`model`, `effort`/`thinking`), else its latest task, else the host.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -256,7 +269,7 @@ fn frontmatter<'a>(md:&'a str,key:&str)->Option<&'a str> {
     body[..end].lines().find_map(|l|l.strip_prefix(key)?.strip_prefix(':').map(|v|v.trim().trim_matches(['"','\''])).filter(|v|!v.is_empty()))
 }
 /// `agents` = (file stem, markdown); `tasks` = the `task` objects of `gentle-agents/tasks/*.json`. Names and models only.
-pub fn roster(settings:&Value,agents:&[(String,String)],tasks:&[Value])->Roster {
+pub fn roster(settings:&Value,agents:&[(String,String)],tasks:&[Value],now_ms:u64)->Roster {
     let model=match (text(settings,"defaultProvider"),text(settings,"defaultModel")) {(_,"")=>String::new(),("",m)=>m.into(),(p,m)=>format!("{p}/{m}")};
     let thinking=text(settings,"defaultThinkingLevel").to_string();
     let mut tasks:Vec<&Value>=tasks.iter().collect(); tasks.sort_by_key(|t|t["createdAt"].as_i64().unwrap_or(0));
@@ -268,8 +281,12 @@ pub fn roster(settings:&Value,agents:&[(String,String)],tasks:&[Value])->Roster 
     }).collect();
     list.sort_by(|a,b|a.name.cmp(&b.name));
     let live=|t:&&&Value|matches!(text(t,"status"),"running"|"queued"|"pending"|"waiting"|"starting");
-    let describe=|t:&&Value|format!("{} · {}",text(t,"agent"),text(t,"label"));
-    let running:Vec<String>=tasks.iter().rev().filter(|t|live(t)).map(describe).collect();
+    // The clock is a parameter: a roster built from the same files at the same instant is the same value.
+    let describe=|t:&&Value|Running{
+        text:format!("{} · {}",text(t,"agent"),text(t,"label")),
+        elapsed:elapsed(now_ms.saturating_sub(t["createdAt"].as_u64().unwrap_or(now_ms))),
+    };
+    let running:Vec<Running>=tasks.iter().rev().filter(|t|live(t)).map(describe).collect();
     Roster{model,thinking,agents:list,total:tasks.len(),
         done:tasks.iter().filter(|t|text(t,"status")=="completed").count(),
         failed:tasks.iter().filter(|t|text(t,"status")=="failed").count(),
@@ -626,21 +643,23 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
             json!({"agent":"jd-judge-a","status":"failed","label":"new","model":"cpamc/m-new","thinking":"xhigh","createdAt":5}),
             json!({"agent":"gentle-ai-explore","status":"running","label":"r","model":"cpamc/ignored","thinking":"high","createdAt":3}),
             json!({"agent":"gone","status":"completed","label":"g","createdAt":2})];
-        let r=roster(&settings,&agents,&tasks);
+        let r=roster(&settings,&agents,&tasks,10_000);
         assert_eq!((r.model.as_str(),r.thinking.as_str(),r.total,r.done,r.active),("cpamc/gpt-6.1-sol","medium",4,2,1));
-        assert_eq!((r.failed,r.active,r.running.iter().map(String::as_str).collect::<Vec<_>>()),(1,1,vec!["gentle-ai-explore · r"]),"una falla, una viva, y la viva se nombra");
+        assert_eq!((r.failed,r.active),(1,1),"una falla y una viva");
+        assert_eq!(r.running,[Running{text:"gentle-ai-explore · r".into(),elapsed:"9s".into()}],"la viva se nombra y dice hace cuánto corre");
+        assert_eq!((elapsed(0).as_str(),elapsed(12_000).as_str(),elapsed(360_000).as_str(),elapsed(3_840_000).as_str(),elapsed(90_000_000).as_str()),("0s","12s","6m","1h 4m","1d 1h"),"granularidad de un vistazo");
         let a=|n:&str|r.agents.iter().find(|a|a.name==n).unwrap().clone();
         assert_eq!(r.agents.iter().map(|a|a.name.as_str()).collect::<Vec<_>>(),["gentle-ai-explore","jd-judge-a","review-risk"]);
         assert_eq!(a("gentle-ai-explore"),Agent{name:"gentle-ai-explore".into(),model:"other/fast-1".into(),thinking:"low".into()});
         assert_eq!(a("jd-judge-a"),Agent{name:"jd-judge-a".into(),model:"cpamc/m-new".into(),thinking:"xhigh".into()});
         assert_eq!(a("review-risk"),Agent{name:"review-risk".into(),model:"cpamc/gpt-6.1-sol".into(),thinking:"medium".into()});
-        assert_eq!(roster(&json!({}),&[],&[]),Roster::default());
+        assert_eq!(roster(&json!({}),&[],&[],0),Roster::default());
     }
     #[test]
     fn profiles_use_only_canonical_assignments_and_preserve_host_counts() {
         let original=roster(&json!({"defaultProvider":"base","defaultModel":"host","defaultThinkingLevel":"medium"}),
             &[("worker".into(),"---\nname: worker\nmodel: stale/md\n---".into())],
-            &[json!({"agent":"worker","model":"stale/task","status":"completed"})]);
+            &[json!({"agent":"worker","model":"stale/task","status":"completed"})],0);
         let values=json!({"orchestrator":{"model":" canonical/host ","thinking":"high"},
             "worker":{"model":"canonical/worker","thinking":null,"effort":"xhigh","token":"SENSITIVE"},
             "review-refuter":"canonical/refuter","review-validator":{},
