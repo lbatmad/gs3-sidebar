@@ -777,7 +777,9 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 /// side wrapped inside its own column so a long line never crosses over.
 pub fn panel_text(d: &Detail, hash: &str) -> String {
     use Tone::*;
-    const COL: usize = 58;
+    // Half of the window at its default width (70% of a 1920 px screen, 12 pt monospace ≈ 185 columns):
+    // both panels get the same size, and each one wraps inside it.
+    const COL: usize = 90;
     let mut out = format!("{} {} {} {}\n\n", sgr(Gold, &format!("◆ commit {hash}")), sgr(Muted, "["), sgr(Coral, "✕"), sgr(Muted, "] [-]"));
     if d.files.is_empty() { out.push_str(&sgr(Dim, "  sin archivos")); out.push('\n'); }
     for f in &d.files {
