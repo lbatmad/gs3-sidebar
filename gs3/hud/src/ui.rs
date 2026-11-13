@@ -52,6 +52,8 @@ pub struct Ui {
     pub yt_lists: Option<String>, pub video_scroll: usize,
     /// Explicit click on the Flameshot icon; main consumes this intent off the render path.
     pub screenshot: bool,
+    /// PROF: the profile name a click left selected. Display only: the HUD never applies it.
+    pub profile_pick: Option<String>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GitView { #[default] Graph, Branches }
@@ -72,6 +74,8 @@ pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, Scrol
     ScrollList(usize), ScrollVideos(usize), ScrollGraph(usize), YtLists, YtOpenPlaylist(String), YtPlayVideo(usize), Commit(String),
     /// TREE: toggle a folder, fold every folder, open a changed file's diff in GIT, select an unchanged file.
     Dir(String), Fold, Inspect(String), Pick(String), MoreCommits(usize), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot,
+    /// PROF: a click on a profile row; the HUD only keeps the name visible for the human.
+    PickProfile(String),
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
     Search, PlayPause, PrevTrack, NextTrack, Seek(f64),
     /// MEDIA · Spotify: consent in the browser, renew the stored token, list playlists, open one.
@@ -147,6 +151,7 @@ pub fn act(ui: &mut Ui, a: Action) {
         // Navigation only: the diff opens inside the HUD, in the GIT tab.
         Action::Inspect(p) => { ui.tree_pick = Some(p.clone()); ui.git_branch = None; ui.git_file = Some(p); act(ui, Action::Tab(Tab::Git)); }
         Action::Pick(p) => ui.tree_pick = if ui.tree_pick.as_ref() == Some(&p) { None } else { Some(p) },
+        Action::PickProfile(p) => ui.profile_pick = if ui.profile_pick.as_ref() == Some(&p) { None } else { Some(p) },
         _ => {}
     }
 }
@@ -443,7 +448,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     match ui.tab {
         Tab::Main => { voice_row(&mut body, s.voice, cw, ui.config.plain_controls); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); }
         Tab::Git => { body.push(ui, git_card(s, cw)); if let Some(c) = commit_card(s, cw) { body.push(ui, c); } body.push(ui, worktree_card(s, cw)); body.push(ui, pr_card(s, cw)); }
-        Tab::Prof => body.push(ui, profiles_card(s, cw)),
+        Tab::Prof => { if let Some(c) = profile_store_card(s, cw) { body.push(ui, c); } body.push(ui, profiles_card(s, cw)); }
         Tab::Mem => { for c in [engram_card(s, cw), handoff_card(s, cw), stack_card(s, cw), tools_card(s, cw), mcp_card(s, cw)] { body.push(ui, c); } }
         Tab::Tree => body.push(ui, tree_card(s, cw)),
         Tab::Media => { body.push(ui, spotify_card(s, cw, show_cover)); if let Some(c) = tracks_card(s, cw, ui.track_scroll) { body.push(ui, c); } body.push(ui, youtube_card(s, cw)); if let Some(c) = videos_card(s, cw) { body.push(ui, c); } }
@@ -1079,6 +1084,38 @@ fn tree_card(s: &State, w: usize) -> Card {
 }
 
 // ---- 3:PROF ---------------------------------------------------------------------------
+/// The `/gentle:profiles` store card: one row per profile, the active one marked. It only appears
+/// when there is a real choice (more than one profile), and a click only leaves the name selected
+/// for the human — the HUD never writes the store nor applies the profile.
+fn profile_store_card(s: &State, w: usize) -> Option<Card> {
+    use Tone::*;
+    let r = s.roster.as_ref()?;
+    if r.profiles.len() < 2 { return None }
+    let mut c = Card::new("profiles-store", mark("Perfiles", Cyan), w);
+    for p in &r.profiles {
+        let picked = s.ui.profile_pick.as_deref() == Some(p.name.as_str());
+        // The store marks its own active profile (`active`); a stale marker would have been dropped by
+        // the parser, so no row ever carries a mark it cannot justify.
+        let (bullet, tone) = if p.active { ("● ", Mint) } else { ("○ ", Dim) };
+        let left = if picked { vec![seg(bullet, tone), seg("▸ ", Gold), seg(p.name.clone(), Gold)] }
+                   else { vec![seg(bullet, tone), seg(p.name.clone(), Text)] };
+        // The store holds no descriptions: the role count and the host model are the distinctive data.
+        let roles = if p.roles == 1 { "1 rol".to_string() } else { format!("{} roles", p.roles) };
+        let mut right = vec![seg(roles, Dim)];
+        if !p.host.is_empty() { right.push(seg(" · ", Text)); right.push(seg(p.host.clone(), Gold)); }
+        // One row when it fits; at narrow widths the detail takes its own row (the `model_rows` pattern)
+        // so the name is never clipped by its data.
+        if width_of(&left) + width_of(&right) + 2 <= w.saturating_sub(2) {
+            c.row(left, right);
+            c.on_click(Action::PickProfile(p.name.clone()));
+        } else {
+            c.row(left, vec![]); c.on_click(Action::PickProfile(p.name.clone()));
+            let mut sub = vec![seg("  ", Text)]; sub.extend(right);
+            c.row(sub, vec![]); c.on_click(Action::PickProfile(p.name.clone()));
+        }
+    }
+    Some(c)
+}
 /// `• name ··· model (effort)` on one row when it fits, else the model on its own indented row.
 fn model_rows(c: &mut Card, left: Vec<Seg>, model: &str, effort: &str) {
     use Tone::*;
@@ -2393,6 +2430,59 @@ mod tests {
         find(&prof,"profile-host (high)"); find(&prof,"profile-refuter");
         assert!(!prof.iter().any(|l|l.contains("long-model-name-v2") || l.contains("claude-opus")));
         find(&prof,"5 ✓ · 1 en curso");
+    }
+    #[test]
+    fn profile_store_card_lists_profiles_and_picks_without_writing() {
+        let mut s = roster_sample();
+        let mut r = s.roster.take().unwrap();
+        r.profiles = profiles(Some(&serde_json::json!({
+            "kind":"gentle-pi.agent_model_profiles","version":1,"active":"dos",
+            "profiles":{"uno":{"orchestrator":{"model":"a/host-1"},"worker":{"model":"a/m2"}},
+                "dos":{"orchestrator":"b/m1"},"raro ..":{"worker":"c/m1"}}})));
+        s.roster = Some(r); s.ui.tab = Tab::Prof;
+        let l = on(&s, Tab::Prof, 48);
+        assert!(find(&l, "● dos").contains("b/m1"), "el activo lleva su marca y el modelo del host");
+        assert!(find(&l, "○ uno").contains("2 roles"), "la cuenta de roles es el dato distintivo");
+        find(&l, "○ raro ..");
+        // A click only leaves the name selected for the human, and a second one takes it back.
+        let f = frame(&s, 48, 0); let (x, y) = at(&f, "○ uno");
+        assert_eq!(click(&f, x, y), Some(Action::PickProfile("uno".into())));
+        assert!(apply(&mut s, Event::Ui(Action::PickProfile("uno".into()))));
+        assert_eq!(s.ui.profile_pick.as_deref(), Some("uno"));
+        assert!(!s.ui.save, "la selección no toca el disco");
+        assert!(on(&s, Tab::Prof, 48).iter().any(|l| l.contains("▸ uno")), "la selección se ve");
+        apply(&mut s, Event::Ui(Action::PickProfile("uno".into())));
+        assert_eq!(s.ui.profile_pick, None);
+        assert!(!on(&s, Tab::Prof, 48).iter().any(|l| l.contains("▸ uno")), "y se aplana al segundo clic");
+    }
+    #[test]
+    fn one_or_zero_profiles_keep_the_prof_tab_quiet() {
+        for store in [serde_json::json!({"kind":"gentle-pi.agent_model_profiles","version":1}),
+                      serde_json::json!({"kind":"gentle-pi.agent_model_profiles","version":1,"profiles":{"only":{"worker":"m"}}})] {
+            let mut s = roster_sample();
+            let mut r = s.roster.take().unwrap();
+            r.profiles = profiles(Some(&store));
+            s.roster = Some(r);
+            let l = on(&s, Tab::Prof, 48);
+            assert!(!l.iter().any(|l| l.contains("Perfiles")), "sin elección no hay card de store: {store}");
+        }
+    }
+    #[test]
+    fn profile_rows_survive_narrow_widths() {
+        let mut s = roster_sample();
+        let mut r = s.roster.take().unwrap();
+        r.profiles = profiles(Some(&serde_json::json!({
+            "kind":"gentle-pi.agent_model_profiles","version":1,"active":"largo",
+            "profiles":{"largo":{"orchestrator":"provider/model-with-a-very-long-name-x"},"otro":{"worker":"m"}}})));
+        s.roster = Some(r);
+        for width in [36u16, 42, 48] {
+            let l = on(&s, Tab::Prof, width);
+            assert!(l.iter().all(|l| l.width() <= usize::from(width)), "nada se pasa de {width}");
+            assert!(l.iter().any(|l| l.contains("largo")) && l.iter().any(|l| l.contains("otro")), "ambos nombres legibles a {width}");
+        }
+        // Narrow: the long host model takes its own row instead of clipping the name beside it.
+        let l = on(&s, Tab::Prof, 36);
+        assert!(!find(&l, "● largo").contains("provider/model"), "el modelo largo no va al lado del nombre");
     }
     #[test]
     fn prof_tab_lists_host_and_subagents() {
