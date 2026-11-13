@@ -198,3 +198,13 @@ S13. El bloque `📋 Task Manager` de PROF cuenta el historial de tareas del age
 |---|------|------|--------|
 | T19 | S13 | `Roster { failed, running }`, el conteo en `core::roster` y la tarjeta con ✓/✗/en curso | d85abf4 |
 | T20 | S13 | watcher de `gentle-agents/tasks` con `roster_deadline` y `is_task_file` | d85abf4 |
+| T21 | S13 | `📋 Tareas` medido con `width_of`, `Running { text, elapsed }` y `core::elapsed` | 15ef85e |
+
+L11 (pedido del humano, textual):
+
+> ajustalo y agrega el tiempo de la tarea
+
+S13 suma: el título del bloque es `📋 Tareas` (corto, medido con `width_of`; si los contadores no entran al
+lado, bajan a su propia fila en vez de recortarse a «Task Man») y cada tarea viva dice cuánto lleva corriendo
+(`· 6m`, `· 1h 4m`). El tiempo lo calcula `core::roster` con un `now_ms` explícito —el reloj entra como
+parámetro, así un roster es función pura de sus archivos y su instante— y `core::elapsed` lo formatea.
