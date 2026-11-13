@@ -376,7 +376,11 @@ fn ancestors() -> Vec<i64> {
 /// used to need Accessibility: only a window's *title* is protected, its bounds are not, so asking for
 /// geometry costs no permission and works from a detached herdr server.
 fn window_rect() -> Option<(i64,i64,i64,i64)> {
-    let owners = serde_json::to_string(&ancestors()).ok()?;
+    // The terminal is the *topmost* ancestor, not the nearest one: the rail hangs off whatever started it
+    // (a supervisor, a herdr daemon), and a daemon that owns a window of its own would answer for the
+    // terminal. Walking from the far end keeps the answer on the application that draws the grid.
+    let mut chain = ancestors(); chain.reverse();
+    let owners = serde_json::to_string(&chain).ok()?;
     let script = format!(r#"ObjC.import("CoreGraphics");
 const owners = {owners};
 const list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));
