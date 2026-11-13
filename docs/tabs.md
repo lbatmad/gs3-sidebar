@@ -34,7 +34,7 @@ Todas las capturas son de una sesión de demostración. Con menos de 44 columnas
 
 ![PROF](assets/tab3.png)
 
-Una sola tarjeta, **Profiles & Clusters**, muestra las asignaciones globales configuradas en `/gentle:profiles`: lee su `models.json` canónico, no los modelos declarados en los `.md` ni los de tareas anteriores. Incluye los roles configurados `review-refuter` y `review-validator` aunque no tengan archivo MD. `orchestrator` se muestra aparte; los roles sin modelo explícito muestran `—`, sin inventar una asignación heredada. Los MD aportan solo nombres al inventario y las tareas conservan los contadores de **Task Manager**.
+Una sola tarjeta, **Profiles & Clusters**, muestra las asignaciones globales configuradas en `/gentle:profiles`: lee su `models.json` canónico, no los modelos declarados en los `.md` ni los de tareas anteriores. Incluye los roles configurados `review-refuter` y `review-validator` aunque no tengan archivo MD. `orchestrator` se muestra aparte; los roles sin modelo explícito muestran `—`, sin inventar una asignación heredada. Los MD aportan solo nombres al inventario y las tareas conservan los contadores de **Task Manager**: `N ✓` completadas, `N ✗` fallidas (antes se contaban dentro del total sin decirlo) y `N en curso`, con una fila `▶ agente · label` por cada tarea viva. Esa carpeta (`<agent home>/gentle-agents/tasks`) está vigilada con un debounce de 300 ms, así que una tarea aparece mientras corre y no recién al apretar `r`.
 
 El origen se indica como `/gentle:profiles · global`: es configuración, no prueba del modelo que ejecuta una sesión con pins o snapshots. `r` relee el archivo; no hace falta cambiar de sesión. No escribe perfiles ni modifica las selecciones de modelos, y el modelo de STATUS no cambia.
 

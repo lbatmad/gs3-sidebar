@@ -180,3 +180,21 @@ S12 (reescrita). La tarjeta del grafo es una **ventana de 25 filas** (el rango e
      hasta 300, una llamada `git log -n` por página, ninguna por scroll), y la fila `⋯ cargar N más` hace lo
      mismo a mano. Menos commits que la página = repositorio agotado; un `Refresh` conserva la página y el
      tramo abiertos.
+
+## Addendum · Task Manager en vivo
+
+L10 (pedido del humano):
+
+> o sea que si tiro 5 subtareas de 3 seg, deberia verlas aqui?
+> las 3
+
+S13. El bloque `📋 Task Manager` de PROF cuenta el historial de tareas del agent home con el desglose honesto
+     (`N ✓` completadas, `N ✗` fallidas, `N en curso`) y lista cada tarea viva (hasta 5, con `… N más`), no sólo
+     la última. La carpeta `gentle-agents/tasks` se vigila con `notify` y debounce de 300 ms, así que una tarea
+     aparece mientras corre sin apretar `r`; el directorio se re-vigila en cada `Refresh` porque sólo existe
+     después de la primera tarea.
+
+| # | Spec | Ruta | Commit |
+|---|------|------|--------|
+| T19 | S13 | `Roster { failed, running }`, el conteo en `core::roster` y la tarjeta con ✓/✗/en curso | d85abf4 |
+| T20 | S13 | watcher de `gentle-agents/tasks` con `roster_deadline` y `is_task_file` | d85abf4 |

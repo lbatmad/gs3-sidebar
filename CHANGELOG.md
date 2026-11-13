@@ -6,6 +6,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 
 ### Añadido
 
+- `PROF` · el bloque **Task Manager** dice la verdad del historial: `N ✓` completadas, `N ✗` fallidas y `N en curso` (antes `81/100` se leía como si el resto estuviera pendiente), y lista **cada** tarea viva con su `▶ agente · label`, no sólo la última. La carpeta `gentle-agents/tasks` está vigilada con debounce de 300 ms: lanzás cinco subtareas y las ves aparecer como en curso, sin apretar `r`.
+
 - `GIT` · el grafo es una **ventana de 25 filas** (la fila `↕ 1-25/60` dice el tramo) en vez de dibujar toda la historia: la rueda sobre la tarjeta camina hacia atrás y, al llegar al final de lo leído, pide la página siguiente (duplicando, hasta 300). También se puede con la fila `⋯ cargar N más`. Una llamada `git log -n` por página, ninguna por scroll, y un refresco no encoge la lista abierta.
 
 - `GIT` · la ventana de un commit muestra ahora **el mensaje completo** encima de los archivos: autor, cuándo y el cuerpo entero envuelto a 100 columnas (antes sólo se veía el asunto del grafo). Se lee sin abrir un editor y sin pasar el mouse: un clic en el commit.
