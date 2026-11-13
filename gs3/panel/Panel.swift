@@ -28,6 +28,7 @@ var markdown = false
 var cut = false
 var snapshot: String?
 var width: CGFloat = 900
+var title: String?
 var args = CommandLine.arguments.dropFirst()
 while let arg = args.popFirst() {
     switch arg {
@@ -60,6 +61,9 @@ while let arg = args.popFirst() {
     case "--width":
         guard let value = args.popFirst(), let pixels = Double(value), pixels > 0 else { fail("--width needs a positive number") }
         width = CGFloat(pixels)
+    case "--title":
+        // The rail knows the file's real name; the path it hands over is its own temporary copy.
+        title = args.popFirst()
     default:
         path = arg
     }
@@ -144,7 +148,7 @@ if let out = snapshot {
         do { try png.write(to: URL(fileURLWithPath: out)) } catch { fail("cannot write \(out): \(error)") }
         exit(0)
     }
-    snapshotPNG(markdown ? markdownBody(text, title: file, cut: cut, width: width - 32) : attributed(text), width: width, to: out)
+    snapshotPNG(markdown ? markdownBody(text, title: title ?? (file as NSString).lastPathComponent, cut: cut, width: width - 32) : attributed(text), width: width, to: out)
 }
 
 /// The ✕ in the header closes, and every file row opens that file's diff in the rail. Matching is done
@@ -424,15 +428,49 @@ func dressBlock(_ body: NSMutableAttributedString, range: NSRange, intent: Prese
     body.addAttribute(.paragraphStyle, value: style, range: grown)
 }
 
+/// A regex replacement that never crashes on a bad pattern: what is not matched is simply left as it was.
+func replacing(_ text: String, _ pattern: String, _ template: String) -> String {
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+    let range = NSRange(location: 0, length: (text as NSString).length)
+    return regex.stringByReplacingMatches(in: text, range: range, withTemplate: template)
+}
+
+/// One line of Markdown with its HTML rewritten into the Markdown it stands for. A README's hero is raw
+/// HTML — `<div align="center">`, badges made of `<a>` around `<img>`, `<br>` — and CommonMark hands HTML
+/// through as literal text, which is exactly the source a reader does not want to read.
+func normalizedLine(_ line: String) -> String {
+    var text = line
+    // A badge is a link around an image: one picture with its name, not the URL soup it is written as.
+    text = replacing(text, #"\[!\[([^\]]*)\]\([^)]*\)\]\([^)]*\)"#, "🖼 $1")
+    text = replacing(text, #"!\[([^\]]*)\]\(([^)]*)\)"#, "🖼 $1 ($2)")
+    text = replacing(text, #"<a\s[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#, "[$2]($1)")
+    text = replacing(text, #"<img\s[^>]*?alt="([^"]*)"[^>]*?src="([^"]*)"[^>]*?>"#, "🖼 $1")
+    text = replacing(text, #"<img\s[^>]*?src="([^"]*)"[^>]*?alt="([^"]*)"[^>]*?>"#, "🖼 $2")
+    text = replacing(text, #"<img\s[^>]*src="([^"]*)"[^>]*?>"#, "🖼 $1")
+    text = replacing(text, #"(?i)<br\s*/?>"#, "\n")
+    text = replacing(text, #"</?[a-zA-Z][^>]*>"#, "")
+    for (entity, plain) in [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&nbsp;", " ")] {
+        text = text.replacingOccurrences(of: entity, with: plain)
+    }
+    return text
+}
+
+/// The whole source with its HTML normalised, except inside fenced code: a fence that shows HTML must keep it.
+func normalizedMarkdown(_ source: String) -> String {
+    var out: [String] = []
+    var fenced = false
+    for line in source.components(separatedBy: "\n") {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        let isFence = trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~")
+        if isFence { fenced.toggle() }
+        out.append(fenced || isFence ? line : normalizedLine(line))
+    }
+    return out.joined(separator: "\n")
+}
+
 /// One piece of source with no table in it: parsed, then dressed.
 func markdownChunk(_ chunk: String) -> NSAttributedString {
-    // An inline image is a picture this window will not draw, so the line says what it was instead of
-    // leaving the alt text loose in the document.
-    var source = chunk
-    if let images = try? NSRegularExpression(pattern: "!\\[([^\\]]*)\\]\\([^)]*\\)") {
-        let whole = NSRange(location: 0, length: (source as NSString).length)
-        source = images.stringByReplacingMatches(in: source, range: whole, withTemplate: "🖼 $1")
-    }
+    let source = normalizedMarkdown(chunk)
     let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)
     guard let parsed = try? AttributedString(markdown: source, options: options) else {
         // Never an empty window and never a crash: what the parser cannot read shows as it was written.

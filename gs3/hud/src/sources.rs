@@ -184,7 +184,7 @@ pub fn detail(cwd:&Path,r:&DetailRequest)->Detail {
 /// What the rail asks its own window to do. The window is another process, so it has to be owned: a
 /// thread keeps the child and kills it when the selection moves or the rail goes away, exactly like the
 /// video window's player.
-pub enum PanelCmd { Show { hash: String, text: String, geometry: Option<String> }, Markdown { key: String, text: String, cut: bool }, Image { key: String, file: PathBuf }, Hide }
+pub enum PanelCmd { Show { hash: String, text: String, geometry: Option<String> }, Markdown { key: String, text: String, title: String, cut: bool }, Image { key: String, file: PathBuf }, Hide }
 /// The panel binary: next to the rail first (the installer puts both in the same bin, and that directory is
 /// not always on the PATH the pane inherits), then the PATH itself.
 fn panel_bin()->Option<PathBuf> {
@@ -233,13 +233,15 @@ pub fn panel(socket: PathBuf, agent_pane: String, events: Sender<Event>) -> Send
                 }
                 // A markdown file: the window renders it, because headings and tables as raw text are the
                 // one thing a rail with 50 columns cannot show. Same window; it is just told what it is.
-                PanelCmd::Markdown { key, text, cut } => {
+                PanelCmd::Markdown { key, text, title, cut } => {
                     let path = std::env::temp_dir().join(format!("gs3-panel-{}.md", std::process::id()));
                     if open.as_ref().is_some_and(|(up, _)| *up == key) { let _ = fs::write(&path, text); continue }
                     close(&mut open);
                     let Some(bin) = panel_bin() else { continue };
                     if fs::write(&path, text).is_err() { continue }
-                    let mut args = vec!["--socket".to_string(), hud_socket.to_string_lossy().into_owned(), "--markdown".to_string()];
+                    // `--title`: the file the window shows is the rail's temporary copy, but the name it must
+                    // show is the project-relative one the human clicked.
+                    let mut args = vec!["--socket".to_string(), hud_socket.to_string_lossy().into_owned(), "--markdown".to_string(), "--title".to_string(), title];
                     if cut { args.push("--cut".to_string()) }
                     let spawned = std::process::Command::new(bin).args(args).arg(&path).spawn();
                     if let Ok(child) = spawned { open = Some((key, child)); }

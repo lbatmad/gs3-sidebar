@@ -870,7 +870,7 @@ pub fn panel_show(s: &State) -> Option<(String, usize, PanelCmd)> {
                 // The window reads and draws the image itself: its bytes never cross the rail.
                 Preview::Image { file, .. } => (key.clone(), 0, PanelCmd::Image { key, file: file.clone() }),
                 // Markdown crosses as source and the window renders it: headings and tables are the point.
-                Preview::Markdown { body, cut, .. } => (key.clone(), body.len(), PanelCmd::Markdown { key, text: body.clone(), cut: *cut }),
+                Preview::Markdown { path, body, cut } => (key.clone(), body.len(), PanelCmd::Markdown { key, text: body.clone(), title: path.clone(), cut: *cut }),
                 other => { let text = preview_text(other); let n = text.len(); (key.clone(), n, PanelCmd::Show { hash: key, text, geometry: None }) }
             }
         }),
