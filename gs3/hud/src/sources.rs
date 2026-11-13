@@ -134,6 +134,45 @@ pub fn detail(cwd:&Path,r:&DetailRequest)->Detail {
     match git(&root,&["show","--no-renames","--format=",c,"--",f]) {Ok(s)=>diff_lines(&mut d,&s),Err(e)=>d.diff=vec![format!("error: {e}")]}
     d
 }
+/// What the rail asks its own window to do. The window is another process, so it has to be owned: a
+/// thread keeps the child and kills it when the selection moves or the rail goes away, exactly like the
+/// video window's player.
+pub enum PanelCmd { Show { hash: String, text: String, geometry: Option<String> }, Hide }
+
+pub fn panel(socket: PathBuf, agent_pane: String) -> Sender<PanelCmd> {
+    let (send, rx) = mpsc::channel::<PanelCmd>();
+    thread::spawn(move || {
+        let mut open: Option<(String, std::process::Child)> = None;
+        let mut close = |open: &mut Option<(String, std::process::Child)>| {
+            if let Some((_, mut child)) = open.take() { let _ = child.kill(); let _ = child.wait(); }
+        };
+        while let Ok(mut cmd) = rx.recv() {
+            while let Ok(next) = rx.try_recv() { cmd = next; }
+            match cmd {
+                PanelCmd::Hide => close(&mut open),
+                PanelCmd::Show { hash, text, geometry } => {
+                    // The same commit already on screen is left alone: a rebuild would steal the focus and
+                    // scroll position of a window the human is reading.
+                    if open.as_ref().is_some_and(|(up, _)| *up == hash) { continue }
+                    close(&mut open);
+                    // Next to the rail itself first: the installer puts both in the same bin, and that
+                    // directory is not always on the PATH the pane inherits.
+                    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("gs3-panel"))).filter(|p| p.is_file());
+                    let Some(bin) = beside.or_else(|| media::find_tool("gs3-panel")) else { continue };
+                    let path = std::env::temp_dir().join(format!("gs3-panel-{}.txt", std::process::id()));
+                    if fs::write(&path, text).is_err() { continue }
+                    let args = geometry.map(|g| vec!["--geometry".to_string(), g]).unwrap_or_default();
+                    let spawned = std::process::Command::new(bin).args(args).arg(&path).spawn();
+                    if let Ok(child) = spawned { open = Some((hash, child)); }
+                }
+            }
+        }
+        close(&mut open);
+        let _ = socket; let _ = agent_pane;
+    });
+    send
+}
+
 /// Inspector worker: only the latest pending request is answered (clicks may outrun git).
 pub fn details(cwd:PathBuf,tx:Sender<Event>)->Sender<DetailRequest> {
     let (send,rx)=mpsc::channel::<DetailRequest>();

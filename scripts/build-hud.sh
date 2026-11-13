@@ -25,3 +25,12 @@ fi
 run install -d "$PREFIX/bin"
 run install -m 0755 "$BINARY" "$PREFIX/bin/gs3-hud"
 ok "installed $PREFIX/bin/gs3-hud"
+# The rail's own text window (a commit and its diff). Optional: without swiftc the rail keeps working and
+# simply shows that detail inside its card.
+if have swiftc; then
+  run swiftc -O -framework AppKit "$ROOT/gs3/panel/Panel.swift" -o "$CARGO_TARGET_DIR/release/gs3-panel"
+  run install -m 0755 "$CARGO_TARGET_DIR/release/gs3-panel" "$PREFIX/bin/gs3-panel"
+  ok "installed $PREFIX/bin/gs3-panel"
+else
+  warn "swiftc not found: the native panel stays unavailable and details show inside the rail"
+fi

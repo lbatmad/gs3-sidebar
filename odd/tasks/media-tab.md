@@ -530,3 +530,23 @@ into git. 152 tests green (new: a click on a commit row opens the files it touch
 written after the implementation, so no RED was observed for it; the live check below is what proves it.
 Seen live on this repo: clicking `38f04f8` listed `gs3/hud/src/ui.rs +8 −4` and `odd/tasks/media-tab.md`,
 and clicking the first file showed its hunk inside the card.
+
+L64. Human: "podes hacer que se abra una pantalla y que se cierre con una X?" → answered: a native macOS
+window, and then "que sea como una modal de texto ... el texto entero y con las diferencias y colores".
+
+`gs3/panel/Panel.swift` is that window: AppKit, one file, accessory app (no Dock icon), dark background,
+monospaced, scrollable read-only text view, standard close button plus Esc, `--geometry WxH+X+Y` optional
+and a centred 70%x62% of the screen shifted left when absent. The rail writes what it wants shown to
+`$TMPDIR/gs3-panel-<pid>.txt` and spawns it from `sources::panel`, a thread that owns the child; the text
+carries 24-bit SGR (`ui::panel_text`) and the window parses it into attributes, so additions arrive green,
+deletions red and hunk headers blue. The helper is compiled by `scripts/build-hud.sh` only when `swiftc`
+exists; without it the rail keeps working and the commit stays inside its card.
+
+Three failures found on the way, all worth keeping: `Event::Detail` used to accept an answer that matched
+only branch and file, so a worktree answer closed the commit window under the human's hands (the guard
+now compares the commit too); `find_tool` looks at PATH plus the two Homebrew directories, which is not
+where the installer puts `gs3-panel` (the rail now looks beside its own binary first); and the SGR parser
+indexed substrings, which trapped on a real diff and killed the window the instant a colour arrived
+(rewritten over `[Character]`). 152 tests green. Not verified: I never saw the window on screen — every
+screencapture of this session returned the desktop, not the Space the terminal is on — so colour, size
+and the X are the human's to judge; the process stays alive for minutes when launched from the rail.

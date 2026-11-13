@@ -707,6 +707,40 @@ fn file_rows(c: &mut Card, s: &State, files: &[FileChange]) {
         if s.ui.git_file.as_deref() == Some(f.path.as_str()) { diff_rows(c, s, &f.path); }
     }
 }
+/// The text the rail hands to its own window: what a commit touched, then the diff of the file that is
+/// open, in 24-bit SGR so the window can colour it. The window is a text view, not a second copy of the
+/// rail's layout, so colour travels in the text itself.
+fn sgr(tone: Tone, text: &str) -> String {
+    let (r, g, b) = tone.rgb();
+    format!("\u{1b}[38;2;{r};{g};{b}m{text}\u{1b}[0m")
+}
+
+pub fn panel_text(d: &Detail, hash: &str) -> String {
+    use Tone::*;
+    let mut out = format!("{}\n\n", sgr(Gold, &format!("◆ commit {hash}")));
+    if d.files.is_empty() { out.push_str(&sgr(Dim, "  sin archivos")); out.push('\n'); }
+    for f in &d.files {
+        let (letter, tone) = match f.kind { FileKind::Modified => ("M", Yellow), FileKind::Added => ("A", Mint), FileKind::Deleted => ("D", Coral), FileKind::Untracked => ("?", Pink), FileKind::Conflict => ("U", Coral) };
+        out.push_str(&format!("{} {} {} {}\n",
+            sgr(tone, letter),
+            sgr(Cyan, &f.path),
+            sgr(Mint, &format!("+{}", f.added)),
+            sgr(Coral, &format!("-{}", f.deleted))));
+    }
+    if d.added + d.deleted > 0 {
+        out.push_str(&format!("  {} {}\n", sgr(Mint, &format!("+{}", d.added)), sgr(Coral, &format!("-{}", d.deleted))));
+    }
+    if !d.diff.is_empty() {
+        out.push('\n');
+        for line in &d.diff {
+            let tone = if line.starts_with("@@") { Blue } else if line.starts_with('+') { Mint } else if line.starts_with('-') { Coral } else { Text };
+            out.push_str(&sgr(tone, &line.replace('\t', "    ")));
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// What a commit touched: the files it changed, and the diff of the one that is open. A commit is read
 /// from what the graph printed, so the card says "cargando…" until the answer for that exact hash lands.
 fn commit_card(s: &State, w: usize) -> Option<Card> {
@@ -2315,6 +2349,16 @@ mod tests {
         let f = frame(&s, 60, 0);
         let (x, y) = at(&f, "src/a.rs");
         assert_eq!(click(&f, x, y), Some(Action::File("src/a.rs".into())), "the commit's own file list is clickable");
+        // The window gets plain text: the hash, one line per file, then the diff of the open file.
+        let text = panel_text(&s.detail, "a1b2c3d");
+        let plain = |t: &str| t.split("\u{1b}[").map(|p| p.splitn(2, 'm').nth(1).unwrap_or("")).collect::<String>();
+        let shown = plain(&text);
+        assert!(shown.starts_with("◆ commit a1b2c3d"), "{shown}");
+        assert!(shown.contains("M src/a.rs"), "the file list is in the window too: {shown}");
+        assert!(shown.contains("+2") && shown.contains("-1"), "with its counts: {shown}");
+        assert!(text.contains("\u{1b}[38;2;"), "and it carries colour, or the window cannot show a diff");
+        let empty = plain(&panel_text(&Detail::default(), "a1b2c3d"));
+        assert!(empty.contains("sin archivos"), "an empty commit says so: {empty}");
         s.detail.files.clear(); s.ui.git_branch = Some("main".into()); s.detail.branch = Some("main".into()); find(&render_lines(&s, 42), "✔ Sin diferencias con HEAD");
     }
     #[test]

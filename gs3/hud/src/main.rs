@@ -72,6 +72,7 @@ fn main()->Result<()> {
     let voice=sources::voice(data_tx.clone());
     let media=sources::media(data_tx.clone(),a.socket.clone()); let spotify=sources::spotify(data_tx.clone());
     let capture=sources::screenshot();
+    let agent_pane=a.pane.clone(); let panel=sources::panel(a.socket.clone(),agent_pane.clone()); let mut shown:Option<(String,usize)>=None;
     sources::herdr(a.socket,a.pane,data_tx);
     let mut draw=true; let mut last:Option<ui::Frame>=None;
     let mut transmitted: Option<String> = None;
@@ -150,6 +151,16 @@ fn main()->Result<()> {
             _=>{}
         }
         let want=request(&state); if want!=asked {if let Some(r)=&want {let _=details.send(r.clone());} asked=want;}
+        // The commit the human opened gets a window of its own, over the chat: the rail has 50 columns and
+        // a diff does not fit in them. Nothing is shown without the answer for that exact hash.
+        let open=state.ui.git_commit.clone().filter(|h| state.detail.commit.as_deref()==Some(h.as_str())&&state.ui.tab==ui::Tab::Git);
+        match open {
+            Some(hash)=>{
+                let text=ui::panel_text(&state.detail,&hash); let key=(hash.clone(),text.len());
+                if shown.as_ref()!=Some(&key) { shown=Some(key); let geometry=None::<String>; let _=panel.send(sources::PanelCmd::Show{hash,text,geometry}); }
+            }
+            None=>{ if shown.take().is_some() { let _=panel.send(sources::PanelCmd::Hide); } }
+        }
     }
     Ok(())
 }

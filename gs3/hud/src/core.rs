@@ -337,7 +337,9 @@ pub fn apply(s:&mut State,e:Event)->bool {
         // Only the answer for what is still selected is kept (clicks may outrun git).
         // Like Detail: only the scan of the current open set is kept.
         Event::Tree(t) if t.open==s.ui.tree_open => s.tree=Some(t),
-        Event::Detail(d) if (&d.branch,&d.file)==(&s.ui.git_branch,&s.ui.git_file) => s.detail=d,
+        // The commit is part of the selection: an answer for the working tree or another hash must not
+        // replace the list the window is showing, or the window closes under the human's hands.
+        Event::Detail(d) if (&d.branch,&d.file,&d.commit)==(&s.ui.git_branch,&s.ui.git_file,&s.ui.git_commit) => s.detail=d,
         Event::Media(y) => s.media.youtube=y,
         Event::Spotify(v) => s.media.spotify=v,
         Event::Ui(a)=>{
