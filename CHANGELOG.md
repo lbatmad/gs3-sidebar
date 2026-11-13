@@ -6,6 +6,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 
 ### Añadido
 
+- `TREE` abre el archivo clicado en la ventana de la barra (`gs3-panel`, la misma que muestra el diff de un commit): el texto del archivo, o la imagen ajustada a la ventana sin deformarla y sin ampliarla si es `png jpg jpeg gif webp bmp tif tiff ico heic`. Nunca muestra un nombre sensible (`.env`, `*secret*`, `*token*`, `*passw*`, `*auth*`, `.pem`, `.key`, `id_rsa`, `.netrc`, `.npmrc`), un enlace simbólico, un directorio, una ruta fuera del proyecto ni un binario, y la ventana dice por qué; un texto de más de 256 KiB se muestra cortado y lo avisa. Un segundo clic sobre el archivo, `Esc`, el `✕` de la ventana o cambiar de pestaña la cierran. Los archivos con cambios siguen abriendo su diff en GIT.
+
 - `MEDIA` · YouTube suma `🔍 listas`: busca listas públicas por nombre, muestra sus videos en la tarjeta `⌁ Videos` (ventana de diez filas con rueda y rango visible) y un clic arranca en esa fila, siguiendo con el siguiente video hasta el final de la lista.
 
 ### Corregido
