@@ -4,6 +4,7 @@ use crate::config::{clean_name, Config, NAME_MAX};
 use crate::core::*;
 use crate::media::{MediaCmd, SpotifyCmd, REDIRECT};
 use crate::sources::{PanelCmd, PREVIEW_MAX};
+use crate::syntax;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
@@ -842,6 +843,8 @@ pub fn preview_text(p: &Preview) -> String {
         Preview::Image { path, .. } => format!("{}{}", head("🖼 archivo"), sgr(Cyan, path)),
         // Same: markdown goes to the window as a document, never as the text this function builds.
         Preview::Markdown { path, .. } => format!("{}{}", head("◆ markdown"), sgr(Cyan, path)),
+        // Same: source code goes to the window already coloured by its grammar.
+        Preview::Code { path, .. } => format!("{}{}", head("◆ código"), sgr(Cyan, path)),
         Preview::Refused { path, note } => format!("{}{}\n\n{}\n", head("🗒 archivo"), sgr(Cyan, path), sgr(Coral, note)),
         Preview::Text { path, body, cut } => {
             // No wrapping: the window scrolls sideways, so every line keeps the columns it was written with.
@@ -871,11 +874,24 @@ pub fn panel_show(s: &State) -> Option<(String, usize, PanelCmd)> {
                 Preview::Image { file, .. } => (key.clone(), 0, PanelCmd::Image { key, file: file.clone() }),
                 // Markdown crosses as source and the window renders it: headings and tables are the point.
                 Preview::Markdown { path, body, cut } => (key.clone(), body.len(), PanelCmd::Markdown { key, text: body.clone(), title: path.clone(), cut: *cut }),
+                // Source code crosses as the window's own SGR, exactly like a diff.
+                Preview::Code { body, .. } => { let text = code_text(p); let n = text.len(); (key.clone(), n, PanelCmd::Show { hash: key, text, geometry: None }) }
                 other => { let text = preview_text(other); let n = text.len(); (key.clone(), n, PanelCmd::Show { hash: key, text, geometry: None }) }
             }
         }),
         _ => None,
     }
+}
+
+/// A source file as the window shows it: which language it is, then the file coloured by its grammar. The
+/// SGR comes from the same place the diff's does, so the window needs no code of its own for this.
+pub fn code_text(p: &Preview) -> String {
+    use Tone::*;
+    let Preview::Code { path, body, cut, lang } = p else { return preview_text(p) };
+    let mut out = format!("{} {} {} {} {}\n\n", sgr(Gold, &format!("◆ {lang}")), sgr(Muted, "["), sgr(Coral, "✕"), sgr(Muted, "] [-]"), sgr(Cyan, path));
+    out.push_str(&syntax::sgr(path, body));
+    if *cut { out.push_str(&format!("\n{}\n", sgr(Dim, &format!("… sólo los primeros {} KiB", PREVIEW_MAX / 1024)))); }
+    out
 }
 
 /// What a commit touched: the files it changed, and the diff of the one that is open. A commit is read
@@ -2537,6 +2553,13 @@ mod tests {
         s.ui.tree_pick = Some("docs/guia.md".into());
         let Some((key, _, PanelCmd::Markdown { text, cut, .. })) = panel_show(&s) else { panic!("no window for markdown") };
         assert_eq!((key.as_str(), text.as_str(), cut), ("file:docs/guia.md", "# Título\n", true));
+        // Source code goes to the window already coloured, down the same text path the diff uses.
+        s.preview = Some(Preview::Code { path: "src/main.rs".into(), body: "fn main() {}\n".into(), cut: false, lang: "Rust".into() });
+        s.ui.tree_pick = Some("src/main.rs".into());
+        let Some((key, _, PanelCmd::Show { text, .. })) = panel_show(&s) else { panic!("no window for code") };
+        assert_eq!(key, "file:src/main.rs");
+        assert!(text.contains("◆ Rust") && text.contains("src/main.rs"), "el encabezado dice el lenguaje: {text}");
+        assert!(text.contains("\u{1b}[38;2;255;210;63m"), "la palabra clave llega pintada: {text}");
         // Leaving TREE closes it.
         s.ui.tab = Tab::Main;
         assert!(panel_show(&s).is_none());
@@ -2670,3 +2693,4 @@ mod tests {
         assert!(["Uno", "Dos", "Tres"].iter().all(|t| !row(&f, t).contains("▶")), "an unknown id marks nothing");
     }
 }
+

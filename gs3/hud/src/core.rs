@@ -225,13 +225,15 @@ pub enum Preview {
     Text { path:String, body:String, cut:bool },
     /// Markdown, read by the rail and rendered by the window (never drawn as raw text).
     Markdown { path:String, body:String, cut:bool },
+    /// Source code: read here and coloured by its grammar into the same SGR the window already parses.
+    Code { path:String, body:String, cut:bool, lang:String },
     /// An image the window draws itself, so its bytes never travel through the rail.
     Image { path:String, file:PathBuf },
     /// Shown instead of the file, with the reason.
     Refused { path:String, note:String },
 }
 impl Preview {
-    pub fn path(&self)->&str { match self { Preview::Text{path,..}|Preview::Markdown{path,..}|Preview::Image{path,..}|Preview::Refused{path,..}=>path } }
+    pub fn path(&self)->&str { match self { Preview::Text{path,..}|Preview::Markdown{path,..}|Preview::Code{path,..}|Preview::Image{path,..}|Preview::Refused{path,..}=>path } }
 }
 /// PROF roster: host defaults (`settings.json`), subagents (`agents/*.md`) and their task history.
 #[derive(Clone, Debug, Default, PartialEq)]

@@ -95,6 +95,12 @@ const MARKDOWN_EXT:[&str;2]=["md","markdown"];
 pub const PREVIEW_MAX:u64=256*1024;
 /// Ceiling for an image: the window decodes it, so a file that big is refused instead of read into memory.
 const IMAGE_MAX:u64=32*1024*1024;
+/// A file is data, not instructions: an ESC in its bytes would be read as colour by the window's SGR parser,
+/// so it is shown as the symbol it is (U+241B) instead. Everything the window renders as SGR goes through here.
+pub fn neutral(text:&str)->String {
+    if !text.contains('\u{1b}') {return text.to_owned()}
+    text.replace('\u{1b}', "\u{241b}")
+}
 /// What a TREE click shows in the rail's own window: the file as text, the image itself, or why neither is
 /// allowed. The gate is the same one `detail` already applies: nothing outside the project, no symlink, no
 /// sensitive name, no binary — plus a size ceiling, because this reads the file instead of a diff.
@@ -119,8 +125,11 @@ pub fn preview(root:&Path,rel:&str)->Preview {
         Err(e)=>refused(&format!("no se pudo leer: {e}")),
         Ok(b) if b.contains(&0)=>refused("archivo binario (no se muestra)"),
         Ok(mut b)=>{let cut=b.len() as u64>PREVIEW_MAX; b.truncate(PREVIEW_MAX as usize);
-            let body=String::from_utf8_lossy(&b).into_owned();
-            if MARKDOWN_EXT.contains(&ext.as_str()) {Preview::Markdown{path:rel.into(),body,cut}} else {Preview::Text{path:rel.into(),body,cut}}}
+            let body=neutral(&String::from_utf8_lossy(&b));
+            if MARKDOWN_EXT.contains(&ext.as_str()) {Preview::Markdown{path:rel.into(),body,cut}}
+            // A file its grammar can colour is a source file: the window draws the colours, not the bytes.
+            else if let Some(lang)=crate::syntax::language(rel,&body) {Preview::Code{path:rel.into(),body,cut,lang}}
+            else {Preview::Text{path:rel.into(),body,cut}}}
     }
 }
 /// TREE preview worker: reads off the draw loop and answers only the newest click.
@@ -138,7 +147,7 @@ pub fn previews(cwd:PathBuf,tx:Sender<Event>)->Sender<String> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DetailRequest { pub branch:Option<String>, pub file:Option<String>, pub commit:Option<String>, pub untracked:bool }
 const DIFF_KEEP:usize=2000; const UNTRACKED_MAX:u64=64*1024;
-fn diff_lines(d:&mut Detail,text:&str) {let all:Vec<&str>=text.lines().collect(); d.more=all.len().saturating_sub(DIFF_KEEP); d.diff=all.into_iter().take(DIFF_KEEP).map(str::to_owned).collect();}
+fn diff_lines(d:&mut Detail,text:&str) {let text=neutral(text); let all:Vec<&str>=text.lines().collect(); d.more=all.len().saturating_sub(DIFF_KEEP); d.diff=all.into_iter().take(DIFF_KEEP).map(str::to_owned).collect();}
 pub fn detail(cwd:&Path,r:&DetailRequest)->Detail {
     let mut d=Detail{branch:r.branch.clone(),file:r.file.clone(),commit:r.commit.clone(),..Detail::default()};
     let Some(root)=git_root(cwd) else {d.error=Some("not a git repo".into()); return d};
@@ -720,13 +729,20 @@ mod tests {
         let dir=std::env::temp_dir().join(format!("gs3-preview-{}",std::process::id())); let _=fs::remove_dir_all(&dir);
         for d in ["src","assets","docs"] {fs::create_dir_all(dir.join(d)).unwrap();}
         fs::write(dir.join("src/main.rs"),"fn main() {}\n").unwrap();
+        fs::write(dir.join("nota.txt"),"hola\n").unwrap();
         fs::write(dir.join("assets/logo.png"),[0x89u8,0x50,0x4e,0x47]).unwrap();
         fs::write(dir.join("docs/guia.md"),"# Guía\n\ntexto\n").unwrap();
         fs::write(dir.join("app.bin"),[0u8,1,2,3]).unwrap();
         fs::write(dir.join("secrets.yml"),"k: v\n").unwrap();
         fs::write(dir.join(".env"),"TOKEN=1\n").unwrap();
         std::os::unix::fs::symlink(dir.join("src/main.rs"),dir.join("link.rs")).unwrap();
-        assert_eq!(preview(&dir,"src/main.rs"),Preview::Text{path:"src/main.rs".into(),body:"fn main() {}\n".into(),cut:false});
+        // A source file arrives as code, with the grammar that colours it; a .txt stays plain text.
+        assert_eq!(preview(&dir,"src/main.rs"),Preview::Code{path:"src/main.rs".into(),body:"fn main() {}\n".into(),cut:false,lang:"Rust".into()});
+        assert_eq!(preview(&dir,"nota.txt"),Preview::Text{path:"nota.txt".into(),body:"hola\n".into(),cut:false});
+        // An ESC in the file is data: the window must never read it as colour.
+        fs::write(dir.join("raw.txt"),"antes \u{1b}[31mrojo\u{1b}[0m\n").unwrap();
+        let Preview::Text{body,..}=preview(&dir,"raw.txt") else {panic!("raw.txt no es texto")};
+        assert!(!body.contains('\u{1b}') && body.contains('\u{241b}'), "el ESC se muestra como símbolo: {body:?}");
         // An image is never read here: the path travels and the window draws it.
         assert_eq!(preview(&dir,"assets/logo.png"),Preview::Image{path:"assets/logo.png".into(),file:dir.join("assets/logo.png")});
         // Markdown is read as text but announced as such, so the window renders it instead of showing source.
