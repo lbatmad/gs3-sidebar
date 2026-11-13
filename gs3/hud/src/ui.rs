@@ -779,6 +779,29 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// A paragraph wrapped on spaces: a commit message is prose, and cutting it mid-word reads worse than a
+/// shorter line. Only a token wider than the whole column is cut, because nothing else would fit it.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let count = word.chars().count();
+        if width == 0 { out.push(word.to_string()); continue }
+        if count > width {
+            if !line.is_empty() { out.push(std::mem::take(&mut line)) }
+            let chars: Vec<char> = word.chars().collect();
+            for chunk in chars.chunks(width) { out.push(chunk.iter().collect()) }
+            continue
+        }
+        let grown = line.chars().count() + usize::from(!line.is_empty()) + count;
+        if grown > width { out.push(std::mem::take(&mut line)) }
+        if !line.is_empty() { line.push(' ') }
+        line.push_str(word);
+    }
+    if !line.is_empty() || out.is_empty() { out.push(line) }
+    out
+}
+
 /// The text the rail hands to its own window: the commit, the files it touched, and then a two-panel
 /// comparison of the file that is open — the old lines on the left, the new ones on the right, each
 /// side wrapped inside its own column so a long line never crosses over.
@@ -788,6 +811,19 @@ pub fn panel_text(d: &Detail, hash: &str) -> String {
     // both panels get the same size, and each one wraps inside it.
     const COL: usize = 80;
     let mut out = format!("{} {} {} {}\n\n", sgr(Gold, &format!("◆ commit {hash}")), sgr(Muted, "["), sgr(Coral, "✕"), sgr(Muted, "] [-]"));
+    // The commit's own words. The graph only ever printed the subject; the window is where the whole
+    // explanation fits, and it is wrapped because this text view does not wrap by itself (a diff must not).
+    if !d.author.is_empty() || !d.date.is_empty() {
+        out.push_str(&format!("{}\n\n", sgr(Muted, &format!("{} · {}", d.author, d.date))));
+    }
+    let message = d.message.trim();
+    if !message.is_empty() {
+        for line in message.lines() {
+            if line.trim().is_empty() { out.push('\n'); continue }
+            for chunk in wrap_words(line, 100) { out.push_str(&sgr(Text, &chunk)); out.push('\n'); }
+        }
+        out.push('\n');
+    }
     if d.files.is_empty() { out.push_str(&sgr(Dim, "  sin archivos")); out.push('\n'); }
     for f in &d.files {
         let (letter, tone) = match f.kind { FileKind::Modified => ("M", Yellow), FileKind::Added => ("A", Mint), FileKind::Deleted => ("D", Coral), FileKind::Untracked => ("?", Pink), FileKind::Conflict => ("U", Coral) };
@@ -2510,6 +2546,15 @@ mod tests {
         assert!(shown.contains("M src/a.rs"), "the file list is in the window too: {shown}");
         assert!(shown.contains("+2") && shown.contains("-1"), "with its counts: {shown}");
         assert!(text.contains("\u{1b}[38;2;"), "and it carries colour, or the window cannot show a diff");
+        // The commit's own words arrive above the files: who, when, and the whole message.
+        s.detail.author = "Ada Lovelace".into(); s.detail.date = "2 days ago".into();
+        s.detail.message = "arregla el panel del commit\n\nSegundo párrafo del cuerpo.\n".into();
+        let with_message = plain(&panel_text(&s.detail, "a1b2c3d"));
+        assert!(with_message.contains("Ada Lovelace · 2 days ago"), "quién y cuándo: {with_message}");
+        assert!(with_message.contains("arregla el panel del commit") && with_message.contains("Segundo párrafo del cuerpo."), "el mensaje completo: {with_message}");
+        assert!(with_message.contains("M src/a.rs") && with_message.contains("[diff]"), "y los archivos siguen igual: {with_message}");
+        assert_eq!(wrap_words("uno dos tres", 7), ["uno dos", "tres"], "se envuelve por palabras");
+        assert_eq!(wrap_words(&"x".repeat(25), 10), ["x".repeat(10), "x".repeat(10), "x".repeat(5)], "un token más ancho que la columna se corta");
         let empty = plain(&panel_text(&Detail::default(), "a1b2c3d"));
         assert!(empty.contains("sin archivos"), "an empty commit says so: {empty}");
         s.detail.files.clear(); s.ui.git_branch = Some("main".into()); s.detail.branch = Some("main".into()); find(&render_lines(&s, 42), "✔ Sin diferencias con HEAD");
@@ -2693,4 +2738,5 @@ mod tests {
         assert!(["Uno", "Dos", "Tres"].iter().all(|t| !row(&f, t).contains("▶")), "an unknown id marks nothing");
     }
 }
+
 

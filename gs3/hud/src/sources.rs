@@ -160,6 +160,13 @@ pub fn detail(cwd:&Path,r:&DetailRequest)->Detail {
     }
     if let Some(c)=r.commit.as_deref().filter(|c|crate::core::is_hash(c)) {
         d.commit=Some(c.to_string());
+        // One subprocess for the whole message, never one per hover or per click on a file.
+        if let Ok(s)=git(&root,&["show","-s","--format=%an%x00%ar%x00%B",c]) {
+            let mut parts=s.splitn(3,'\0');
+            d.author=parts.next().unwrap_or_default().trim().to_string();
+            d.date=parts.next().unwrap_or_default().trim().to_string();
+            d.message=neutral(parts.next().unwrap_or_default().trim_end());
+        }
         match git(&root,&["show","--name-status","-z","--no-renames","--format=",c]) {
             Ok(s)=>{d.files=parse_name_status(&s); if let Ok(n)=git(&root,&["show","--numstat","-z","--no-renames","--format=",c]) {(d.added,d.deleted)=apply_numstat(&mut d.files,&n);}}
             Err(e)=>d.error=Some(e.to_string()),
@@ -703,6 +710,11 @@ mod tests {
         let d=detail(&dir,&req(Some("feat"),None,false)); assert_eq!((d.files.len(),d.added,d.error.clone()),(1,1,None)); assert_eq!(d.files[0].path,"g.txt");
         let d=detail(&dir,&req(Some("feat"),Some("g.txt"),false)); assert!(d.diff.contains(&"+x".to_string()));
         assert!(detail(&dir,&req(Some("--output=/tmp/x"),None,false)).error.is_some(),"branch names are never options");
+        // A commit carries its own words to the window: author, when, and the whole message.
+        let hash=g.commits[0].split_whitespace().next().unwrap().to_string();
+        let d=detail(&dir,&DetailRequest{branch:None,file:None,commit:Some(hash),untracked:false});
+        assert_eq!((d.author.as_str(),d.message.trim()),(("t"),"base"),"autor y mensaje del commit");
+        assert!(!d.date.is_empty(),"y cuándo fue");
         fs::remove_dir_all(&dir).unwrap();
     }
     #[test]

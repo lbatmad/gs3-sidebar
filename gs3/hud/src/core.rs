@@ -85,7 +85,11 @@ impl Counts { pub fn clean(&self)->bool {*self==Counts::default()} }
 pub struct Branch { pub name:String, pub current:bool, pub remote:bool, pub ahead:u64, pub behind:u64, pub gone:bool, pub date:String }
 /// Branch or file the GIT tab is inspecting: the branch's changed files and/or one file's diff.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Detail { pub branch:Option<String>, pub file:Option<String>, pub commit:Option<String>, pub files:Vec<FileChange>, pub added:u64, pub deleted:u64, pub diff:Vec<String>, pub more:usize, pub error:Option<String> }
+pub struct Detail { pub branch:Option<String>, pub file:Option<String>, pub commit:Option<String>,
+    /// The commit's own words, read with `git show -s`: the graph only prints the subject, and the window is
+    /// where the whole explanation fits.
+    pub author:String, pub date:String, pub message:String,
+    pub files:Vec<FileChange>, pub added:u64, pub deleted:u64, pub diff:Vec<String>, pub more:usize, pub error:Option<String> }
 /// A commit is only ever named by what `git log` printed: plain lowercase hex, 7 to 40 digits. Anything
 /// else is refused before it reaches an argument list, so a line in the graph can never smuggle an option.
 pub fn is_hash(s:&str)->bool { (7..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) }
