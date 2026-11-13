@@ -98,7 +98,7 @@ func attributed(_ text: String) -> NSAttributedString {
     return out
 }
 
-final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDelegate {
     let text: String
     let rect: NSRect
     var window: NSWindow?
@@ -115,15 +115,19 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             width: rect.width,
             height: rect.height
         )
+        // No title bar: the header line carries the close mark, like a terminal panel. The whole surface
+        // drags, so a borderless window can still be moved.
         let window = NSWindow(
             contentRect: frame,
-            styleMask: [.titled, .closable, .resizable],
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
         window.title = "gs3 · commit"
         window.delegate = self
         window.isReleasedWhenClosed = false
+        window.isMovableByWindowBackground = true
+        window.level = .floating
 
         let background = NSColor(calibratedRed: 13 / 255, green: 22 / 255, blue: 36 / 255, alpha: 1)
         window.backgroundColor = background
@@ -136,6 +140,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         scroll.backgroundColor = background
 
         let view = NSTextView(frame: NSRect(x: 0, y: 0, width: rect.width, height: rect.height))
+        view.textContainerInset = NSSize(width: 10, height: 8)
         view.isEditable = false
         view.isSelectable = true
         view.drawsBackground = true
@@ -143,7 +148,13 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         view.textColor = NSColor(calibratedWhite: 0.93, alpha: 1)
         view.insertionPointColor = background
         view.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        view.textStorage?.setAttributedString(attributed(text))
+        let body = NSMutableAttributedString(attributedString: attributed(text))
+        // The ✕ in the header is the close button; ⌘W and Esc still work, so nothing is lost with no title bar.
+        let close = (body.string as NSString).range(of: "✕")
+        if close.location != NSNotFound {
+            body.addAttributes([.link: URL(string: "gs3://close")!, .foregroundColor: NSColor(calibratedRed: 251/255, green: 113/255, blue: 133/255, alpha: 1)], range: close)
+        }
+        view.textStorage?.setAttributedString(body)
         view.isVerticallyResizable = true
         view.isHorizontallyResizable = true
         view.textContainer?.widthTracksTextView = false
@@ -152,12 +163,17 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         scroll.documentView = view
         window.contentView = scroll
         window.makeKeyAndOrderFront(nil)
+        view.delegate = self
         window.makeFirstResponder(view)
         NSApplication.shared.activate(ignoringOtherApps: true)
         self.window = window
     }
 
     func windowWillClose(_ notification: Notification) {
+        exit(0)
+    }
+
+    func textView(_ view: NSTextView, clickedOnLink link: Any, at index: Int) -> Bool {
         exit(0)
     }
 }
