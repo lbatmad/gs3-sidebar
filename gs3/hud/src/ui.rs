@@ -715,8 +715,54 @@ fn sgr(tone: Tone, text: &str) -> String {
     format!("\u{1b}[38;2;{r};{g};{b}m{text}\u{1b}[0m")
 }
 
+/// One cell of the two-panel view: the text, then as many spaces as it needs to reach `width`, so the
+/// separator lands in the same column on every row. Colour covers the padding too, which is invisible.
+fn cell(tone: Tone, text: &str, width: usize) -> String {
+    let pad = " ".repeat(width.saturating_sub(text.width()));
+    format!("{}{pad}", sgr(tone, text))
+}
+
+/// Rows of the comparison: what the file had on the left, what it has now on the right. A hunk header
+/// spans both, a deleted line has nothing on the right, an added line nothing on the left, and a context
+/// line is the same text twice — the pairing a two-panel diff application shows.
+fn pairs(diff: &[String]) -> Vec<(Option<String>, Option<String>)> {
+    let mut rows = Vec::new();
+    let mut i = 0;
+    while i < diff.len() {
+        let line = &diff[i];
+        let removed = line.starts_with('-') && !line.starts_with("---");
+        let added = line.starts_with('+') && !line.starts_with("+++");
+        if removed {
+            let start = i;
+            while i < diff.len() && diff[i].starts_with('-') && !diff[i].starts_with("---") { i += 1 }
+            let gone: Vec<String> = diff[start..i].to_vec();
+            let begin = i;
+            while i < diff.len() && diff[i].starts_with('+') && !diff[i].starts_with("+++") { i += 1 }
+            let now: Vec<String> = diff[begin..i].to_vec();
+            // The classic pairing: the first removed line faces the first added one, and whatever is left
+            // over faces an empty cell, so the rows stay aligned.
+            for k in 0..gone.len().max(now.len()) {
+                rows.push((gone.get(k).cloned(), now.get(k).cloned()));
+            }
+        } else if added {
+            rows.push((None, Some(line.clone())));
+            i += 1;
+        } else if line.starts_with("@@") {
+            rows.push((Some(line.clone()), None));
+            i += 1;
+        } else {
+            rows.push((Some(line.clone()), Some(line.clone())));
+            i += 1;
+        }
+    }
+    rows
+}
+
+/// The text the rail hands to its own window: the commit, the files it touched, and then a two-panel
+/// comparison of the file that is open — the old lines on the left, the new ones on the right.
 pub fn panel_text(d: &Detail, hash: &str) -> String {
     use Tone::*;
+    const LEFT: usize = 58;
     let mut out = format!("{} {} {} {}\n\n", sgr(Gold, &format!("◆ commit {hash}")), sgr(Muted, "["), sgr(Coral, "✕"), sgr(Muted, "] [-]"));
     if d.files.is_empty() { out.push_str(&sgr(Dim, "  sin archivos")); out.push('\n'); }
     for f in &d.files {
@@ -733,10 +779,20 @@ pub fn panel_text(d: &Detail, hash: &str) -> String {
     }
     if !d.diff.is_empty() {
         out.push('\n');
-        for line in &d.diff {
-            let tone = if line.starts_with("@@") { Blue } else if line.starts_with('+') { Mint } else if line.starts_with('-') { Coral } else { Text };
-            out.push_str(&sgr(tone, &line.replace('\t', "    ")));
-            out.push('\n');
+        out.push_str(&format!("{}│{}\n", cell(Dim, "  antes", LEFT), sgr(Dim, "  ahora")));
+        for (old, new) in pairs(&d.diff) {
+            let left = match &old {
+                Some(l) if l.starts_with("@@") => cell(Blue, l, LEFT + 58),
+                Some(l) => cell(if l.starts_with('-') { Coral } else { Text }, &l.replace('\t', "    "), LEFT),
+                None => cell(Text, "", LEFT),
+            };
+            let right = match (&new, &old) {
+                (Some(r), _) if old.as_deref().is_some_and(|l| l.starts_with("@@")) => String::new(),
+                (Some(r), _) => sgr(if r.starts_with('+') { Mint } else { Text }, &r.replace('\t', "    ")),
+                (None, _) => String::new(),
+            };
+            let rule = if new.is_none() && old.as_deref().is_some_and(|l| l.starts_with("@@")) { "" } else { "│" };
+            out.push_str(&format!("{left}{}{right}\n", sgr(Dim, rule)));
         }
     }
     out

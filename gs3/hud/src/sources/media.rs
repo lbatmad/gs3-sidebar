@@ -380,6 +380,10 @@ fn window_rect() -> Option<(i64,i64,i64,i64)> {
     // (a supervisor, a herdr daemon), and a daemon that owns a window of its own would answer for the
     // terminal. Walking from the far end keeps the answer on the application that draws the grid.
     let mut chain = ancestors(); chain.reverse();
+    // A detached multiplexer daemon ends the chain on itself and owns no window, so the terminal cannot be
+    // reached that way any more. The pane is drawn by the application in front, and the video only exists
+    // while that application is this rail, so the frontmost pid is the terminal here.
+    if let Some(app) = frontmost_pid() { if !chain.contains(&app) { chain.push(app) } }
     let owners = serde_json::to_string(&chain).ok()?;
     let script = format!(r#"ObjC.import("CoreGraphics");
 const owners = {owners};
