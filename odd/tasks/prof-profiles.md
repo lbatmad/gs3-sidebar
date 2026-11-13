@@ -51,8 +51,8 @@ S11. "No tocar `sensitive()`, ni el gate de TREE, ni el render de markdown/códi
 | # | Spec | Ruta | Commit |
 |---|------|------|--------|
 | T1 | S4, S7, S8 | store: `profiles_store_path`/`profiles_store`, watcher de `profiles.json` con `notify` + debounce 300 ms, campo `profiles` en `Roster` (`gs3/hud/src/sources.rs`, `core.rs`) | cb56423 |
-| T2 | S2, S3, S5, S6, S7, S8 | card `profiles` arriba de la card PROF, selección visual, degradación a 42/36 con `width_of` (`gs3/hud/src/ui.rs`) | |
-| T3 | S1, S4 | botón `[ ▸ profiles ]`, Action, worker con throttle, pedidos `pane.focus` + `pane.send_keys` (`ui.rs`, `sources.rs`, `main.rs`) | |
+| T2 | S2, S3, S5, S6, S7, S8 | card `profiles` arriba de la card PROF, selección visual, degradación a 42/36 con `width_of` (`gs3/hud/src/ui.rs`) | bd2b47e |
+| T3 | S1, S4 | botón `[ ▸ profiles ]`, Action, worker con throttle, pedidos `pane.focus` + `pane.send_keys` (`ui.rs`, `sources.rs`, `main.rs`) | e3d701e |
 | T4 | S10 | `--help`, `docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md` | |
 | T5 | S9 | verificación real: `cargo test`, `--once` con el store de esta máquina, `scripts/build-hud.sh` + copia a `~/.local/bin`, sidecar, pane | |
 
@@ -123,7 +123,13 @@ L3 (decisiones, resueltas antes de escribir):
 - D4 (un perfil): la card no se dibuja con <2 perfiles (S5); el botón siempre está.
 - D5 (clic en perfil): selección visual en la HUD (estado local), nada más (S3). Abrir la pantalla
   es tarea del botón de S1.
-- D6 (envío): `pane.focus` + `pane.send_keys` con el texto literal `/gentle:profiles` y Enter, con
-  el throttle y coalescing de `model_picker`; verificar el token exacto de Enter contra la CLI de
-  herdr en T3.
+- D6 (envío): verificado contra el socket real de herdr (protocol 22): `pane.send_keys` rechaza texto
+  literal (`error invalid_key: unsupported key /gentle:profiles`), así que la secuencia es
+  `pane.focus` → `pane.send_text {text:"/gentle:profiles"}` → `pane.send_keys {keys:["Enter"]}`
+  (ambos aceptados, respuesta `ok`). El worker compartido (`pane_worker`) coalescea y descarta clics
+  dentro de 1 s, idéntico al model picker; el literal viaja fijo, nunca un nombre de perfil.
 - D7 (branch): rama `feat/prof-profiles` cortada de `main`; sin push ni merge sin pedido expreso.
+- D8 (id de la card): el pedido decía `Card::new("profiles", …)`, pero `profiles` ya es la clave de
+  collapse de la card existente ("Profiles & Clusters"); dos cards con la misma clave se plegarían
+  juntas. La card nueva usa el id `profiles-store` y título `⌁ Perfiles` (las filas de la solapa están
+  en español), distinguible de "Profiles & Clusters" en 48 columnas.

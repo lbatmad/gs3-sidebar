@@ -72,6 +72,8 @@ fn main()->Result<()> {
     let previews=sources::previews(a.cwd.clone(),data_tx.clone()); let mut asked_preview:Option<String>=None;
     // Stack versions are resolved by the local worker on session binding and refresh.
     let picker=sources::model_picker(a.socket.clone(),a.pane.clone());
+    // PROF: the `/gentle:profiles` screen opens on the bound pane, one command per explicit click.
+    let profiles=sources::profiles_command(a.socket.clone(),a.pane.clone());
     let voice=sources::voice(data_tx.clone());
     let media=sources::media(data_tx.clone(),a.socket.clone()); let spotify=sources::spotify(data_tx.clone());
     let capture=sources::screenshot();
@@ -92,6 +94,7 @@ fn main()->Result<()> {
         if let Some(n)=state.ui.git_more.take() {let _=local.send(sources::Local::More(n));}
         if state.ui.screenshot {state.ui.screenshot=false; let _=capture.send(());}
         if state.ui.open_picker {state.ui.open_picker=false; let _=picker.send(std::time::Instant::now());}
+        if state.ui.open_profiles {state.ui.open_profiles=false; let _=profiles.send(std::time::Instant::now());}
         if state.ui.save {state.ui.save=false; if let Some(p)=state.ui.config_path.clone() {let err=config::save(&p,&state.ui.config).err(); if err!=state.ui.save_error {state.ui.save_error=err; draw=true;}}}
         if state.read_session {state.read_session=false; let _=local.send(sources::Local::Session(state.session_path.clone()));}
         if state.refresh {state.refresh=false; scanned=None; let _=local.send(sources::Local::Refresh); let _=pr.send(());}

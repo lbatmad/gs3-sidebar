@@ -54,6 +54,9 @@ pub struct Ui {
     pub screenshot: bool,
     /// PROF: the profile name a click left selected. Display only: the HUD never applies it.
     pub profile_pick: Option<String>,
+    /// PROF: an explicit click asked for the `/gentle:profiles` screen; main consumes this intent
+    /// off the render path and the pane worker throttles repeats.
+    pub open_profiles: bool,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GitView { #[default] Graph, Branches }
@@ -76,6 +79,8 @@ pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, Scrol
     Dir(String), Fold, Inspect(String), Pick(String), MoreCommits(usize), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot,
     /// PROF: a click on a profile row; the HUD only keeps the name visible for the human.
     PickProfile(String),
+    /// PROF: open the `/gentle:profiles` screen on the bound agent pane (text + Enter via herdr).
+    ProfilesCommand,
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
     Search, PlayPause, PrevTrack, NextTrack, Seek(f64),
     /// MEDIA · Spotify: consent in the browser, renew the stored token, list playlists, open one.
@@ -152,6 +157,7 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::Inspect(p) => { ui.tree_pick = Some(p.clone()); ui.git_branch = None; ui.git_file = Some(p); act(ui, Action::Tab(Tab::Git)); }
         Action::Pick(p) => ui.tree_pick = if ui.tree_pick.as_ref() == Some(&p) { None } else { Some(p) },
         Action::PickProfile(p) => ui.profile_pick = if ui.profile_pick.as_ref() == Some(&p) { None } else { Some(p) },
+        Action::ProfilesCommand => ui.open_profiles = true,
         _ => {}
     }
 }
@@ -1170,6 +1176,11 @@ fn profiles_card(s: &State, w: usize) -> Card {
         }
         if r.running.len() > 5 { c.row(vec![seg(format!("   … {} más en curso", r.running.len() - 5), Dim)], vec![]); }
     }
+    // The tab's door to the screen itself: always present, with or without profiles, an explicit
+    // click sends the fixed command to the bound pane (throttled by the pane worker).
+    c.divider();
+    c.row(vec![seg("▸ ", Gold), seg("/gentle:profiles", Gold)], vec![seg("abrir", Dim)]);
+    c.on_click(Action::ProfilesCommand);
     c
 }
 
@@ -2430,6 +2441,25 @@ mod tests {
         find(&prof,"profile-host (high)"); find(&prof,"profile-refuter");
         assert!(!prof.iter().any(|l|l.contains("long-model-name-v2") || l.contains("claude-opus")));
         find(&prof,"5 ✓ · 1 en curso");
+    }
+    #[test]
+    fn profiles_button_is_always_present_and_sends_the_command_intent() {
+        // With no profiles at all the button still opens the screen: it is the tab's door to /gentle:profiles.
+        let s = roster_sample();
+        let l = on(&s, Tab::Prof, 48);
+        let mut sp = s.clone(); sp.ui.tab = Tab::Prof;
+        let f = frame(&sp, 48, 0); let (x, y) = at(&f, "/gentle:profiles");
+        assert_eq!(click(&f, x, y), Some(Action::ProfilesCommand));
+        let mut s = s;
+        assert!(apply(&mut s, Event::Ui(Action::ProfilesCommand)));
+        assert!(s.ui.open_profiles, "el clic queda como intención que main consume una vez");
+        assert!(!s.ui.save, "nada se escribe por abrir la pantalla");
+        // The row survives the narrow rail with the command readable.
+        for width in [36u16, 42, 48] {
+            let l = on(&s, Tab::Prof, width);
+            assert!(l.iter().any(|l| l.contains("/gentle:profiles")), "el botón sigue visible a {width}");
+            assert!(l.iter().all(|l| l.width() <= usize::from(width)));
+        }
     }
     #[test]
     fn profile_store_card_lists_profiles_and_picks_without_writing() {

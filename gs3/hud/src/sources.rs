@@ -430,8 +430,17 @@ fn model_picker_requests(id:&str)->Vec<(&'static str,Value)> {
         ("pane.send_keys",json!({"pane_id":id,"keys":["f9"]})),
     ]
 }
+/// `/gentle:profiles` to the bound pane: the command travels as literal text (send_keys rejects text
+/// with invalid_key) and only the Enter press travels as a key, after focus succeeds.
+fn profiles_command_requests(id:&str)->Vec<(&'static str,Value)> {
+    vec![
+        ("pane.focus",json!({"pane_id":id})),
+        ("pane.send_text",json!({"pane_id":id,"text":"/gentle:profiles"})),
+        ("pane.send_keys",json!({"pane_id":id,"keys":["Enter"]})),
+    ]
+}
 /// Explicit clicks only; coalesce pending requests and discard clicks within one second of the last attempt.
-pub fn model_picker(socket:PathBuf,id:String)->Sender<Instant> {
+fn pane_worker(socket:PathBuf,requests:Vec<(&'static str,Value)>)->Sender<Instant> {
     let (send,rx)=mpsc::channel::<Instant>();
     thread::spawn(move||{
         let mut last:Option<Instant>=None;
@@ -439,12 +448,14 @@ pub fn model_picker(socket:PathBuf,id:String)->Sender<Instant> {
             while let Ok(next)=rx.try_recv() {at=next;}
             if last.is_some_and(|prev|at.saturating_duration_since(prev)<Duration::from_secs(1)) {continue}
             last=Some(at);
-            for (method,params) in model_picker_requests(&id) {
-                if request(&socket,method,params).is_err() {break}
+            for (method,params) in &requests {
+                if request(&socket,method,params.clone()).is_err() {break}
             }
         }
     }); send
 }
+pub fn model_picker(socket:PathBuf,id:String)->Sender<Instant> { pane_worker(socket,model_picker_requests(&id)) }
+pub fn profiles_command(socket:PathBuf,id:String)->Sender<Instant> { pane_worker(socket,profiles_command_requests(&id)) }
 pub fn pane(socket:&Path,id:&str)->Result<Option<Value>> {
     let found=match request(socket,"pane.get",json!({"pane_id":id})) {
         Ok(v) if v["pane"].is_object()=>Some(v["pane"].clone()),
@@ -622,6 +633,48 @@ mod tests {
                 ("pane.send_keys", json!({"pane_id":pane,"keys":["f9"]})),
             ]);
         }
+    }
+    #[test]
+    fn profiles_command_requests_are_focus_text_then_enter() {
+        // send_keys rejects literal text (invalid_key), so the command travels as text and only the
+        // Enter press travels as a key; the rail sends the fixed literal, never a profile name.
+        for pane in ["w1:p1", "bound-other"] {
+            assert_eq!(profiles_command_requests(pane), vec![
+                ("pane.focus", json!({"pane_id":pane})),
+                ("pane.send_text", json!({"pane_id":pane,"text":"/gentle:profiles"})),
+                ("pane.send_keys", json!({"pane_id":pane,"keys":["Enter"]})),
+            ]);
+        }
+    }
+    #[test]
+    fn profiles_command_clicks_are_coalesced_and_throttled() {
+        let dir=std::env::temp_dir().join(format!("gs3-profcmd-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
+        let socket=dir.join("herdr.sock");
+        let listener=std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let focus=std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen=focus.clone();
+        thread::spawn(move||{
+            while let Ok((mut stream,_))=listener.accept() {
+                let mut line=String::new();
+                {let mut r=BufReader::new(stream.try_clone().unwrap()); let _=r.read_line(&mut line);}
+                if serde_json::from_str::<Value>(&line).map(|v|text(&v,"method")=="pane.focus").unwrap_or(false) {seen.fetch_add(1,std::sync::atomic::Ordering::SeqCst);}
+                let _=writeln!(stream,"{}",json!({"result":{"type":"ok"}}));
+            }
+        });
+        let send=profiles_command(socket.clone(),"w1:p1".into());
+        // A double click is one command: the second click inside the 1 s window is dropped.
+        send.send(Instant::now()).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        send.send(Instant::now()).unwrap();
+        thread::sleep(Duration::from_millis(600));
+        assert_eq!(focus.load(std::sync::atomic::Ordering::SeqCst),1,"el doble clic no envía dos veces");
+        // After the window a click sends again.
+        thread::sleep(Duration::from_millis(600));
+        send.send(Instant::now()).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(focus.load(std::sync::atomic::Ordering::SeqCst),2);
+        drop(send); fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn session_files_switch_append_and_truncate() {
