@@ -71,7 +71,7 @@ S12. El rail lee las dos capas de pin y muestra la ganadora (sólo lectura, `age
 | T4 | S10 | `--help`, `docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md` | fdbc7b6 |
 | T5 | S9 | verificación real: `cargo test`, `--once` con el store de esta máquina, `scripts/build-hud.sh` + copia a `~/.local/bin`, sidecar, pane | c645f09 (evidencia en L4) |
 | T6 | S12 | lectura de las dos capas de pin (precedencia, staleness), `Roster::pinned`, watcher de los directorios de pin (`core.rs`, `sources.rs`) | 7fcbf58 |
-| T7 | S3, S4, S12 | clic = `publish <nombre>` con nombre válido (toggle), `◆` en la fila pineada, renglón de anuncio en Profiles & Clusters, worker por nombre (`ui.rs`, `sources.rs`, `main.rs`) | |
+| T7 | S3, S4, S12 | clic = `publish <nombre>` con nombre válido (toggle), `◆` en la fila pineada, renglón de anuncio en Profiles & Clusters, worker por nombre (`ui.rs`, `sources.rs`, `main.rs`) | 09748d0 |
 | T8 | S3, S12 | docs (`docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md`, `--help`) y verificación real del toggle | |
 
 Riesgo: ninguno de los seis ítems. El rail sigue sin escribir configuración (sólo lee el store y
