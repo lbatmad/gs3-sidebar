@@ -72,7 +72,7 @@ S12. El rail lee las dos capas de pin y muestra la ganadora (sólo lectura, `age
 | T5 | S9 | verificación real: `cargo test`, `--once` con el store de esta máquina, `scripts/build-hud.sh` + copia a `~/.local/bin`, sidecar, pane | c645f09 (evidencia en L4) |
 | T6 | S12 | lectura de las dos capas de pin (precedencia, staleness), `Roster::pinned`, watcher de los directorios de pin (`core.rs`, `sources.rs`) | 7fcbf58 |
 | T7 | S3, S4, S12 | clic = `publish <nombre>` con nombre válido (toggle), `◆` en la fila pineada, renglón de anuncio en Profiles & Clusters, worker por nombre (`ui.rs`, `sources.rs`, `main.rs`) | 09748d0 |
-| T8 | S3, S12 | docs (`docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md`, `--help`) y verificación real del toggle | |
+| T8 | S3, S12 | docs (`docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md`, `--help`) y verificación real del toggle | 9a1372a (evidencia L7) |
 
 Riesgo: ninguno de los seis ítems. El rail sigue sin escribir configuración (sólo lee el store y
 envía un literal fijo al pane, la misma autoridad que el model picker ya ejerce con F9); sin
@@ -213,6 +213,25 @@ Descubrimiento fino delegado (explorer, evidencia `path:line` en `agent-profile-
   orquestador nunca cambia.
 - `isValidProfileName`: `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` + rechazo de `__proto__`,
   `constructor`, `prototype` — la regla de envío del rail.
+
+L7 (verificación de T6–T8):
+
+- `cargo test` verde: 182 passed, 0 failed (3 tests nuevos de pins: resolutor con
+  fixture de capas/precedencia/staleness, filtro del watcher, end-to-end del pin con `git init` real
+  y rename atómico — tres corridas estables).
+- `--once` con config home temporal de 2 perfiles: card sin pin al arrancar. El toggle punta a punta
+  no se pudo verificar contra un pane vivo sin ensuciar una sesión real: el intento contra el pane
+  de esta sesión (w2:p4D) inyectó el comando a mitad de turno y el agente lo leyó como mensaje;
+  no se ejecutó, no quedó declaración (`.pi/gentle-ai/profile.json` ausente, `git status` limpio) y
+  el falso turn se descartó solo. Cada tramo quedó verificado por separado: el envío live ya probado
+  (L4), el toggle es código de Pi con sus propios tests, y el rail tiene el watcher end-to-end +
+  unidades de marcas y nombres. Paso manual para el humano: un clic real en la card.
+- Desliz encontrado y corregido: `build-hud.sh` compila al target de la raíz (`CARGO_TARGET_DIR`),
+  mis builds manuales iban a `gs3/hud/target`; una instalación intermedia puso el binario viejo.
+  Instalado el correcto (`--help` del binario de `~/.local/bin` muestra la doc nueva).
+- Sidecar recreado: pane `w2:p61`, PID 14676. El rail vivo muestra la card con los dos perfiles
+  reales del store bundleado (`chatgpt` 13 roles, `current` 12), `●` en el activo, botón presente,
+  vuelta a MAIN.
 - D8 (id de la card): el pedido decía `Card::new("profiles", …)`, pero `profiles` ya es la clave de
   collapse de la card existente ("Profiles & Clusters"); dos cards con la misma clave se plegarían
   juntas. La card nueva usa el id `profiles-store` y título `⌁ Perfiles` (las filas de la solapa están
