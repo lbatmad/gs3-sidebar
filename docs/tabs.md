@@ -23,7 +23,7 @@ Todas las capturas son de una sesión de demostración. Con menos de 44 columnas
 
 | Tarjeta | Qué muestra |
 | --- | --- |
-| **⎇ git graph** | Cabecera `[ G \| R ]` para alternar entre **Grafo** (rama, estado, últimos 30 commits en gráfico) y **Ramas** (una fila por rama; `↑a ↓b` adelantadas/atrasadas, `gone`, o su antigüedad). Pie: `✎ N files · +A −D`. |
+| **⎇ git graph** | Cabecera `[ G \| R ]` para alternar entre **Grafo** (rama, estado, últimos 30 commits en gráfico) y **Ramas** (una fila por rama; `↑a ↓b` adelantadas/atrasadas, `gone`, o su antigüedad). Pie: `✎ N files · +A −D`. Un clic en un commit abre su ventana: autor y cuándo, el **mensaje completo** del commit (envuelto, no sólo el asunto) y debajo los archivos que tocó con sus contadores; cada fila `[diff]` abre el diff de ese archivo en la barra con el mismo clic. |
 | **📁 Working Tree** | Archivos modificados con su marca: `M` modificado, `A` agregado, `D`/`U` borrado o en conflicto, `?` sin seguimiento. Un clic en un archivo despliega su diff (máx. 80 filas). |
 | **⌁ Pull requests** | PR de la rama actual, estado y *checks*, y cuántos PR abiertos hay. Sin origen de GitHub: `no GitHub origin`. Requiere `gh`. |
 

@@ -6,6 +6,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 
 ### Añadido
 
+- `GIT` · la ventana de un commit muestra ahora **el mensaje completo** encima de los archivos: autor, cuándo y el cuerpo entero envuelto a 100 columnas (antes sólo se veía el asunto del grafo). Se lee sin abrir un editor y sin pasar el mouse: un clic en el commit.
+
 - `TREE` resalta el código de los archivos fuente con las gramáticas de Sublime embebidas (`syntect` + `two-face`, ~200 lenguajes): palabras clave, tipos, strings, números, comentarios, funciones y macros, con la paleta del rail (dorado/cian/menta/ámbar/gris) y negrita/itálica. No hay listas de palabras a mano ni red: una palabra dentro de un string o un comentario nunca se pinta como palabra clave porque la decide la gramática, y el estado del lenguaje se mantiene entre líneas (un comentario de bloque cubre sus líneas). Lo que no tiene gramática sigue saliendo como texto. El `ESC` que traiga un archivo se muestra como `␛` y nunca llega al parser SGR de la ventana.
 
 - `TREE` renderiza los archivos `.md` en la ventana en lugar de mostrarlos como texto crudo: encabezados por nivel, negritas, cursivas, listas (con anidado), citas, código en línea y en bloque, separadores, enlaces que se abren en el navegador y tablas GFM (como columnas alineadas, o como fichas con etiqueta cuando la prosa no entra en columnas). El `✕` del encabezado sigue cerrando y la ventana sigue al archivo cuando cambia. Un `.md` cortado en 256 KiB se renderiza cortado y lo avisa; si el parseo falla, cae a texto monoespaciado. `gs3-panel` suma `--markdown`, `--cut` y `--snapshot <png> [--width <px>]`, que dibuja exactamente lo que mostraría la ventana (sirve para revisar el render y para las capturas del README).
@@ -15,6 +17,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 - `MEDIA` · YouTube suma `🔍 listas`: busca listas públicas por nombre, muestra sus videos en la tarjeta `⌁ Videos` (ventana de diez filas con rueda y rango visible) y un clic arranca en esa fila, siguiendo con el siguiente video hasta el final de la lista.
 
 ### Corregido
+
+- `GIT` · las filas `[diff]` de la ventana de un commit vuelven a ser clicables: el patrón del panel exigía dos espacios de relleno y la barra escribe uno, así que nunca coincidía. Verificado contra el texto real: 5 de 5 filas enlazan.
 
 - `MEDIA` · El bloque de controles de Spotify ahora entra en tres filas.
 - `MEDIA` · `⌁ Pistas` muestra la lista de Spotify completa en vez de los primeros diez temas: se pide página por página (`limit=100&offset=`) hasta 500 y la rueda sobre la tarjeta scrollea la lista dentro de su ventana de diez filas, con el rango visible en el título. Al llegar a un extremo, la rueda vuelve a la barra, así que YouTube sigue alcanzable.

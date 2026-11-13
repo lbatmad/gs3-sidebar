@@ -130,3 +130,25 @@ S9. Un `ESC` dentro de un archivo se muestra como `␛` y nunca llega al parser 
 
 Verificación visual hecha: `--snapshot` del preview real de `src/syntax.rs` (Rust), `extensions/copy-commands/index.ts`
 (TypeScript) y de un README con HTML. Los tres se miraron. `cargo test`: 162 pasan (6 tests nuevos de gramática).
+
+## Addendum · el mensaje del commit en la ventana
+
+L7 (decisión del humano, textual):
+
+> la ventana AppKit me parece mejor, menos riesgos
+
+(reemplaza el hover con popup TUI: pedía el modo de mouse 1003, un evento por movimiento, y este entorno no
+permite verificar el mouse sintético. La ventana no toca el modo de entrada.)
+
+S10. Un clic en un commit abre la ventana con **autor, cuándo y el mensaje completo** del commit (cuerpo
+     envuelto a 100 columnas por palabras, no cortado a mitad de palabra), encima de los archivos que tocó.
+     Cada fila `[diff]` de esa ventana abre el diff del archivo en la barra. Nada de subprocesos por hover:
+     un `git show -s --format=%an%x00%ar%x00%B` por selección, en el hilo del inspector.
+S11. El mensaje es contenido del usuario: se neutraliza su `ESC` como el resto de los textos que el panel
+     interpreta como SGR.
+
+| # | Spec | Ruta | Commit |
+|---|------|------|--------|
+| T14 | S10, S11 | `Detail { author, date, message }` + `git show -s` en `sources::detail` | 4e23160 |
+| T15 | S10 | `ui::panel_text` con el bloque del mensaje y `wrap_words` | 4e23160 |
+| T16 | S10 | `decorate()` del panel: las filas `[diff]` vuelven a enlazar | 45d3042 |
