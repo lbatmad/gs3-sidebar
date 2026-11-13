@@ -8,9 +8,9 @@ use anyhow::{anyhow, Result};
 use core::*;
 use crossterm::{event::{self, Event as Input, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind}, execute, style::Print, terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen}};
 use ratatui::{backend::CrosstermBackend, style::{Color, Modifier, Style}, text::{Line, Span}, widgets::Paragraph, Terminal};
-use std::{ffi::CString, io::{self, Write}, os::unix::ffi::OsStrExt, path::{Path, PathBuf}, sync::{atomic::{AtomicBool, Ordering}, mpsc}, thread, time::Duration};
+use std::{io::{self, Write}, path::{Path, PathBuf}, sync::mpsc, thread};
 
-const HELP:&str="gs3-hud --pane <HERDR_PANE_ID> [--socket <path>] [--cwd <dir>] [--config <file>] [--once]\n\nRead-only Pi telemetry rail (tabs MAIN GIT PROF MEM TREE MEDIA and ⛭ = CONFIG).\nKeys: 1-7 switch tab (in that order), r refresh, q / Ctrl-C quit (in the CONFIG name editor: type, Backspace, Enter saves, Esc cancels).\nkill -USR1 <pid> reloads the rail in place.\nMouse: click a tab, a card's [-]/[+] to collapse or expand it, CONFIG rows to toggle tabs or edit the name;\nGIT: [ Grafo | Ramas ] switches view, a branch shows its diff against HEAD ([ ✕ ] closes), a file previews its diff inline (read-only git diff);\nMAIN: controls use Nerd Font icons by default; plain_controls=true in --config selects ASCII MIC/MUTE, HP/DEAF, APP and CAP labels for ordinary fonts. Mic / headphones toggle voice mute/deafen (Vesktop on Linux, official Discord on macOS; coral active, mint inactive, dim offline); the Discord icon opens or focuses that client; the capture control opens the area selector (Flameshot on Linux, native macOS selection to clipboard; explicit click, ≥1 s apart); an explicit voice click may request one-time consent and save a private 0600 token in ~/.config/gs3/discord-token.json (never displayed). No voice sockets in --once.\nMAIN: click any model/effort row (or Status ▸) to focus the bound agent pane and send fixed F9 for its model picker; repeated clicks within 1 s are ignored, failures are silent;\nPROF: reads global configured assignments from the canonical /gentle:profiles models.json; GENTLE_PI_CONFIG_HOME or absolute GENTLE_SHELL_CONFIG_HOME selects the store, then a bundled <prefix>/agent next to <prefix>/config/models.json, then the standard ~/.pi/gentle-ai store. The host row keeps the settings.json defaults until the profile configures an orchestrator entry. Provider roles are included without MD files; missing/invalid/unknown sources are labeled, never replaced by task/MD model guesses. r re-reads. Session pins/snapshots may differ; profiles and model selections are never written.\nTREE: a folder opens/closes, [ ⊟ ] folds all, a changed file opens its diff in GIT, another file is selected (names only, symlinks never followed);\nwheel over the tab bar cycles tabs, over a card's own long list (MEDIA `⌁ Pistas`) scrolls that list, elsewhere scrolls the body.\nMEDIA: Spotify keeps the upper section and YouTube the section below it. Spotify authorizes with its own PKCE consent: an explicit click opens the browser, waits up to 180 s on http://127.0.0.1:8899/callback (register that exact redirect in the app) and keeps client_id plus tokens in a private 0600 ~/.config/gs3/spotify.json through curl; nothing is fetched until you click. With Spotify Premium, start the gs3 librespot device explicitly, open its first-login OAuth URL shown on the card, then play the open playlist or a track, pause, skip forward or back and seek by clicking the progress bar, and set the volume, shuffle or repeat from the rows below the transport, which show what /me/player reports; `🔍 buscar tema` searches the catalogue and plays what you pick; the cover of the playing album (else of the open playlist) is drawn through the terminal's kitty graphics protocol, with no cover and no reserved space when the terminal or the fetch cannot provide it; the private ~/.config/gs3/librespot cache is reused. A YouTube search queues the best match plus its recommendations (the RD mix) and starts it; `listas` searches public playlists by name, lists a chosen playlist's videos in a ten-row window and a click starts there and continues to the end of that list, with no cookies; the video plays in a separate mpv window, never inside the rail: borderless, without on-screen controls and always on top, placed over the card below search from the window bounds CoreGraphics reports, which needs no permission. Otherwise playback starts without positioning and the card reports why. It hides whenever another application comes forward and returns when the rail does. A borderless window has no title bar to grab; there is no clean API to freeze another process's window. Transport and a clickable seek bar drive mpv over its JSON IPC socket. Requires librespot, mpv and yt-dlp (PATH, then /opt/homebrew/bin and /usr/local/bin); a missing tool is reported, never installed.\n--config is the HUD's own settings file {name, hidden, collapsed, optional plain_controls}: written atomically (in addition to the private Discord token and Spotify credential file, both 0600, and the private librespot cache); without it changes last until exit.\n--socket defaults to HERDR_SOCKET_PATH or ~/.config/herdr/herdr.sock\n--cwd defaults to the current directory\n--once prints a plain-text snapshot of every visible tab at width 42 (no terminal required)\nStack versions follow the selected installation; r refreshes them. Unverifiable tools show no verificada.\nPR refresh cycles (view + open count) are spaced by at least 30 seconds.";
+const HELP:&str="gs3-hud --pane <HERDR_PANE_ID> [--socket <path>] [--cwd <dir>] [--config <file>] [--once]\n\nRead-only Pi telemetry rail (tabs MAIN GIT PROF MEM TREE MEDIA and ⛭ = CONFIG).\nKeys: 1-7 switch tab (in that order), r refresh, q / Ctrl-C quit (in the CONFIG name editor: type, Backspace, Enter saves, Esc cancels).\nMouse: click a tab, a card's [-]/[+] to collapse or expand it, CONFIG rows to toggle tabs or edit the name;\nGIT: [ Grafo | Ramas ] switches view, a branch shows its diff against HEAD ([ ✕ ] closes), a file previews its diff inline (read-only git diff);\nMAIN: controls use Nerd Font icons by default; plain_controls=true in --config selects ASCII MIC/MUTE, HP/DEAF, APP and CAP labels for ordinary fonts. Mic / headphones toggle voice mute/deafen (Vesktop on Linux, official Discord on macOS; coral active, mint inactive, dim offline); the Discord icon opens or focuses that client; the capture control opens the area selector (Flameshot on Linux, native macOS selection to clipboard; explicit click, ≥1 s apart); an explicit voice click may request one-time consent and save a private 0600 token in ~/.config/gs3/discord-token.json (never displayed). No voice sockets in --once.\nMAIN: click any model/effort row (or Status ▸) to focus the bound agent pane and send fixed F9 for its model picker; repeated clicks within 1 s are ignored, failures are silent;\nPROF: reads global configured assignments from the canonical /gentle:profiles models.json; GENTLE_PI_CONFIG_HOME or absolute GENTLE_SHELL_CONFIG_HOME selects the store, then a bundled <prefix>/agent next to <prefix>/config/models.json, then the standard ~/.pi/gentle-ai store. The host row keeps the settings.json defaults until the profile configures an orchestrator entry. Provider roles are included without MD files; missing/invalid/unknown sources are labeled, never replaced by task/MD model guesses. r re-reads. Session pins/snapshots may differ; profiles and model selections are never written.\nTREE: a folder opens/closes, [ ⊟ ] folds all, a changed file opens its diff in GIT, another file is selected (names only, symlinks never followed);\nwheel over the tab bar cycles tabs, over a card's own long list (MEDIA `⌁ Pistas`) scrolls that list, elsewhere scrolls the body.\nMEDIA: Spotify keeps the upper section and YouTube the section below it. Spotify authorizes with its own PKCE consent: an explicit click opens the browser, waits up to 180 s on http://127.0.0.1:8899/callback (register that exact redirect in the app) and keeps client_id plus tokens in a private 0600 ~/.config/gs3/spotify.json through curl; nothing is fetched until you click. With Spotify Premium, start the gs3 librespot device explicitly, open its first-login OAuth URL shown on the card, then play the open playlist or a track, pause, skip forward or back and seek by clicking the progress bar, and set the volume, shuffle or repeat from the rows below the transport, which show what /me/player reports; `🔍 buscar tema` searches the catalogue and plays what you pick; the cover of the playing album (else of the open playlist) is drawn through the terminal's kitty graphics protocol, with no cover and no reserved space when the terminal or the fetch cannot provide it; the private ~/.config/gs3/librespot cache is reused. A YouTube search queues the best match plus its recommendations (the RD mix) and starts it; `listas` searches public playlists by name, lists a chosen playlist's videos in a ten-row window and a click starts there and continues to the end of that list, with no cookies; the video plays in a separate mpv window, never inside the rail: borderless, without on-screen controls and always on top, placed over the card below search from the window bounds CoreGraphics reports, which needs no permission. Otherwise playback starts without positioning and the card reports why. It hides whenever another application comes forward and returns when the rail does. A borderless window has no title bar to grab; there is no clean API to freeze another process's window. Transport and a clickable seek bar drive mpv over its JSON IPC socket. Requires librespot, mpv and yt-dlp (PATH, then /opt/homebrew/bin and /usr/local/bin); a missing tool is reported, never installed.\n--config is the HUD's own settings file {name, hidden, collapsed, optional plain_controls}: written atomically (in addition to the private Discord token and Spotify credential file, both 0600, and the private librespot cache); without it changes last until exit.\n--socket defaults to HERDR_SOCKET_PATH or ~/.config/herdr/herdr.sock\n--cwd defaults to the current directory\n--once prints a plain-text snapshot of every visible tab at width 42 (no terminal required)\nStack versions follow the selected installation; r refreshes them. Unverifiable tools show no verificada.\nPR refresh cycles (view + open count) are spaced by at least 30 seconds.";
 struct Args {pane:String,socket:PathBuf,cwd:PathBuf,config:Option<PathBuf>,once:bool}
 fn args()->Result<Option<Args>> {
     let mut a=std::env::args().skip(1); let mut pane=None;
@@ -33,30 +33,6 @@ const FOCUS_ON:&str="\x1b[?1004h"; const FOCUS_OFF:&str="\x1b[?1004l";
 const COVER_DELETE: &str = "\x1b_Ga=d,d=I,i=731951,q=2\x1b\\";
 const COVER_UNPLACE: &str = "\x1b_Ga=d,d=i,i=731951,q=2\x1b\\";
 fn restore() {let _=disable_raw_mode(); let _=execute!(io::stdout(),Print(COVER_DELETE),Print(MOUSE_OFF),Print(FOCUS_OFF),LeaveAlternateScreen);}
-static RELOAD: AtomicBool = AtomicBool::new(false);
-/// Defer terminal cleanup and exec to the main loop, outside the signal handler.
-extern "C" fn reload_signal(_: libc::c_int) { RELOAD.store(true, Ordering::Relaxed); }
-/// End this process's children before `execv` replaces it: the player and the Spotify device outlive an
-/// image change, and a reload without this leaves an unattended video window on top of everything with
-/// no rail behind it to close it.
-fn end_children() {
-    let pid = std::process::id().to_string();
-    let Ok(out) = std::process::Command::new("ps").args(["-o", "pid=", "-P", &pid]).output() else { return };
-    for child in String::from_utf8_lossy(&out.stdout).split_whitespace() {
-        if let Ok(child) = child.parse::<i32>() { unsafe { libc::kill(child, libc::SIGTERM) }; }
-    }
-    thread::sleep(Duration::from_millis(150));
-}
-/// Keep the pane and its arguments while replacing the running executable.
-fn reload() -> Result<()> {
-    end_children();
-    restore();
-    let exe = CString::new(std::env::current_exe()?.as_os_str().as_bytes())?;
-    let args = std::env::args_os().map(|arg| CString::new(arg.as_os_str().as_bytes())).collect::<std::result::Result<Vec<_>, _>>()?;
-    let argv: Vec<_> = args.iter().map(|arg| arg.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
-    unsafe { libc::execv(exe.as_ptr(), argv.as_ptr()); }
-    Err(io::Error::last_os_error().into())
-}
 struct Guard;
 impl Drop for Guard {fn drop(&mut self){restore();}}
 enum Message {Data(Event),Input(Input)}
@@ -76,7 +52,6 @@ fn main()->Result<()> {
         state.roster=state.session_path.as_deref().and_then(|p|sources::roster_of(Path::new(p))); state.stack=sources::stack(&a.cwd,state.session_path.as_deref().map(Path::new)); state.tree=Some(sources::tree(&a.cwd,Vec::new()));
         for tab in state.ui.tabs() {state.ui.tab=tab; for line in ui::render_lines(&state,42) {println!("{line}");}} return Ok(())
     }
-    if unsafe { libc::signal(libc::SIGUSR1, reload_signal as *const () as libc::sighandler_t) } == libc::SIG_ERR { return Err(io::Error::last_os_error().into()) }
     let previous=std::panic::take_hook(); std::panic::set_hook(Box::new(move|info|{restore();previous(info);}));
     let _guard=Guard;
     enable_raw_mode()?; execute!(io::stdout(),EnterAlternateScreen,Print(MOUSE_ON),Print(FOCUS_ON))?;
@@ -102,7 +77,6 @@ fn main()->Result<()> {
     let mut transmitted: Option<String> = None;
     let mut sent_card: Option<Option<crate::media::CellRect>> = None;
     loop {
-        if RELOAD.swap(false, Ordering::Relaxed) { reload()?; }
         if let Some(cmd)=state.ui.voice_cmd.take() {let _=voice.send(cmd);}
         if let Some(mut cmd)=state.ui.media_cmd.take() {
             if let media::MediaCmd::Play(_, rect)=&mut cmd { *rect=last.as_ref().and_then(|f|f.youtube_rect); }
@@ -146,12 +120,7 @@ fn main()->Result<()> {
         }
         }
         draw=false;
-        let message = match rx.recv_timeout(Duration::from_millis(250)) {
-            Ok(message) => message,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(mpsc::RecvError.into()),
-        };
-        match message {
+        match rx.recv()? {
             Message::Input(Input::Resize(..))=>draw=true,
             Message::Input(Input::Key(k)) if k.kind!=KeyEventKind::Release => {
                 let key=match k.code {

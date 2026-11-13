@@ -446,8 +446,9 @@ Without a cell size it falls back to the old frame scaling, which is wrong by th
 nothing. The layout itself is untouched. 150 tests green (new: the video lands on the cells the card
 reserved — RED before the fix, printing the real `358x182+1442+406` — and the frame-scaling fallback).
 
-Reloading: a rebuilt HUD cannot take over its own pane, so `kill -USR1 <pid>` now re-execs the binary on
-disk in the same pane and with the same arguments, ending its children first (mpv and librespot outlive
-an image change, and an orphaned player is a window nobody can close). Verified for the same tree; the
-first reload after an install still needs a start of the new binary, because the running image is the
-one that has to answer the signal.
+Reloading, tried and dropped: a rebuilt HUD cannot take over its own pane, so a `SIGUSR1` handler that
+ended the children and `execv`'d the binary on disk was added to place the new image in the same pane.
+On the live rail the signal ended the process instead of replacing it, and herdr closed the pane with
+it: the escape is not verified and is not shipped. Restarting the rail after an install stays a manual
+start, which is why the placement below was proven from the pure function plus measured inputs rather
+than from a fresh window.
