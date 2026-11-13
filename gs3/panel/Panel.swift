@@ -162,7 +162,9 @@ func decorate(_ body: NSMutableAttributedString) {
             body.addAttributes([.link: url, .foregroundColor: NSColor(calibratedRed: 251 / 255, green: 113 / 255, blue: 133 / 255, alpha: 1)], range: close)
         }
     }
-    let pattern = try? NSRegularExpression(pattern: "^[MAD?U]  (\\S+)  \\[diff\\]", options: [.anchorsMatchLines])
+    // One or more spaces: the rail writes `M path [diff]`, and a pattern that assumed two columns of
+    // padding never matched a single row.
+    let pattern = try? NSRegularExpression(pattern: "^[MAD?U]\\s+(\\S+)\\s+\\[diff\\]", options: [.anchorsMatchLines])
     pattern?.enumerateMatches(in: text, options: [], range: NSRange(location: 0, length: ns.length)) { match, _, _ in
         guard let match = match else { return }
         let range = match.range(at: 1)
