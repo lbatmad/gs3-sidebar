@@ -467,3 +467,12 @@ Fix: `VIDEO_INSET_PCT` on both sides (the picture is centred, and a UI test now 
 right margin), and `GRID_SIDE = 4` so the grid is measured between its paddings: 239x59 cells from
 1912x1003 px. The mapping was then checked against the screen: the pane's own edges and the card's
 right border land within 1-2 px of the computed columns (1493 predicted 1492, 1892 predicted 1892).
+
+L59. Human: "sigue mal, no arreglaste nada" — and they were right, for a reason none of the code explains:
+`scripts/build-hud.sh` installs to `$PREFIX/bin/gs3-hud` with `$PREFIX` under the *invoking* HOME, and the
+agent's HOME is `gs-root/shell/home`, so every install of this session landed in
+`gs-root/shell/home/.local/bin/gs3-hud` while the rail ran `/Users/albertobellido/.local/bin/gs3-hud`
+(the copy the human installed at 21:45, which had only the frame fix). Two binaries, two behaviours, and
+"nothing changed" was literally true. Install to the absolute user path, or pass `--prefix` explicitly.
+Proven after installing there: the live window asks for `256x170+1580+454` (32 cells wide, on a whole
+cell row) where the stale one asked `312x170+1584+…`.
