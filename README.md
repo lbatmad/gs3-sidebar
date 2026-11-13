@@ -84,7 +84,7 @@ Se cambian con las teclas `1`–`7` o con el ratón. `r` refresca y `q` sale.
 | `2` | **GIT** | Grafo y ramas, archivos modificados con diff, pull requests |
 | `3` | **PROF** | Perfiles y subagentes configurados |
 | `4` | **MEM** | Engram, último resumen de sesión, versiones, herramientas y MCP |
-| `5` | **TREE** | Árbol del proyecto con marcas de git; un clic abre el archivo en su ventana (texto o imagen) |
+| `5` | **TREE** | Árbol del proyecto con marcas de git; un clic abre el archivo en su ventana (texto, markdown renderizado o imagen) |
 | `6` | **⛭ CONFIG** | Nombre del banner, pestañas visibles, datos del monitor |
 
 <table>

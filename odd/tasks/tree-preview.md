@@ -63,3 +63,33 @@ L2 (hallazgos de exploración, `path:line`):
 - `gs3/hud/src/sources.rs:59-88` — `tree`/`trees`: escaneo en un hilo, con presupuesto de 2000 nodos y
   `TREE_SKIP`; el hilo descarta los pedidos viejos y contesta solo el último.
 - `scripts/build-hud.sh:31` — el panel se compila con `swiftc -O -framework AppKit gs3/panel/Panel.swift`.
+
+## Addendum · vista de Markdown
+
+L3 (pedido del humano, textual):
+
+> a los archivos md se les puede poner un visualizador de ese tipo de archivos, para que deje de ser texto crudo
+
+S7. Un archivo `.md` (o `.markdown`) se muestra **renderizado** en la ventana: encabezados por nivel, negrita,
+    cursiva, listas, citas, código en línea y en bloque, separadores, enlaces y tablas GFM (columnas alineadas,
+    monoespaciadas). Los enlaces `http(s)`/`mailto` se abren con un clic en el navegador; el `✕` sigue cerrando.
+    Un `.md` de más de 256 KiB se renderiza cortado y lo dice. Si el parseo falla, cae a texto monoespaciado.
+    Todo lo demás (puerta S4, mismo panel, mismo cierre, mismo seguimiento del archivo) queda igual.
+
+| # | Spec | Ruta | Commit |
+|---|------|------|--------|
+| T7 | S7 | `Preview::Markdown` + `PanelCmd::Markdown` + `panel_show` (Rust, con tests) | d4620a8 |
+| T8 | S7 | modo `--markdown` y renderizador nativo en `gs3/panel/Panel.swift` | 4e172dd |
+| T9 | S7 | ayuda, `docs/tabs.md`, `CHANGELOG.md` y espejo Engram | pendiente |
+
+Cortes: T7 = `d4620a8`; T8 = `4e172dd`; T9 cierra el hito. La línea base de la rama contra `origin/main` es de ~7,7k líneas
+heredadas del trabajo de panel y MEDIA, así que el corte por trabajo se mide sobre estos tres commits (~500 líneas), no
+sobre la rama.
+
+Riesgo de S7: ninguno de los seis ítems. El render corre en el mismo proceso del panel, sin red y sin escribir nada; los
+enlaces solo abren el navegador ante un clic explícito, con `NSWorkspace`, igual que un enlace de cualquier visor; las
+tablas y el markdown nunca se interpretan como HTML, así que no hay superficie de inyección. Lo único que cambia de
+forma visible es la ventana, y `--snapshot` permite verla sin abrirla.
+
+Verificación visual: `gs3-panel --snapshot out.png --width 900 --markdown <archivo.md>`, que dibuja lo mismo
+que la ventana en un PNG para mirarlo (y sirve para las capturas del README).
