@@ -305,7 +305,7 @@ fn move_window(player: &mut Option<Player>, y: &mut Youtube, card: Option<CellRe
     trace!("move: used={used:?} want={card:?} geometry={:?}", geometry.as_deref().ok());
     drop(player.take());
     let Some(mut fresh) = Player::start(geometry.as_deref().ok(), card) else { y.state = "mpv no encontrado".into(); return };
-    if fresh.load(&id) {
+    if fresh.load(&id, y.playing) {
         if position > 0.5 { fresh.call(&["seek", &format!("{position:.3}"), "absolute"]); }
         *player = Some(fresh);
     } else { y.state = "no se pudo recolocar el video".into() }
@@ -486,13 +486,16 @@ impl Player {
         (reply["error"].as_str() == Some("success")).then(|| reply["data"].clone()).filter(|d| !d.is_null())
     }
 
-    fn load(&mut self, video: &str) -> bool {
+    fn load(&mut self, video: &str, playing: bool) -> bool {
         let success = self.call(&["loadfile", &format!("https://www.youtube.com/watch?v={video}"), "replace"])
             .is_some_and(|reply| reply["error"].as_str() == Some("success"));
         // `--keep-open=yes` leaves mpv paused at EOF, and `loadfile` inherits that: without clearing it
         // every track after the first one loads paused at 0:00 while the card still said "reproduciendo"
-        // (seen live: `3/24`, `▶`, `0:00 / 3:51`). A load starts playing, always.
-        if success { self.call(&["set_property", "pause", "no"]); }
+        // (seen live: `3/24`, `▶`, `0:00 / 3:51`). So the pause state is written on every load — but
+        // with the state the human left behind, not always `no`: the block moves while the wheel scrolls
+        // the rail, moving it rebuilds this player, and a plain `no` made a paused video start playing by
+        // itself on every scroll.
+        if success { self.call(&["set_property", "pause", if playing { "no" } else { "yes" }]); }
         self.eof = if success { EofGuard::Waiting } else { EofGuard::Handled };
         success
     }
@@ -588,7 +591,7 @@ fn advance(player: &mut Player, y: &mut Youtube, step: isize) {
     if next == y.index { return }
     y.index = next;
     y.position = 0.0; y.duration = 0.0; y.title = Some(y.queue[next].title.clone());
-    if !player.load(&y.queue[next].id) { y.state = "no se pudo cargar el video".into(); y.playing = false; }
+    if !player.load(&y.queue[next].id, true) { y.state = "no se pudo cargar el video".into(); y.playing = false; }
 }
 
 fn ensure_player(player: &mut Option<Player>, socket: &std::path::Path, card: Option<CellRect>) -> Option<&'static str> {
@@ -618,7 +621,7 @@ fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &
             y.queue = y.videos.clone(); y.index = *row;
             y.state = fallback.map(|reason| format!("sin geometría: {reason}")).unwrap_or_else(|| "reproduciendo".into());
             y.title = Some(y.queue[*row].title.clone()); y.position = 0.0; y.duration = 0.0;
-            if !player.load(&y.queue[*row].id) { y.state = "no se pudo cargar el video".into(); y.playing = false; }
+            if !player.load(&y.queue[*row].id, true) { y.state = "no se pudo cargar el video".into(); y.playing = false; }
             return;
         }
         _ => {}
@@ -639,7 +642,7 @@ fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &
                 y.title = y.queue.first().map(|v| v.title.clone());
                 y.position = 0.0; y.duration = 0.0;
                 let id = y.queue[0].id.clone();
-                if !player.load(&id) { y.state = "no se pudo cargar el video".into(); y.playing = false; }
+                if !player.load(&id, true) { y.state = "no se pudo cargar el video".into(); y.playing = false; }
             }
             Ok(_) => y.state = "sin resultados".into(),
             Err(e) => y.state = e,
@@ -651,6 +654,7 @@ fn handle(player: &mut Option<Player>, y: &mut Youtube, cmd: MediaCmd, socket: &
     match cmd {
         MediaCmd::CardRect(_) => unreachable!("handled above"),
         MediaCmd::Toggle => { player.call(&["cycle", "pause"]); }
+        MediaCmd::Pause => { player.call(&["set_property", "pause", "yes"]); y.playing = false; }
         MediaCmd::Next => advance(player, y, 1),
         MediaCmd::Prev => advance(player, y, -1),
         MediaCmd::Seek(fraction) => {
@@ -687,7 +691,7 @@ fn poll(player: &mut Option<Player>, y: &mut Youtube) {
                     y.title = Some(y.queue[next].title.clone());
                     y.position = 0.0; y.duration = 0.0;
                     y.state = "reproduciendo".into();
-                    if !player.load(&y.queue[next].id) { y.state = "no se pudo cargar el video".into(); }
+                    if !player.load(&y.queue[next].id, true) { y.state = "no se pudo cargar el video".into(); }
                 }
                 None => y.state = "sin nuevas recomendaciones".into(),
             },

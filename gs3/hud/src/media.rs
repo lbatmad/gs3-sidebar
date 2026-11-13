@@ -136,6 +136,9 @@ impl CellRect {
 pub enum MediaCmd {
     /// Pause when playing, resume when paused.
     Toggle,
+    /// Pause unconditionally: the other source started, and a card whose `playing` lags must not be able
+    /// to resume instead.
+    Pause,
     Next,
     Prev,
     /// Absolute position as a fraction of the current duration (0.0–1.0), from a click on the bar.

@@ -297,8 +297,21 @@ impl State {
     pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),tree:None,detail:Detail::default(),media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
 }
 pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Tree(Tree), Detail(Detail), Media(Youtube), Spotify(Spotify), Ui(ui::Action), Key(ui::Key) }
+/// The rail never plays both at once: whichever source the human starts pauses the other. Spotify is
+/// device playback and the video is a separate mpv window, so nothing else coordinates them. Only a
+/// *start* counts: both engines keep reporting while they play, and pausing on every report would make
+/// them take turns pausing each other.
+pub fn exclusive(video_started: bool, spotify_started: bool, video_playing: bool, spotify_playing: bool) -> (Option<crate::media::MediaCmd>, Option<crate::media::SpotifyCmd>) {
+    // One event comes from one side, so at most one of these is Some.
+    let pause_video = spotify_started && video_playing;
+    let pause_spotify = video_started && spotify_playing;
+    (pause_video.then_some(crate::media::MediaCmd::Pause), pause_spotify.then_some(crate::media::SpotifyCmd::Pause))
+}
+
 pub fn apply(s:&mut State,e:Event)->bool {
     let old=s.clone();
+    let (from_video, from_spotify) = (matches!(e, Event::Media(_)), matches!(e, Event::Spotify(_)));
+    let was = (s.media.youtube.playing, s.media.spotify.playing);
     match e {
         Event::Pane(v) if text(&v,"pane_id")==s.pane => {
             let ws=text(&v,"workspace_id"); if ws!=s.workspace {s.label.clear();} s.workspace=ws.into();
@@ -332,6 +345,11 @@ pub fn apply(s:&mut State,e:Event)->bool {
         Event::Key(k)=>ui::key(s,k),
         _=>{}
     }
+    let video_started = from_video && s.media.youtube.playing && !was.0;
+    let spotify_started = from_spotify && s.media.spotify.playing && !was.1;
+    let (pause_video, pause_spotify) = exclusive(video_started, spotify_started, s.media.youtube.playing, s.media.spotify.playing);
+    if let Some(c) = pause_video { if s.ui.media_cmd.is_none() { s.ui.media_cmd = Some(c) } }
+    if let Some(c) = pause_spotify { if s.ui.spotify_cmd.is_none() { s.ui.spotify_cmd = Some(c) } }
     *s!=old
 }
 pub fn parse_wire(v:&Value)->(&str,Option<Event>) {
@@ -608,5 +626,25 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
         assert_eq!((pr_delay(0),pr_delay(1),pr_delay(2),pr_delay(3)),(120,300,900,900));
         assert!(!pr_due(Some(100),129)); assert!(pr_due(Some(100),130)); assert!(pr_due(None,0));
         assert_eq!(pr_trigger_due(None,5),5); assert_eq!(pr_trigger_due(Some(100),110),130); assert_eq!(pr_trigger_due(Some(100),200),200);
+    }
+
+    #[test]
+    fn starting_one_source_pauses_the_other() {
+        use crate::media::{MediaCmd, SpotifyCmd};
+        // The video started while Spotify was playing: Spotify is paused, the video is left alone.
+        let (video, spotify) = exclusive(true, false, true, true);
+        assert!(video.is_none(), "the video that just started must not be paused");
+        assert!(matches!(spotify, Some(SpotifyCmd::Pause)), "Spotify gives way: {spotify:?}");
+        // Spotify started while a video was playing: the video is paused, unconditionally.
+        let (video, spotify) = exclusive(false, true, true, true);
+        assert!(matches!(video, Some(MediaCmd::Pause)), "the video gives way: {video:?}");
+        assert!(spotify.is_none(), "Spotify that just started must not be paused");
+        // The other side is silent: no command at all.
+        assert!(matches!(exclusive(true, false, true, false), (None, None)));
+        assert!(matches!(exclusive(false, true, false, true), (None, None)));
+        // A report from a source that was already playing is not a start: both keep reporting while they
+        // play, and both engines tick about once a second, so acting on reports would make them pause
+        // each other forever.
+        assert!(matches!(exclusive(false, false, true, true), (None, None)));
     }
 }

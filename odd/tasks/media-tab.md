@@ -491,3 +491,25 @@ cell per side. `VIDEO_SIDE = 1`: the picture is `inner - 2` cells wide, one cell
 border, the full twelve rows tall. Live rect `352x204+1532+607` — 44x12 cells, 1.73:1, right edge 1884
 against the border column at 1892. The lesson is in the question, not the pixels: the margins, the
 width and the height are the human's call, not something to re-derive from a comment in the file.
+
+L62. Human: "agregale un control que no pueden sonar los dos juntos, ahora estoy escuchando spotify y
+cuando me muevo por la barra lateral en la solapa media se dispara sola la reproduccion del video,
+generalmente se tiene que redibujar el componente de video." Asked before touching anything, as they
+demanded: the rule is "el que empieza pausa al otro", and the trigger of the stray playback is the
+mouse wheel.
+
+Bug: `Player::load` ended every load with `set_property pause no`, which was there so a track after the
+first would not inherit `--keep-open=yes`'s paused-at-EOF state. But a scroll moves the video block, a
+moving block rebuilds the player, and the rebuild goes through the same load — so a paused video started
+playing by itself while the human listened to Spotify. `load` now takes the pause state to restore
+(`load(video, playing)`); the rebuild passes what the card reports, every path that starts a video
+passes `true`. Verified live: paused, scrolled through six wheel events, and mpv was rebuilt (pid 58822
+to 62414) while still answering `pause: true`. Before, that same sequence answered `false`.
+
+Rule: `core::exclusive(video_started, spotify_started, video_playing, spotify_playing)` — the source
+that starts pauses the other, with `MediaCmd::Pause` for the video (unconditional, because a card whose
+`playing` lags would resume instead of pausing). `core::apply` feeds it the transition it just made, so
+only a *start* counts: both engines report while they play, and pausing on every report would make them
+pause each other in turns. 151 tests green (new: starting one source pauses the other, both directions,
+the silent case and the plain report case). Not verified end to end: no Spotify device was playing in
+this session, so the Spotify-side path is proven by the rule's test and the code path only.
