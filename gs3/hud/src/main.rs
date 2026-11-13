@@ -50,7 +50,7 @@ fn main()->Result<()> {
         if let Some(path)=&state.session_path {let mut tail=Tail::default(); if let Err(e)=sources::read_tail(&PathBuf::from(path),&mut tail) {eprintln!("session: {e}");} state.session=tail.session;}
         state.git=sources::git_snapshot(&a.cwd); state.engram=sources::engram(&a.cwd); state.pr=sources::pr_once(&a.cwd);
         state.mcp=state.session_path.as_deref().and_then(|p|sources::mcp(Path::new(p)));
-        state.roster=state.session_path.as_deref().and_then(|p|sources::roster_of(Path::new(p))); state.stack=sources::stack(&a.cwd,state.session_path.as_deref().map(Path::new)); state.tree=Some(sources::tree(&a.cwd,Vec::new()));
+        state.roster=state.session_path.as_deref().and_then(|p|sources::roster_of(Path::new(p),&a.cwd)); state.stack=sources::stack(&a.cwd,state.session_path.as_deref().map(Path::new)); state.tree=Some(sources::tree(&a.cwd,Vec::new()));
         for tab in state.ui.tabs() {state.ui.tab=tab; for line in ui::render_lines(&state,42) {println!("{line}");}} return Ok(())
     }
     let previous=std::panic::take_hook(); std::panic::set_hook(Box::new(move|info|{restore();previous(info);}));

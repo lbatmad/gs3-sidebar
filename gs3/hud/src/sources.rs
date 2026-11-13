@@ -370,7 +370,7 @@ fn profiles_store(path:Option<PathBuf>)->Option<Value> {
     fs::read(&path).ok().and_then(|b|serde_json::from_slice::<Value>(&b).ok()).filter(Value::is_object)
 }
 /// PROF uses canonical configured routing; MD supplies names, tasks supply counts only.
-pub fn roster_of(session:&Path)->Option<Roster> {
+pub fn roster_of(session:&Path,cwd:&Path)->Option<Roster> {
     let dir=agent_dir(&session.to_string_lossy())?;
     let settings:Value=fs::read(dir.join("settings.json")).ok().and_then(|b|serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
     let files=|sub:&str,ext:&str|->Vec<PathBuf> {let mut v:Vec<PathBuf>=fs::read_dir(dir.join(sub)).into_iter().flatten().flatten().map(|e|e.path()).filter(|p|p.extension().is_some_and(|x|x==ext)).collect(); v.sort(); v};
@@ -378,9 +378,14 @@ pub fn roster_of(session:&Path)->Option<Roster> {
     let tasks:Vec<Value>=files("gentle-agents/tasks","json").into_iter().rev().take(200).filter_map(|p|serde_json::from_slice::<Value>(&fs::read(p).ok()?).ok()).map(|v|v["task"].clone()).filter(|t|t.is_object()).collect();
     let (models,source)=profile_models(profile_models_path(&dir));
     let store=profiles_store(profiles_store_path(&dir));
+    let pinned=git_root(cwd).and_then(|root|{
+        let dir=git_dir(&root);
+        let common=fs::read_to_string(dir.join("commondir")).ok().map(|s|dir.join(s.trim()));
+        resolve_profile_pin(&common.unwrap_or(dir),&root,store.as_ref())
+    });
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_millis() as u64).unwrap_or(0);
     let mut r=configured_roster(roster(&settings,&agents,&tasks,now),models.as_ref(),source);
-    r.profiles=profiles(store.as_ref());
+    r.profiles=profiles(store.as_ref()); r.pinned=pinned;
     Some(r)
 }
 /// A change inside the task history: Gentle AI rewrites one JSON per subagent task when it launches and
@@ -393,6 +398,17 @@ pub fn is_task_file(e:&notify::Event,agent_dir:&Path)->bool {
 /// so the temp name counts too. The store lives next to `models.json` in the config home.
 pub fn is_profiles_file(e:&notify::Event,store_dir:&Path)->bool {
     e.paths.iter().any(|p|p.parent()==Some(store_dir) && p.file_name().is_some_and(|n|{let n=n.to_string_lossy(); n=="profiles.json"||n.starts_with(".profiles.json.")}))
+}
+/// A write to either pin layer (clone pin or repo declaration): both are swapped atomically
+/// through a temp sibling, so the temp names count too.
+pub fn is_profile_pin_file(e:&notify::Event)->bool {
+    e.paths.iter().any(|p|{
+        let name=p.file_name().unwrap_or_default().to_string_lossy();
+        let parent=p.parent().and_then(Path::parent);
+        p.parent().is_some_and(|d|d.ends_with("gentle-ai"))
+            && parent.is_some_and(|g|g.file_name().is_some_and(|n|n==".git"||n==".pi"))
+            && (name=="profile-pin.json"||name=="profile.json"||name.starts_with(".profile")&&name.ends_with(".tmp"))
+    })
 }
 /// MCP servers configured for the session's Pi agent dir (`mcp.json`); names only.
 pub fn mcp(session:&Path)->Option<Vec<Mcp>> {
@@ -522,13 +538,15 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
         let mut roster_deadline:Option<Instant>=None; let mut tasks_dir:Option<PathBuf>=None;
         // The profiles store rides the same roster refresh; its dir is watched for the atomic swap.
         let mut profiles_dir:Option<PathBuf>=None;
+        // Pin layers live under the gitdir and the worktree root; both are watched for the swap.
+        let mut pin_dirs:Vec<PathBuf>=Vec::new();
         // Last MCP list sent; matches State::new so unchanged lists are never re-sent.
         let mut mcp_sent:Option<Vec<Mcp>>=None;
         let send_mcp=|session:&Option<PathBuf>,sent:&mut Option<Vec<Mcp>>|{let now=session.as_deref().and_then(mcp); if now!=*sent {*sent=now.clone(); let _=tx.send(Event::Mcp(now));}};
         // Same rule for the PROF roster (agent dir files): only a changed roster becomes an event.
         let mut roster_sent:Option<Roster>=None;
         let mut page=LOG_PAGE;
-        let send_roster=|session:&Option<PathBuf>,sent:&mut Option<Roster>|{let now=session.as_deref().and_then(roster_of); if now!=*sent {*sent=now.clone(); let _=tx.send(Event::Roster(now));}};
+        let send_roster=|session:&Option<PathBuf>,sent:&mut Option<Roster>|{let now=session.as_deref().and_then(|s|roster_of(s,&cwd)); if now!=*sent {*sent=now.clone(); let _=tx.send(Event::Roster(now));}};
         loop {
             let deadline=match (git_deadline,roster_deadline) {(None,None)=>None,(Some(a),None)=>Some(a),(None,Some(b))=>Some(b),(Some(a),Some(b))=>Some(a.min(b))};
             let msg=match deadline {Some(t)=>rx.recv_timeout(t.saturating_duration_since(Instant::now())),None=>rx.recv().map_err(|_|mpsc::RecvTimeoutError::Disconnected)};
@@ -544,6 +562,7 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
                     if let (Some(w),Some(p))=(&mut watcher,&session) {let _=w.unwatch(p.parent().unwrap_or(p));}
                     if let (Some(w),Some(d))=(&mut watcher,&tasks_dir) {let _=w.unwatch(d);}
                     if let (Some(w),Some(d))=(&mut watcher,&profiles_dir) {let _=w.unwatch(d);}
+                    for d in pin_dirs.drain(..) {if let Some(w)=&mut watcher {let _=w.unwatch(&d);}}
                     session=path.map(PathBuf::from); tail=Tail::default();
                     if let Some(p)=&session {
                         if let Some(w)=&mut watcher {let _=w.watch(p.parent().unwrap_or(p),RecursiveMode::NonRecursive);}
@@ -551,6 +570,13 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
                     }
                     tasks_dir=session.as_deref().and_then(|p|agent_dir(&p.to_string_lossy())).map(|d|d.join("gentle-agents").join("tasks"));
                     profiles_dir=session.as_deref().and_then(|p|agent_dir(&p.to_string_lossy())).and_then(|d|profiles_store_path(&d)).and_then(|p|p.parent().map(Path::to_path_buf));
+                    // Pin layers: clone pin under the git common dir, repo declaration at the worktree root.
+                    pin_dirs=git_root(&cwd).map(|root|{
+                        let dir=git_dir(&root);
+                        let common=fs::read_to_string(dir.join("commondir")).ok().map(|s|dir.join(s.trim()));
+                        vec![common.unwrap_or(dir).join("gentle-ai"),root.join(".pi").join("gentle-ai")]
+                    }).unwrap_or_default();
+                    for d in pin_dirs.iter() {if let Some(w)=&mut watcher {let _=w.watch(d,RecursiveMode::NonRecursive);}}
                     if let (Some(w),Some(d))=(&mut watcher,&tasks_dir) {let _=w.watch(d,RecursiveMode::NonRecursive);}
                     if let (Some(w),Some(d))=(&mut watcher,&profiles_dir) {let _=w.watch(d,RecursiveMode::NonRecursive);}
                     let _=tx.send(Event::Session(session.as_ref().map(|p|p.to_string_lossy().into_owned()),tail.session.clone()));
@@ -560,6 +586,7 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
                 Ok(Local::Changed(e))=>{
                     if !matches!(e.kind,notify::EventKind::Create(_)|notify::EventKind::Modify(_)|notify::EventKind::Remove(_)) {continue}
                     if session.as_ref().and_then(|p|agent_dir(&p.to_string_lossy())).is_some_and(|d|is_task_file(&e,&d)) {roster_deadline=Some(Instant::now()+Duration::from_millis(300));}
+                    else if is_profile_pin_file(&e) {roster_deadline=Some(Instant::now()+Duration::from_millis(300));}
                     else if profiles_dir.as_ref().is_some_and(|d|is_profiles_file(&e,d)) {roster_deadline=Some(Instant::now()+Duration::from_millis(300));}
                     else if session.as_ref().is_some_and(|p|is_new_session_file(&e,p)) {if let Ok(Some(p))=pane(&socket,&pane_id) {let _=tx.send(Event::Pane(p));}}
                     else if session.as_ref().is_some_and(|p|e.paths.contains(p)) {if let Some(p)=&session {let _=read_tail(p,&mut tail); let _=tx.send(Event::Session(Some(p.to_string_lossy().into_owned()),tail.session.clone()));}}
@@ -944,6 +971,50 @@ mod tests {
         assert!(!is_profiles_file(&event("/cfg/models.json"),&dir));
         assert!(!is_profiles_file(&event("/cfg/profiles.export.json"),&dir));
         assert!(!is_profiles_file(&event("/sub/profiles.json"),&dir),"sólo la carpeta del store");
+    }
+    #[test]
+    fn only_profile_pin_writes_count() {
+        let e=|p:&str|notify::Event{kind:notify::EventKind::Create(notify::event::CreateKind::File),paths:vec![PathBuf::from(p)],attrs:Default::default()};
+        let pinned=is_profile_pin_file;
+        // Both layers are swapped through a temp sibling and a rename.
+        assert!(pinned(&e("/repo/.git/gentle-ai/profile-pin.json")));
+        assert!(pinned(&e("/repo/.git/gentle-ai/.profile-pin.json.x.tmp")));
+        assert!(pinned(&e("/repo/.pi/gentle-ai/profile.json")));
+        assert!(pinned(&e("/repo/.pi/gentle-ai/.profile.json.x.tmp")));
+        assert!(!pinned(&e("/repo/.pi/gentle-ai/profiles.json")));
+        assert!(!pinned(&e("/repo/gentle-ai/profile-pin.json")),"fuera de las dos capas no cuenta");
+    }
+    #[test]
+    fn a_pin_file_updates_the_roster_without_pressing_r() {
+        let root=std::env::temp_dir().join(format!("gs3-pinwatch-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())); let _=fs::remove_dir_all(&root);
+        let agent=root.join("agent"); let sessions=agent.join("sessions").join("proj");
+        fs::create_dir_all(&sessions).unwrap(); fs::create_dir_all(root.join(".git/gentle-ai")).unwrap(); fs::create_dir_all(root.join(".pi/gentle-ai")).unwrap();
+        let session=sessions.join("s.jsonl"); fs::write(&session,"").unwrap();
+        assert!(Command::new("git").arg("init").arg("-q").arg(&root).status().unwrap().success(),"el pin vive en un repo");
+        // The store the pin names must exist in, or the pin is stale by definition.
+        let cfg=root.join("cfg"); fs::create_dir_all(&cfg).unwrap();
+        fs::write(cfg.join("models.json"),"{}").unwrap();
+        fs::write(cfg.join("profiles.json"),json!({"kind":"gentle-pi.agent_model_profiles","version":1,"profiles":{"uno":{"worker":"m"},"dos":{"worker":"m"}}}).to_string()).unwrap();
+        let (tx,rx)=mpsc::channel();
+        let local=local(root.clone(),std::env::temp_dir().join("gs3-pinwatch.sock"),"p".into(),tx);
+        std::env::set_var("GENTLE_PI_AGENT_HOME",&agent); std::env::set_var("GENTLE_PI_CONFIG_HOME",&cfg);
+        let restore=||{std::env::remove_var("GENTLE_PI_AGENT_HOME"); std::env::remove_var("GENTLE_PI_CONFIG_HOME");};
+        let _=local.send(Local::Session(Some(session.to_string_lossy().into_owned())));
+        // Baseline roster first: the watcher only sends what changed.
+        let deadline=Instant::now()+Duration::from_secs(5);
+        while Instant::now()<deadline { if let Ok(Event::Roster(_))=rx.recv_timeout(Duration::from_millis(200)) {break} }
+        let pin=json!({"kind":"gentle-pi.agent_model_profile_pin","version":1,"profile":"uno"});
+        // Pi writes the repo declaration through a temp sibling and a rename.
+        let tmp=root.join(".pi/gentle-ai/.profile.json.probe.tmp");
+        fs::write(&tmp,pin.to_string()).unwrap(); fs::rename(&tmp,root.join(".pi/gentle-ai/profile.json")).unwrap();
+        let mut seen:Option<Roster>=None;
+        while Instant::now()<deadline {
+            if let Ok(Event::Roster(Some(r)))=rx.recv_timeout(Duration::from_millis(200)) { if r.pinned.as_deref()==Some("uno") {seen=Some(r); break} }
+        }
+        restore(); drop(local);
+        let r=seen.expect("un pin nuevo tiene que llegar por el watcher, sin apretar r");
+        assert_eq!(r.pinned.as_deref(),Some("uno"));
+        let _=fs::remove_dir_all(&root);
     }
     #[test]
     fn engram_connection_is_read_only() {

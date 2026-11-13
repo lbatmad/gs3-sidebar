@@ -262,7 +262,7 @@ pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>
     pub total:usize, pub done:usize, pub failed:usize, pub active:usize, pub running:Vec<Running>,
     /// How long a finished task took on average, and over how many tasks that was measured.
     pub avg:String, pub measured:usize,
-    pub profile_source:String, pub configured_host:Option<Agent>, pub profiles:Vec<Profile> }
+    pub profile_source:String, pub configured_host:Option<Agent>, pub profiles:Vec<Profile>, pub pinned:Option<String> }
 /// One subagent: model/thinking from its frontmatter (`model`, `effort`/`thinking`), else its latest task, else the host.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Agent { pub name:String, pub model:String, pub thinking:String }
@@ -322,6 +322,33 @@ pub fn configured_roster(mut r:Roster, value:Option<&Value>, source:&str)->Roste
 /// gives the host (`orchestrator`), and whether the store marks it `active`. The name is display-only.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Profile { pub name:String, pub roles:usize, pub host:String, pub active:bool }
+/// The repository pin layers, in the package's precedence order (local/clone first, then the
+/// committed repo declaration). A layer that is invalid, or whose name is absent from the store,
+/// never masks the other (`evaluateProfilePin`).
+pub fn resolve_profile_pin(git_dir:&Path,worktree:&Path,store:Option<&Value>)->Option<String> {
+    let known=|name:&str|store.is_some_and(|s|s["profiles"][name].is_object());
+    for path in [git_dir.join("gentle-ai/profile-pin.json"),worktree.join(".pi/gentle-ai/profile.json")] {
+        let Some(name)=profile_pin_file(&path) else {continue};
+        if known(&name) {return Some(name)}
+    }
+    None
+}
+/// Read one pin layer: the package's own shape only, never through a symlink.
+pub fn profile_pin_file(path:&Path)->Option<String> {
+    let metadata=std::fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() {return None}
+    let v:Value=std::fs::read(path).ok().and_then(|b|serde_json::from_slice(&b).ok())?;
+    (text(&v,"kind")=="gentle-pi.agent_model_profile_pin" && v["version"]==1).then(||text(&v,"profile")).filter(|n|is_valid_profile_name(n)).map(str::to_owned)
+}
+/// The package's own rule (`isValidProfileName`): a name is sendable as a command argument only
+/// if the whole package would accept it, so no rail row can smuggle anything into the pane.
+pub fn is_valid_profile_name(name:&str)->bool {
+    let mut chars=name.chars();
+    (!name.is_empty() && name.len()<=64
+        && chars.next().is_some_and(|c|c.is_ascii_alphanumeric())
+        && name[1..].chars().all(|c|c.is_ascii_alphanumeric()||"._-".contains(c))
+        && !matches!(name,"__proto__"|"constructor"|"prototype"))
+}
 /// The `/gentle:profiles` store: only the package's own shape is a store (`kind` + `version`),
 /// names come from the `profiles` object, and the top-level `active` marks at most one row.
 /// A stale `active` marks nobody; nothing is invented for it.
@@ -744,6 +771,43 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
         let p=profiles(Some(&v));
         assert_eq!(p.iter().map(|p|(p.name.as_str(),p.active)).collect::<Vec<_>>(),[("a b",true),("esc  [31m",false),("x y",false)],"un nombre es sólo para mostrar: se aplana, no se confía en él");
         assert!(p.iter().all(|p|!p.name.chars().any(char::is_control)),"ninguna fila puede romperse con un control");
+    }
+    #[test]
+    fn profile_pins_resolve_layers_precedence_and_staleness() {
+        use std::fs;
+        let dir=std::env::temp_dir().join(format!("gs3-pins-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let _=fs::remove_dir_all(&dir);
+        let clone=dir.join(".git"); let worktree=dir.join("wt");
+        fs::create_dir_all(clone.join("gentle-ai")).unwrap(); fs::create_dir_all(worktree.join(".pi/gentle-ai")).unwrap();
+        let pin=json!({"kind":"gentle-pi.agent_model_profile_pin","version":1,"profile":"uno"});
+        let store=json!({"kind":"gentle-pi.agent_model_profiles","version":1,"profiles":{"uno":{"worker":"m"},"dos":{"worker":"m"}}});
+        let write_pin=|p:std::path::PathBuf|fs::write(p.clone(),pin.to_string().replace("uno","dos")).map(|_|p);
+        // Clone pin wins over the repo declaration.
+        let clone_path=write_pin(clone.join("gentle-ai/profile-pin.json")).unwrap();
+        fs::write(worktree.join(".pi/gentle-ai/profile.json"),pin.to_string()).unwrap();
+        let read=|name:&str|fs::read(clone_path.with_file_name(name)).ok();
+        let _=read; // keep the closure honest
+        assert_eq!(resolve_profile_pin(&clone,&worktree,Some(&store)),Some("dos".into()),"el pin de clon gana");
+        // Without a clone pin, the repo declaration is the winner.
+        fs::remove_file(clone.join("gentle-ai/profile-pin.json")).unwrap();
+        assert_eq!(resolve_profile_pin(&clone,&worktree,Some(&store)),Some("uno".into()),"sin pin de clon gana la declaración del repo");
+        // A stale name (absent from the store) never masks the other layer.
+        fs::write(worktree.join(".pi/gentle-ai/profile.json"),pin.to_string().replace("uno","ghost")).unwrap();
+        fs::write(clone.join("gentle-ai/profile-pin.json"),pin.to_string()).unwrap();
+        assert_eq!(resolve_profile_pin(&clone,&worktree,Some(&store)),Some("uno".into()),"un stale no tapa la otra capa");
+        // An invalid layer file (wrong kind) is skipped the same way.
+        fs::write(worktree.join(".pi/gentle-ai/profile.json"),json!({"kind":"other","version":1,"profile":"uno"}).to_string()).unwrap();
+        assert_eq!(resolve_profile_pin(&clone,&worktree,Some(&store)),Some("uno".into()),"una capa inválida se salta");
+        // No valid layers at all: no pin, and nothing invented.
+        fs::remove_file(clone.join("gentle-ai/profile-pin.json")).unwrap();
+        assert_eq!(resolve_profile_pin(&clone,&worktree,Some(&store)),None);
+        // Without a store every layer is stale.
+        fs::write(clone.join("gentle-ai/profile-pin.json"),pin.to_string()).unwrap();
+        assert_eq!(resolve_profile_pin(&clone,&worktree,None),None,"sin store no hay ganador");
+        // A profile pin is never followed through a symlink.
+        let link=dir.join("link-pin.json"); std::os::unix::fs::symlink(worktree.join(".pi/gentle-ai/profile.json"),&link).unwrap();
+        assert_eq!(profile_pin_file(&link),None);
+        fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn model_shapes() {
