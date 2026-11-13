@@ -1,3 +1,6 @@
 target/
 *.bak.*
 .DS_Store
+
+# capturas que deja mpv al probar la ventana del video
+/mpv-shot*.jpg
