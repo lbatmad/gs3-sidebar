@@ -53,8 +53,8 @@ S11. "No tocar `sensitive()`, ni el gate de TREE, ni el render de markdown/códi
 | T1 | S4, S7, S8 | store: `profiles_store_path`/`profiles_store`, watcher de `profiles.json` con `notify` + debounce 300 ms, campo `profiles` en `Roster` (`gs3/hud/src/sources.rs`, `core.rs`) | cb56423 |
 | T2 | S2, S3, S5, S6, S7, S8 | card `profiles` arriba de la card PROF, selección visual, degradación a 42/36 con `width_of` (`gs3/hud/src/ui.rs`) | bd2b47e |
 | T3 | S1, S4 | botón `[ ▸ profiles ]`, Action, worker con throttle, pedidos `pane.focus` + `pane.send_keys` (`ui.rs`, `sources.rs`, `main.rs`) | 7343f60 |
-| T4 | S10 | `--help`, `docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md` | |
-| T5 | S9 | verificación real: `cargo test`, `--once` con el store de esta máquina, `scripts/build-hud.sh` + copia a `~/.local/bin`, sidecar, pane | |
+| T4 | S10 | `--help`, `docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md` | fdbc7b6 |
+| T5 | S9 | verificación real: `cargo test`, `--once` con el store de esta máquina, `scripts/build-hud.sh` + copia a `~/.local/bin`, sidecar, pane | pendiente |
 
 Riesgo: ninguno de los seis ítems. El rail sigue sin escribir configuración (sólo lee el store y
 envía un literal fijo al pane, la misma autoridad que el model picker ya ejerce con F9); sin
@@ -129,6 +129,39 @@ L3 (decisiones, resueltas antes de escribir):
   (ambos aceptados, respuesta `ok`). El worker compartido (`pane_worker`) coalescea y descarta clics
   dentro de 1 s, idéntico al model picker; el literal viaja fijo, nunca un nombre de perfil.
 - D7 (branch): rama `feat/prof-profiles` cortada de `main`; sin push ni merge sin pedido expreso.
+
+L4 (verificación real de T5, honesta):
+
+- `cargo test` verde en debug y release: 176 passed, 0 failed (2 ignored preexistentes). Sin
+  cambios en Swift (`git diff main --stat -- gs3/panel/` vacío).
+- `--once` (ancho 42) con el store real resuelto por el env de esta máquina
+  (`GENTLE_PI_CONFIG_HOME=gs-root/shell/config`): roster real (`Tareas 96 ✓ · 19 ✗ · 1m promedio · 115
+  medidas`) y botón `▸ /gentle:profiles · abrir` sin recortes. La card NO aparece porque ese store
+  tiene un solo perfil (`current`): correcto por S5.
+- La card con datos se verificó a 42 columnas con un config home temporal de 3 perfiles (uno con
+  modelo largo de host que baja el detalle a su propia fila, el `active` marcado `●`):
+  `● Grok-muse 1 rol · xai/grok-4` en una fila, `builders` en dos filas, `minimal` sin modelo.
+- Criterio 4 (un clic no escribe): `--once` completo contra un store temporal con mtime igual
+  antes y después (1794604184 = 1794604184) y `git status` limpio salvo la spec.
+- Envío real al pane (prueba empírica contra el socket de herdr, protocol 22): la secuencia exacta
+  del botón (`pane.focus` → `pane.send_text "/gentle:profiles"` → `pane.send_keys ["Enter"]`)
+  devuelve `ok` y el comando aparece en el `pane.read` del pane agente vivo `w2:p5N` (idle), que
+  abrió su caja de entrada interactiva; se limpió con tres `esc` (vuelve a "waiting for input") y el
+  foco volvió a `w2:p4D`. Antes del hallazgo del token, un intento con texto por `send_keys` dio
+  `invalid_key: unsupported key /gentle:profiles` — ese error es lo que fijó D6.
+- Instalación: `scripts/build-hud.sh` compiló e instaló al prefix bundleado y, con
+  `GS3_PREFIX=/Users/albertobellido/.local`, al `~/.local/bin` real (donde corre el rail);
+  `--help` del binario instalado confirma la doc nueva. Falla menor preexistente del script al final
+  (`CARGO_TARGET_DIR: unbound variable` en el paso de `gs3-panel`): el panel no cambia en esta
+  feature y su binario instalado sigue vigente; anotado, no arreglado (fuera de alcance).
+- Sidecar: el HUD corre como proceso raíz de su pane (al morir, el pane se cierra — por eso
+  "reiniciar" es recrear el pane). Se recreó con `pane.split` (ratio 0.75, sin robar foco) y la misma
+  invocación del launcher: pane `w2:p50`, PID 92755. `pane.read` confirma el rail renderizando, la
+  solapa PROF navegable (tecla 3) con el roster real y el botón visible; vuelta a MAIN. El mpv del
+  HUD viejo murió con él, sin huérfanos.
+- Lo que quedó sin probar automáticamente: el clic de mouse sobre el botón en el rail (el pty del
+  entorno no entrega mouse); el camino probado es idéntico al del model picker ya existente
+  (misma Action, mismo consumo en main, mismo worker con throttle) y cada tramo tiene test.
 - D8 (id de la card): el pedido decía `Card::new("profiles", …)`, pero `profiles` ya es la clave de
   collapse de la card existente ("Profiles & Clusters"); dos cards con la misma clave se plegarían
   juntas. La card nueva usa el id `profiles-store` y título `⌁ Perfiles` (las filas de la solapa están
