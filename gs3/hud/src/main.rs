@@ -80,7 +80,7 @@ fn main()->Result<()> {
     let agent_pane=a.pane.clone(); let panel=sources::panel(a.socket.clone(),agent_pane.clone(),data_tx.clone()); let mut shown:Option<(String,usize)>=None;
     // The page of the graph already asked for: one request per limit, reset by the answer.
     let mut asked_page:Option<usize>=None;
-    sources::herdr(a.socket,a.pane,data_tx);
+    sources::herdr(a.socket.clone(),a.pane.clone(),data_tx);
     let mut draw=true; let mut last:Option<ui::Frame>=None;
     let mut transmitted: Option<String> = None;
     let mut sent_card: Option<Option<crate::media::CellRect>> = None;
@@ -95,6 +95,12 @@ fn main()->Result<()> {
         if state.ui.screenshot {state.ui.screenshot=false; let _=capture.send(());}
         if state.ui.open_picker {state.ui.open_picker=false; let _=picker.send(std::time::Instant::now());}
         if state.ui.open_profiles {state.ui.open_profiles=false; let _=profiles.send(std::time::Instant::now());}
+        if let Some(name)=state.ui.publish_profile.take() {
+            // A fresh worker per name: the request sequence is frozen with the name in it, so a
+            // second click on another row can never ride an in-flight sequence.
+            let worker=sources::publish_profile(a.socket.clone(),a.pane.clone(),name);
+            let _=worker.send(std::time::Instant::now());
+        }
         if state.ui.save {state.ui.save=false; if let Some(p)=state.ui.config_path.clone() {let err=config::save(&p,&state.ui.config).err(); if err!=state.ui.save_error {state.ui.save_error=err; draw=true;}}}
         if state.read_session {state.read_session=false; let _=local.send(sources::Local::Session(state.session_path.clone()));}
         if state.refresh {state.refresh=false; scanned=None; let _=local.send(sources::Local::Refresh); let _=pr.send(());}

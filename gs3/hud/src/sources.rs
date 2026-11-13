@@ -455,6 +455,15 @@ fn profiles_command_requests(id:&str)->Vec<(&'static str,Value)> {
         ("pane.send_keys",json!({"pane_id":id,"keys":["Enter"]})),
     ]
 }
+/// `/gentle:profiles publish <name>`: the same path, with a name that already passed the package's
+/// own sendable rule; Pi toggles the committed repo declaration (a second publish removes it).
+fn publish_profile_requests(id:&str,name:&str)->Vec<(&'static str,Value)> {
+    vec![
+        ("pane.focus",json!({"pane_id":id})),
+        ("pane.send_text",json!({"pane_id":id,"text":format!("/gentle:profiles publish {name}")})),
+        ("pane.send_keys",json!({"pane_id":id,"keys":["Enter"]})),
+    ]
+}
 /// Explicit clicks only; coalesce pending requests and discard clicks within one second of the last attempt.
 fn pane_worker(socket:PathBuf,requests:Vec<(&'static str,Value)>)->Sender<Instant> {
     let (send,rx)=mpsc::channel::<Instant>();
@@ -472,6 +481,9 @@ fn pane_worker(socket:PathBuf,requests:Vec<(&'static str,Value)>)->Sender<Instan
 }
 pub fn model_picker(socket:PathBuf,id:String)->Sender<Instant> { pane_worker(socket,model_picker_requests(&id)) }
 pub fn profiles_command(socket:PathBuf,id:String)->Sender<Instant> { pane_worker(socket,profiles_command_requests(&id)) }
+/// One worker per click intent: the name is fixed in the requests, so a later click with another
+/// name can never leak into an in-flight sequence, and the same 1 s throttle governs repeats.
+pub fn publish_profile(socket:PathBuf,id:String,name:String)->Sender<Instant> { pane_worker(socket,publish_profile_requests(&id,&name)) }
 pub fn pane(socket:&Path,id:&str)->Result<Option<Value>> {
     let found=match request(socket,"pane.get",json!({"pane_id":id})) {
         Ok(v) if v["pane"].is_object()=>Some(v["pane"].clone()),
@@ -662,6 +674,16 @@ mod tests {
         }
     }
     #[test]
+    fn publish_clicks_carry_only_sendable_names() {
+        // The click intent never carries an invalid name: Pi's own rule decides what can travel.
+        assert!(is_valid_profile_name("uno"));
+        assert!(is_valid_profile_name("Grok-muse"));
+        assert!(is_valid_profile_name("a.b-c_d"));
+        for bad in ["", " dos", "dos ", "un o", "../x", "a\tb", "__proto__", "constructor", "prototype", "-uno", ".uno", "unoñe", &"x".repeat(65)] {
+            assert!(!is_valid_profile_name(bad), "{bad:?} no puede viajar");
+        }
+    }
+    #[test]
     fn profiles_command_requests_are_focus_text_then_enter() {
         // send_keys rejects literal text (invalid_key), so the command travels as text and only the
         // Enter press travels as a key; the rail sends the fixed literal, never a profile name.
@@ -672,6 +694,15 @@ mod tests {
                 ("pane.send_keys", json!({"pane_id":pane,"keys":["Enter"]})),
             ]);
         }
+    }
+    #[test]
+    fn publish_command_requests_carry_the_valid_name_verbatim() {
+        // Only a name the package itself would accept ever reaches the request builder.
+        assert_eq!(publish_profile_requests("w1:p1","uno"), vec![
+            ("pane.focus",json!({"pane_id":"w1:p1"})),
+            ("pane.send_text",json!({"pane_id":"w1:p1","text":"/gentle:profiles publish uno"})),
+            ("pane.send_keys",json!({"pane_id":"w1:p1","keys":["Enter"]})),
+        ]);
     }
     #[test]
     fn profiles_command_clicks_are_coalesced_and_throttled() {
