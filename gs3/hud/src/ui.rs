@@ -1114,8 +1114,10 @@ fn profile_store_card(s: &State, w: usize) -> Option<Card> {
         let pinned = r.pinned.as_deref() == Some(p.name.as_str());
         let mut left = if picked { vec![seg(bullet, tone), seg("▸ ", Gold), seg(p.name.clone(), Gold)] }
                    else { vec![seg(bullet, tone), seg(p.name.clone(), Text)] };
-        // ◆ names the profile this repository's subagent launches resolve (the pin layer that won).
-        if pinned { left.insert(1, seg("◆ ", Cyan)); }
+        // ▣ names the profile this repository's subagent launches resolve (the pin layer that won):
+        // a square beside the store's own circular marks, so global-active (●) and repo-pinned never
+        // read alike at 48 columns.
+        if pinned { left.insert(1, seg("▣ ", Cyan)); }
         // A sendable name publishes the repo declaration (a toggle); anything else keeps the old
         // visual-only selection, so no stored string can ever become a command argument.
         let action = if crate::core::is_valid_profile_name(&p.name) { Action::PublishProfile(p.name.clone()) } else { Action::PickProfile(p.name.clone()) };
@@ -1136,7 +1138,7 @@ fn profile_store_card(s: &State, w: usize) -> Option<Card> {
     }
     // What this repository's subagent launches resolve: the winning pin layer, or the global routing.
     if let Some(name) = &r.pinned {
-        c.row(vec![seg("◆ ", Cyan), seg("subagentes: ", Text), seg(name.clone(), Cyan)], vec![seg("pineado", Dim)]);
+        c.row(vec![seg("▣ ", Cyan), seg("subagentes: ", Text), seg(name.clone(), Cyan)], vec![seg("pineado", Dim)]);
     }
     Some(c)
 }
@@ -2519,12 +2521,12 @@ mod tests {
         s.roster = Some(r); s.ui.tab = Tab::Prof;
         // The pinned row carries ◆ (the store's active ● stays its own mark).
         let l = on(&s, Tab::Prof, 48);
-        assert!(find(&l, "◆ dos").contains("●"), "el activo ● y el pineado ◆ conviven");
+        assert!(find(&l, "▣ dos").contains("●"), "el activo ● y el pineado ▣ conviven");
         // A pinned-but-unknown name is announced as stale, never as a live pin.
         // The announcement row names what subagent launches resolve.
         assert!(l.iter().any(|l| l.contains("subagentes") && l.contains("dos")), "el anuncio nombra el perfil: {l:#?}");
         // A valid name click sends the publish intent with that exact name.
-        let f = frame(&s, 48, 0); let (x, y) = at(&f, "◆ dos");
+        let f = frame(&s, 48, 0); let (x, y) = at(&f, "▣ dos");
         assert_eq!(click(&f, x, y), Some(Action::PublishProfile("dos".into())));
         assert!(apply(&mut s, Event::Ui(Action::PublishProfile("dos".into()))));
         assert_eq!(s.ui.publish_profile.as_deref(), Some("dos"));

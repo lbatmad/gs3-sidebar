@@ -57,7 +57,8 @@ S12. El rail lee las dos capas de pin y muestra la ganadora (sólo lectura, `age
     version: 1, profile: <nombre>}`; gana la primera capa válida cuyo nombre exista en el store
     (clon antes que repo; nombre ausente = stale, no tapa la otra capa). Viaja en `Roster` (campo
     `pinned`), se vigila con notify sobre los directorios + debounce 300 ms (escritura atómica por
-    rename), y se muestra: `◆` en la fila de la card ⌁ Perfiles y un renglón en Profiles & Clusters que
+    rename), y se muestra: `▣` en la fila de la card ⌁ Perfiles (marca cuadrada, distinguible del
+    `●` circular del store; antes `◆`, L8) y un renglón en Profiles & Clusters que
     dice qué perfil usan los lanzamientos de subagentes (el orquestador nunca cambia por diseño de
     Pi).
 
@@ -232,6 +233,15 @@ L7 (verificación de T6–T8):
 - Sidecar recreado: pane `w2:p61`, PID 14676. El rail vivo muestra la card con los dos perfiles
   reales del store bundleado (`chatgpt` 13 roles, `current` 12), `●` en el activo, botón presente,
   vuelta a MAIN.
+
+L8 (cambio de requisito del humano, textual):
+
+> ● y al ◆ se parecen demasiado, que significa cada uno
+
+Explicados los significados (`●` = `active` del store global, `◆` = pin ganador del repo) y el
+  humano pidió un glifo más distinguible. El pin pasa a `▣` (cuadrado; los círculos quedan para el
+  store, los cuadrados para el repositorio) en la fila y en el renglón de anuncio; docs y `--help`
+  actualizados. Sin cambios de comportamiento.
 - D8 (id de la card): el pedido decía `Card::new("profiles", …)`, pero `profiles` ya es la clave de
   collapse de la card existente ("Profiles & Clusters"); dos cards con la misma clave se plegarían
   juntas. La card nueva usa el id `profiles-store` y título `⌁ Perfiles` (las filas de la solapa están
