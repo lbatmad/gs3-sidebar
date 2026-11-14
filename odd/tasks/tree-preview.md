@@ -188,9 +188,12 @@ L10 (pedido del humano):
 > o sea que si tiro 5 subtareas de 3 seg, deberia verlas aqui?
 > las 3
 
-S13. El bloque `📋 Task Manager` de PROF cuenta el historial de tareas del agent home con el desglose honesto
+S13. El bloque `📋 Tareas` de PROF cuenta el historial de tareas de la sesión con el desglose honesto
      (`N ✓` completadas, `N ✗` fallidas, `N en curso`) y lista cada tarea viva (hasta 5, con `… N más`), no sólo
-     la última. La carpeta `gentle-agents/tasks` se vigila con `notify` y debounce de 300 ms, así que una tarea
+     la última. La carpeta `gentle-agents/tasks` es compartida por todo el agent home, así que el conteo se
+     limita a las tareas que lanzó esta sesión y sus subagentes (cadena de `parentSessionId`, expandida con el
+     id de sesión del `sessionPath` de cada tarea): dos sesiones abiertas nunca repiten los mismos contadores.
+     La carpeta se vigila con `notify` y debounce de 300 ms, así que una tarea
      aparece mientras corre sin apretar `r`; el directorio se re-vigila en cada `Refresh` porque sólo existe
      después de la primera tarea.
 
@@ -219,3 +222,13 @@ S13 suma el promedio: `⏱ 1m promedio · 104 medidas`, medido entre `startedAt`
 no cuenta), y el tiempo de una tarea viva pasa a contar desde `startedAt`, no desde `createdAt`. Fuera de PROF:
 las capturas `mpv-shot*.jpg` de la raíz salen del índice (`git rm --cached`) y entran al `.gitignore`; los
 assets de `docs/assets/` siguen versionados.
+
+L13 (pedido del humano, textual):
+
+> en PROF está mal Tareas, se repite la info en dos sesiones, no deberia ser independiente?
+
+S13 cambia el alcance: el bloque cuenta sólo las tareas de la sesión y de sus subagentes (el usuario eligió
+«Sesión + subtareas»), en vez del historial global del agent home que repetía contadores entre sesiones.
+Ruta: `sources::session_id` + `sources::session_tasks` filtran en `roster_of` antes de `core::roster`, que
+sigue contando lo que le pasan. Tests: `the_roster_counts_only_this_session_and_its_subagents_tasks`
+(RED→GREEN) y el watcher de `a_task_file_updates_the_roster_without_pressing_r` actualizado al id real.

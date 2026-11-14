@@ -370,12 +370,15 @@ fn profiles_store(path:Option<PathBuf>)->Option<Value> {
     fs::read(&path).ok().and_then(|b|serde_json::from_slice::<Value>(&b).ok()).filter(Value::is_object)
 }
 /// PROF uses canonical configured routing; MD supplies names, tasks supply counts only.
+/// The task history folder is shared by every session of the agent home, so only the tasks this
+/// session and its subagents started belong on this pane: two sessions never repeat counts.
 pub fn roster_of(session:&Path,cwd:&Path)->Option<Roster> {
     let dir=agent_dir(&session.to_string_lossy())?;
     let settings:Value=fs::read(dir.join("settings.json")).ok().and_then(|b|serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
     let files=|sub:&str,ext:&str|->Vec<PathBuf> {let mut v:Vec<PathBuf>=fs::read_dir(dir.join(sub)).into_iter().flatten().flatten().map(|e|e.path()).filter(|p|p.extension().is_some_and(|x|x==ext)).collect(); v.sort(); v};
     let agents:Vec<(String,String)>=files("agents","md").into_iter().take(64).filter_map(|p|Some((p.file_stem()?.to_string_lossy().into_owned(),fs::read_to_string(&p).ok()?))).collect();
-    let tasks:Vec<Value>=files("gentle-agents/tasks","json").into_iter().rev().take(200).filter_map(|p|serde_json::from_slice::<Value>(&fs::read(p).ok()?).ok()).map(|v|v["task"].clone()).filter(|t|t.is_object()).collect();
+    let parsed:Vec<Value>=files("gentle-agents/tasks","json").into_iter().filter_map(|p|serde_json::from_slice::<Value>(&fs::read(p).ok()?).ok()).map(|v|v["task"].clone()).filter(|t|t.is_object()).collect();
+    let tasks:Vec<Value>=session_id(session).map(|sid|session_tasks(parsed,&sid)).unwrap_or_default();
     let (models,source)=profile_models(profile_models_path(&dir));
     let store=profiles_store(profiles_store_path(&dir));
     let pinned=git_root(cwd).and_then(|root|{
@@ -387,6 +390,31 @@ pub fn roster_of(session:&Path,cwd:&Path)->Option<Roster> {
     let mut r=configured_roster(roster(&settings,&agents,&tasks,now),models.as_ref(),source);
     r.profiles=profiles(store.as_ref()); r.pinned=pinned;
     Some(r)
+}
+/// The session id inside a session log's name: the `<uuid>` tail after the last `_`. The same
+/// convention names the pane's own log and every `parentSessionId` in the task history, so this
+/// is what ties a task to the session that started it.
+fn session_id(path:&Path)->Option<String> {
+    path.file_stem()?.to_string_lossy().rsplit_once('_').map(|(_,id)|id.to_string()).filter(|id|!id.is_empty())
+}
+/// The tasks of one session and of everything its subagents started: each task names the session
+/// that launched it (`parentSessionId`) and, when it ran as its own session, the log of that
+/// session (`sessionPath`). Following both links from the pane's session id covers the whole
+/// descendant chain, not only the direct children.
+fn session_tasks(mut parsed:Vec<Value>,sid:&str)->Vec<Value> {
+    let mut frontier=vec![sid.to_string()]; let mut out=Vec::new();
+    while !frontier.is_empty() {
+        let mut next=Vec::new(); let mut i=0;
+        while i<parsed.len() {
+            if frontier.iter().any(|f|parsed[i]["parentSessionId"].as_str()==Some(f.as_str())) {
+                let t=parsed.remove(i);
+                if let Some(child)=t["sessionPath"].as_str().and_then(|p|session_id(Path::new(p))) {next.push(child)}
+                out.push(t);
+            } else {i+=1}
+        }
+        frontier=next;
+    }
+    out
 }
 /// A change inside the task history: Gentle AI rewrites one JSON per subagent task when it launches and
 /// again when it ends, so watching that directory is what makes "en curso" mean something.
@@ -949,12 +977,12 @@ mod tests {
         let root=std::env::temp_dir().join(format!("gs3-roster-{}",std::process::id())); let _=fs::remove_dir_all(&root);
         let agent=root.join("agent"); let sessions=agent.join("sessions").join("proj"); let tasks=agent.join("gentle-agents").join("tasks");
         fs::create_dir_all(&sessions).unwrap(); fs::create_dir_all(&tasks).unwrap();
-        let session=sessions.join("s.jsonl"); fs::write(&session,"").unwrap();
+        let session=sessions.join("2026-01-01T00-00-00-000Z_0d0d0d0d-0d0d-0d0d-0d0d-0d0d0d0d0d0d.jsonl"); fs::write(&session,"").unwrap();
         let (tx,rx)=mpsc::channel();
         let local=local(root.clone(),std::env::temp_dir().join("gs3-roster.sock"),"p".into(),tx);
         let _=local.send(Local::Session(Some(session.to_string_lossy().into_owned())));
         // Gentle AI writes the task when it launches it: the roster must hear about it on its own.
-        fs::write(tasks.join("t1.json"),json!({"task":{"agent":"gentle-ai-worker","label":"corriendo","status":"running"}}).to_string()).unwrap();
+        fs::write(tasks.join("t1.json"),json!({"task":{"agent":"gentle-ai-worker","label":"corriendo","status":"running","parentSessionId":"0d0d0d0d-0d0d-0d0d-0d0d-0d0d0d0d0d0d"}}).to_string()).unwrap();
         let deadline=Instant::now()+Duration::from_secs(5);
         let mut alive:Option<Roster>=None;
         while Instant::now()<deadline {
@@ -962,6 +990,27 @@ mod tests {
         }
         let r=alive.expect("un archivo de tarea nuevo tiene que llegar por el watcher, sin apretar r");
         assert_eq!(r.running.iter().map(|t|t.text.as_str()).collect::<Vec<_>>(),["gentle-ai-worker · corriendo"],"y decir cuál está viva");
+        let _=fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn the_roster_counts_only_this_session_and_its_subagents_tasks() {
+        let root=std::env::temp_dir().join(format!("gs3-sess-{}",std::process::id())); let _=fs::remove_dir_all(&root);
+        let agent=root.join("agent"); let sessions=agent.join("sessions").join("proj"); let tasks=agent.join("gentle-agents").join("tasks");
+        let sub_sessions=agent.join("gentle-agents").join("sessions");
+        fs::create_dir_all(&sessions).unwrap(); fs::create_dir_all(&tasks).unwrap(); fs::create_dir_all(&sub_sessions).unwrap();
+        let mine="0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a"; let other="9b9b9b9b-9b9b-9b9b-9b9b-9b9b9b9b9b9b";
+        let sub="5c5c5c5c-5c5c-5c5c-5c5c-5c5c5c5c5c5c";
+        let log=|id:&str|sessions.join(format!("2026-01-01T00-00-00-000Z_{id}.jsonl"));
+        fs::write(log(mine),"").unwrap(); fs::write(log(other),"").unwrap();
+        let sub_log=sub_sessions.join(format!("2026-01-01T00-00-00-001Z_{sub}.jsonl")); fs::write(&sub_log,"").unwrap();
+        let task=|name:&str,v:Value|fs::write(tasks.join(name),v.to_string()).unwrap();
+        task("a1.json",json!({"task":{"agent":"gentle-ai-worker","label":"hija","status":"completed","parentSessionId":mine,"sessionPath":sub_log.to_string_lossy(),"createdAt":1}}));
+        task("a2.json",json!({"task":{"agent":"gentle-ai-worker","label":"nieta","status":"failed","parentSessionId":sub,"createdAt":2}}));
+        task("b1.json",json!({"task":{"agent":"gentle-ai-worker","label":"ajena","status":"running","parentSessionId":other,"createdAt":3}}));
+        let r=roster_of(&log(mine),&root).unwrap();
+        assert_eq!((r.total,r.done,r.failed,r.active),(2,1,1,0),"sólo las tareas de esta sesión y de sus subagentes, no las de otra sesión");
+        let r=roster_of(&log(other),&root).unwrap();
+        assert_eq!((r.total,r.active),(1,1),"la otra sesión ve sólo la suya");
         let _=fs::remove_dir_all(&root);
     }
     #[test]

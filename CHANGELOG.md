@@ -26,6 +26,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 
 ### Corregido
 
+- `PROF` · el bloque **📋 Tareas** ya no mezcla sesiones: la carpeta `gentle-agents/tasks` es compartida por todo el agent home, así que dos sesiones abiertas mostraban los mismos contadores. Ahora cada pane cuenta sólo las tareas que lanzó su sesión y las que lanzaron sus subagentes (cadena completa de descendientes: `parentSessionId` más el id de sesión derivado del `sessionPath` de cada tarea), y la vigilancia con debounce de 300 ms sigue viva: lanzás una subtarea y aparece en curso sin apretar `r`, pero sólo en la sesión que la lanzó.
+
 - Las capturas `mpv-shot*.jpg` salen del control de versiones y entran al `.gitignore`: son archivos de trabajo que deja mpv al probar la ventana del video, no parte del proyecto.
 
 - `GIT` · las filas `[diff]` de la ventana de un commit vuelven a ser clicables: el patrón del panel exigía dos espacios de relleno y la barra escribe uno, así que nunca coincidía. Verificado contra el texto real: 5 de 5 filas enlazan.
