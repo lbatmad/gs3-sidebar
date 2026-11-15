@@ -115,6 +115,21 @@ L3 (causa raíz del "no pasa nada", evidencia `path:line`):
   antes del switch vivo.
 
 
+L4 (bug de render tras el primer clic real, reportado por el humano):
+
+- Síntoma (captura): ⌁ Perfiles con `● chatgpt`, `○ current` y un renglón
+  `sesión:` sin nombre; Profiles & Clusters reemplazada por `perfil de sesión:`
+  vacío — todos los roles globales desaparecidos. El canal estaba arriba: el
+  clic SÍ había cargado el perfil.
+- Causa: el worker emitía la respuesta cruda del canal (`{ok, profile:{name,
+  models}}`) y las cards leían `name`/`models` en el nivel superior, así que el
+  nombre salía vacío y la vista se tomaba por "hay un perfil de sesión" (ocultando
+  el store global).
+- Fix: el worker desempaqueta `profile` (y `ok:false` cae a "canal arriba sin
+  binding"); las cards además toleran la forma envuelta (`session_profile`), para
+  que ninguna respuesta vieja vuelva a vaciar la vista. Test de regresión con
+  ambas formas; suite 188 passed.
+
 L3b (verificación en vivo del fix, pane de prueba w2:p6B):
 
 - Un pi TUI real (pane w2:p6B, cwd = repo, bridge + flags por CLI) lista

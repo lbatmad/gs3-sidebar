@@ -552,8 +552,12 @@ pub fn profile_channel_worker(socket:PathBuf,tx:Sender<crate::core::Event>) {
                 if cell.is_some_and(|prev|Instant::now().saturating_duration_since(prev)<Duration::from_secs(1)) {continue}
                 *cell=Some(Instant::now());
             }
+            // The reply is {ok, profile} on success and {ok:false, error} on a rejected name;
+            // the event must carry the profile object itself (name + model map), never the
+            // wrapper: the cards read `name` and `models` at the top level.
             match profile_channel_use(&socket,&name) {
-                Ok(profile)=>{let _=tx.send(crate::core::Event::ProfileChannel(profile));}
+                Ok(reply) if reply["ok"]==serde_json::json!(true)=>{let _=tx.send(crate::core::Event::ProfileChannel(reply["profile"].clone()));}
+                Ok(_)=>{let _=tx.send(crate::core::Event::ProfileChannel(serde_json::Value::Bool(false)));}
                 Err(_)=>{let _=tx.send(crate::core::Event::ProfileChannelDown);}
             }
         }
@@ -854,7 +858,11 @@ mod tests {
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst),2);
         // The reply arrives as an event carrying the loaded profile.
         let mut events=0;
-        while let Ok(crate::core::Event::ProfileChannel(v))=rx.try_recv() {assert_eq!(text(&v["profile"],"name"),"uno"); events+=1;}
+        // The event carries the profile itself: the cards read `name` at the top level.
+        while let Ok(crate::core::Event::ProfileChannel(v))=rx.try_recv() {
+            if v.is_boolean() {continue}
+            assert_eq!(text(&v,"name"),"uno","el evento lleva el perfil desempaquetado"); events+=1;
+        }
         assert_eq!(events,2,"cada carga responde con un evento");
         fs::remove_dir_all(&dir).unwrap();
     }

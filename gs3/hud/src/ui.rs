@@ -240,6 +240,11 @@ pub fn plain(line: &[Seg]) -> String { line.iter().map(|g| g.text.as_str()).coll
 fn width_of(line: &[Seg]) -> usize { line.iter().map(|g| g.text.width()).sum() }
 /// A JSON field as display text: `""` when missing, never a panic.
 fn text_of(v: &serde_json::Value, key: &str) -> String { v[key].as_str().unwrap_or("").to_string() }
+/// The channel event carries the profile itself (`{name, models}`); a wrapped
+/// `{ok, profile}` reply from an older worker must not blank the cards.
+fn session_profile(v: &serde_json::Value) -> &serde_json::Value {
+    v.get("profile").filter(|p| p.is_object()).unwrap_or(v)
+}
 fn fit(line: Vec<Seg>, width: usize) -> Vec<Seg> {
     let mut out = Vec::new(); let mut room = width;
     for g in line {
@@ -1111,7 +1116,7 @@ fn profile_store_card(s: &State, w: usize) -> Option<Card> {
     // The session channel answer: None until the first reply, Some(None) when the channel is
     // down (the extension is not loaded), Some(profile) when the session has a binding.
     let session = s.profile_channel.as_ref().and_then(|o| o.as_ref());
-    let session_name = session.map(|v| text_of(v, "name")).filter(|n| !n.is_empty());
+    let session_name = session.map(|v| text_of(session_profile(v), "name")).filter(|n| !n.is_empty());
     for p in &r.profiles {
         let picked = s.ui.profile_pick.as_deref() == Some(p.name.as_str());
         // The store marks its own active profile (`active`); a stale marker would have been dropped by
@@ -1151,7 +1156,7 @@ fn profile_store_card(s: &State, w: usize) -> Option<Card> {
     // What the session itself resolves: the channel's binding (loaded by a click, or before the rail
     // started), or why no answer exists. The channel being down names the extension, not an error.
     if let Some(v) = session {
-        c.row(vec![seg("◉ ", Gold), seg("sesión: ", Text), seg(text_of(v, "name"), Gold)], vec![seg("cargado", Dim)]);
+        c.row(vec![seg("◉ ", Gold), seg("sesión: ", Text), seg(text_of(session_profile(v), "name"), Gold)], vec![seg("cargado", Dim)]);
     } else if s.profile_channel_down {
         c.row(vec![seg("◉ ", Dim), seg("canal no disponible", Dim)], vec![seg("extensión", Dim)]);
     }
@@ -1181,8 +1186,9 @@ fn profiles_card(s: &State, w: usize) -> Card {
     // store, with the session label naming what resolved it.
     let session = s.profile_channel.as_ref().and_then(|o| o.as_ref());
     if let Some(v) = session {
-        c.row(vec![seg("◉ ", Gold), seg("perfil de sesión: ", Text), seg(text_of(v, "name"), Gold)], vec![]);
-        let models = &v["models"];
+        let profile = session_profile(v);
+        c.row(vec![seg("◉ ", Gold), seg("perfil de sesión: ", Text), seg(text_of(profile, "name"), Gold)], vec![]);
+        let models = &profile["models"];
         let host = models["orchestrator"]["model"].as_str().unwrap_or("");
         let host_tier = models["orchestrator"]["tier"].as_str().unwrap_or("");
         // A profile without an `orchestrator` entry keeps the live host model (no live switch happened).
@@ -2564,6 +2570,21 @@ mod tests {
         let l = on(&s, Tab::Prof, 60);
         assert!(l.iter().any(|l| l.contains("canal de perfiles no disponible")));
         assert!(l.iter().any(|l| l.contains("gentle-ai-explore")), "vista global intacta con el canal caído");
+    }
+    #[test]
+    fn wrapped_channel_reply_still_names_the_session_profile() {
+        // The worker used to emit the raw {ok, profile} reply, which blanked the
+        // cards ("perfil de sesión:" with no name, every global row gone). Both
+        // shapes must render the same name.
+        let mut s = roster_sample();
+        for shape in [serde_json::json!({"name":"uno","models":{}}),
+                      serde_json::json!({"ok":true,"profile":{"name":"uno","models":{}}})] {
+            s.profile_channel = Some(Some(shape));
+            let l = on(&s, Tab::Prof, 60);
+            let row = l.iter().find(|l| l.contains("perfil de sesión")).expect("row");
+            assert!(row.contains("uno"), "la card nombra el perfil de sesión: {row}");
+            assert!(!l.iter().any(|l| l.contains("explore")), "el store global no se mezcla");
+        }
     }
     #[test]
     fn profiles_button_is_always_present_and_sends_the_command_intent() {
