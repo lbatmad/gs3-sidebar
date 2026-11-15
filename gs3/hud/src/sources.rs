@@ -489,6 +489,12 @@ fn profiles_command_requests(id:&str)->Vec<(&'static str,Value)> {
 /// the environment, so TMPDIR differs between this rail and the agent process.
 /// One JSON request per connection; the profile name travels as data, never as
 /// command text — nothing is typed into the agent pane.
+/// `String.prototype.trim` whitespace, which includes U+FEFF: Rust's `trim` follows Unicode
+/// White_Space and keeps a byte-order mark, so trimming like Rust alone would make the rail and
+/// the extension derive different socket paths for the same variable.
+fn trim_like_javascript(value:&str)->String {
+    value.trim_matches(|c:char| c.is_whitespace() || c=='\u{feff}').to_string()
+}
 /// The process owner's uid, read once: the channel socket is keyed and verified by it.
 fn unix_uid()->Option<u32> {use std::sync::OnceLock;static U:OnceLock<Option<u32>>=OnceLock::new();*U.get_or_init(||std::process::Command::new("id").arg("-u").output().ok().and_then(|o|String::from_utf8(o.stdout).ok()).and_then(|s|s.trim().parse().ok()))}
 
@@ -497,7 +503,7 @@ pub fn profile_channel_socket(pane:&str,uid:u32)->PathBuf {
     // isolated runner keep both sides on a short scratch directory.
     // The value is trimmed exactly like the extension trims it: an untrimmed path would make the
     // two sides derive different socket files and the rail would never reach the channel.
-    let base=std::env::var("GS3_PROFILE_SOCKET_DIR").ok().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(||PathBuf::from("/tmp"));
+    let base=std::env::var("GS3_PROFILE_SOCKET_DIR").ok().map(|p| trim_like_javascript(&p)).filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(||PathBuf::from("/tmp"));
     base.join(format!("gs3-profile-{uid}-{pane}.sock"))
 }
 /// One channel round trip: `get` (the session's current binding, or nothing) or
@@ -824,6 +830,9 @@ mod tests {
     fn profile_socket_dir_override_is_trimmed_like_the_extension() {
         // An untrimmed value used to give the rail a different socket file than the extension.
         std::env::set_var("GS3_PROFILE_SOCKET_DIR","  /tmp/gs3s-pad  ");
+        assert_eq!(profile_channel_socket("w1:p1",7),PathBuf::from("/tmp/gs3s-pad/gs3-profile-7-w1:p1.sock"));
+        // U+FEFF is trimmed by JavaScript's trim and not by Rust's: both sides must agree.
+        std::env::set_var("GS3_PROFILE_SOCKET_DIR","\u{feff}/tmp/gs3s-pad\u{feff}");
         assert_eq!(profile_channel_socket("w1:p1",7),PathBuf::from("/tmp/gs3s-pad/gs3-profile-7-w1:p1.sock"));
         std::env::set_var("GS3_PROFILE_SOCKET_DIR","   ");
         assert_eq!(profile_channel_socket("w1:p1",7),PathBuf::from("/tmp/gs3-profile-7-w1:p1.sock"));
