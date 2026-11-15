@@ -495,7 +495,9 @@ fn unix_uid()->Option<u32> {use std::sync::OnceLock;static U:OnceLock<Option<u32
 pub fn profile_channel_socket(pane:&str,uid:u32)->PathBuf {
     // Defaults to /tmp (the bundled shell rebuilds TMPDIR); GS3_PROFILE_SOCKET_DIR lets an
     // isolated runner keep both sides on a short scratch directory.
-    let base=std::env::var("GS3_PROFILE_SOCKET_DIR").ok().filter(|p| !p.trim().is_empty()).map(PathBuf::from).unwrap_or_else(||PathBuf::from("/tmp"));
+    // The value is trimmed exactly like the extension trims it: an untrimmed path would make the
+    // two sides derive different socket files and the rail would never reach the channel.
+    let base=std::env::var("GS3_PROFILE_SOCKET_DIR").ok().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(||PathBuf::from("/tmp"));
     base.join(format!("gs3-profile-{uid}-{pane}.sock"))
 }
 /// One channel round trip: `get` (the session's current binding, or nothing) or
@@ -817,6 +819,16 @@ mod tests {
                 ("pane.send_keys", json!({"pane_id":pane,"keys":["Enter"]})),
             ]);
         }
+    }
+    #[test]
+    fn profile_socket_dir_override_is_trimmed_like_the_extension() {
+        // An untrimmed value used to give the rail a different socket file than the extension.
+        std::env::set_var("GS3_PROFILE_SOCKET_DIR","  /tmp/gs3s-pad  ");
+        assert_eq!(profile_channel_socket("w1:p1",7),PathBuf::from("/tmp/gs3s-pad/gs3-profile-7-w1:p1.sock"));
+        std::env::set_var("GS3_PROFILE_SOCKET_DIR","   ");
+        assert_eq!(profile_channel_socket("w1:p1",7),PathBuf::from("/tmp/gs3-profile-7-w1:p1.sock"));
+        std::env::remove_var("GS3_PROFILE_SOCKET_DIR");
+        assert_eq!(profile_channel_socket("w1:p1",7),PathBuf::from("/tmp/gs3-profile-7-w1:p1.sock"));
     }
     #[test]
     fn profile_channel_socket_path_is_deterministic() {
