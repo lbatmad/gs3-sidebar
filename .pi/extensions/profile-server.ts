@@ -35,7 +35,10 @@ import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const BINDINGS_SYMBOL_KEY = "gentle-pi:session-profile-bindings";
-const SOCKET_BASE = "/tmp";
+// Fixed /tmp by default: the bundled shell rebuilds the environment, so TMPDIR differs between
+// the rail and the agent process. GS3_PROFILE_SOCKET_DIR lets an isolated runner point both sides
+// at a short scratch directory (unix socket paths cap at ~104 bytes).
+const SOCKET_BASE = process.env.GS3_PROFILE_SOCKET_DIR?.trim() || "/tmp";
 
 interface RoutingEntry {
 	model?: string;

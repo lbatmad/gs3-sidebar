@@ -36,7 +36,8 @@ S2. Canal: la extensión `.pi/extensions/profile-server.ts` (auto-descubierta po
     `{ok:false, error, names}`; el rail nunca arma comandos con el nombre, sólo lo
     envía como dato JSON.
 S3. El HUD deriva el mismo path de socket desde su `--pane` (uid por `id -u`
-    cacheado, base `/tmp`); al arrancar y con `r` consulta `get` para conocer el
+    cacheado, base `/tmp`, o `GS3_PROFILE_SOCKET_DIR` cuando un runner aislado
+    necesita un directorio corto — S2 y el harness leen la misma variable); al arrancar y con `r` consulta `get` para conocer el
     perfil de sesión ya cargado. Canal ausente (extensión no cargada, socket perdido) → una fila
     "canal no disponible" en la card ⌁ Perfiles; el resto del rail sigue igual.
 S4. Marcas: el perfil cargado en la sesión se marca `◉` en la card ⌁ Perfiles
@@ -114,6 +115,20 @@ L3 (causa raíz del "no pasa nada", evidencia `path:line`):
   `provider/model` del orquestador ahora se resuelve vía `ctx.modelRegistry.find`
   antes del switch vivo.
 
+
+L5 (corrección de portabilidad de fixtures, tras el review nativo):
+
+- El validador aislado rechazó la corrección por una razón de *preparación*, no de
+  producto: sus pruebas Rust fallaron con `path must be shorter than SUN_LEN`
+  (los fixtures bindeaban sockets bajo un `TMPDIR` de ~60 caracteres) y el harness
+  node escribe su socket en `/tmp`, fuera de su scratch.
+- Fix (S3 ampliada): un helper `fixture(tag)` con base corta (`GS3_TEST_TMP` si es
+  corto, si no `/tmp`, creando el directorio) reemplaza a `temp_dir()` en todos los
+  tests que bindean sockets; `GS3_PROFILE_SOCKET_DIR` permite que la extensión, el
+  HUD y el harness usen el mismo directorio corto de un runner aislado (default
+  sigue siendo `/tmp`).
+- Verificación: `cargo test` 190 passed y harness 17, en el entorno normal y
+  simulando el del validador (`TMPDIR` largo + scratch propio) — ambas verdes.
 
 L4 (bug de render tras el primer clic real, reportado por el humano):
 

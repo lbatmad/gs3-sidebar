@@ -493,7 +493,10 @@ fn profiles_command_requests(id:&str)->Vec<(&'static str,Value)> {
 fn unix_uid()->Option<u32> {use std::sync::OnceLock;static U:OnceLock<Option<u32>>=OnceLock::new();*U.get_or_init(||std::process::Command::new("id").arg("-u").output().ok().and_then(|o|String::from_utf8(o.stdout).ok()).and_then(|s|s.trim().parse().ok()))}
 
 pub fn profile_channel_socket(pane:&str,uid:u32)->PathBuf {
-    PathBuf::from(format!("/tmp/gs3-profile-{uid}-{pane}.sock"))
+    // Defaults to /tmp (the bundled shell rebuilds TMPDIR); GS3_PROFILE_SOCKET_DIR lets an
+    // isolated runner keep both sides on a short scratch directory.
+    let base=std::env::var("GS3_PROFILE_SOCKET_DIR").ok().filter(|p| !p.trim().is_empty()).map(PathBuf::from).unwrap_or_else(||PathBuf::from("/tmp"));
+    base.join(format!("gs3-profile-{uid}-{pane}.sock"))
 }
 /// One channel round trip: `get` (the session's current binding, or nothing) or
 /// `use {name}` (bind the profile to the session; the reply carries the profile's
@@ -768,6 +771,19 @@ pub fn prs(cwd:PathBuf,tx:Sender<Event>)->Sender<()> {
     }); send
 }
 
+
+/// A fixture directory short enough to bind a Unix socket inside it: `sun_path` is 104 bytes on
+/// macOS and 108 on Linux, so `temp_dir()` (long under CI and isolated scratch copies) overflows
+/// it. `GS3_TEST_TMP` overrides the base when a runner needs its own root, and is refused when it
+/// is too long to be useful.
+#[cfg(test)]
+fn fixture(tag:&str)->PathBuf {
+    let base=match std::env::var("GS3_TEST_TMP") {Ok(p) if !p.is_empty() && p.len()<40=>PathBuf::from(p),_=>PathBuf::from("/tmp")};
+    let dir=base.join(format!("gs3-{tag}-{}",std::process::id()));
+    let _=fs::remove_dir_all(&dir);
+    let _=fs::create_dir_all(&dir);
+    dir
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,8 +829,8 @@ mod tests {
     fn profile_channel_get_and_use_round_trip_through_a_fake_socket() {
         // A fake profile-server: `get` returns a bound profile, `use` records the
         // name it received (as JSON data on the socket, never as command text).
-        let dir=std::env::temp_dir().join(format!("gs3-profchan-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
+        let dir=fixture("profchan");
+         fs::create_dir_all(&dir).unwrap();
         let socket=dir.join("channel.sock");
         let listener=std::os::unix::net::UnixListener::bind(&socket).unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -852,8 +868,8 @@ mod tests {
     fn profile_channel_refuses_a_non_socket_or_open_socket() {
         // The path is predictable from the pane id: a plain file, or a socket another user
         // could talk to, must be refused before the rail writes anything into it.
-        let dir=std::env::temp_dir().join(format!("gs3-profbad-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
+        let dir=fixture("profbad");
+         fs::create_dir_all(&dir).unwrap();
         let impostor=dir.join("plain.sock");
         fs::write(&impostor,"{}").unwrap();
         let err=profile_channel_get(&impostor).err().map(|e|e.to_string()).unwrap_or_default();
@@ -870,8 +886,8 @@ mod tests {
     fn profile_clicks_share_the_one_second_window() {
         // Two click intents must double-load nothing: the shared window discards
         // the second click whatever worker moment it lands on.
-        let dir=std::env::temp_dir().join(format!("gs3-profclk-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
+        let dir=fixture("profclk");
+         fs::create_dir_all(&dir).unwrap();
         let socket=dir.join("channel.sock");
         let listener=std::os::unix::net::UnixListener::bind(&socket).unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -910,8 +926,8 @@ mod tests {
     }
     #[test]
     fn profiles_command_clicks_are_coalesced_and_throttled() {
-        let dir=std::env::temp_dir().join(format!("gs3-profcmd-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
+        let dir=fixture("profcmd");
+         fs::create_dir_all(&dir).unwrap();
         let socket=dir.join("herdr.sock");
         let listener=std::os::unix::net::UnixListener::bind(&socket).unwrap();
         let focus=std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -940,8 +956,7 @@ mod tests {
     }
     #[test]
     fn session_files_switch_append_and_truncate() {
-        let dir=std::env::temp_dir().join(format!("gs3-tail-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        fs::create_dir(&dir).unwrap();
+        let dir=fixture("tail");
         let first=dir.join("first.jsonl"); let second=dir.join("second.jsonl");
         let line=b"{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"usage\":{\"input\":7}}}\n";
         fs::write(&first,line).unwrap(); fs::write(&second,line).unwrap();
@@ -977,7 +992,7 @@ mod tests {
     }
     #[test]
     fn pane_lookup_adds_workspace_label() {
-        let sock=std::env::temp_dir().join(format!("gs3-hud-sock-{}",std::process::id()));
+        let sock=fixture("hud-sock").join("h.sock");
         let _=fs::remove_file(&sock);
         let listener=std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let server=thread::spawn(move||{
@@ -999,7 +1014,7 @@ mod tests {
     }
     #[test]
     fn sibling_creation_requeries_bound_pane_and_resets_session() {
-        let dir=std::env::temp_dir().join(format!("gs3-follow-{}",std::process::id()));
+        let dir=fixture("follow");
         fs::create_dir_all(&dir).unwrap();
         let old=dir.join("old.jsonl"); let new=dir.join("new.jsonl");
         for (path,input) in [(&old,99),(&new,7)] {fs::write(path,format!("{}\n",json!({"type":"message","message":{"role":"assistant","usage":{"input":input}}}))).unwrap();}
@@ -1035,7 +1050,7 @@ mod tests {
     }
     #[test]
     fn context_window_prefers_runtime_model_cache() {
-        let agent=std::env::temp_dir().join(format!("gs3-limit-{}",std::process::id())); let dir=agent.join("sessions/--x--");
+        let agent=fixture("limit"); let dir=agent.join("sessions/--x--");
         fs::create_dir_all(&dir).unwrap();
         let session=dir.join("s.jsonl");
         fs::write(&session,format!("{}\n",json!({"type":"message","message":{"role":"assistant","model":"m","usage":{"totalTokens":10}}}))).unwrap();
@@ -1049,7 +1064,7 @@ mod tests {
     }
     #[test]
     fn bundled_store_is_derived_only_when_it_exists() {
-        let dir=std::env::temp_dir().join(format!("gs3-bundled-{}",std::process::id())); let _=fs::remove_dir_all(&dir);
+        let dir=fixture("bundled"); 
         let agent=dir.join("prefix/agent"); fs::create_dir_all(&agent).unwrap();
         // A custom home is not read from a guessed store that does not exist.
         assert_eq!(bundled_models(&agent),None);
@@ -1061,7 +1076,7 @@ mod tests {
     }
     #[test]
     fn git_snapshot_and_detail_read_a_real_repo() {
-        let dir=std::env::temp_dir().join(format!("gs3-git-{}",std::process::id())); let _=fs::remove_dir_all(&dir); fs::create_dir_all(dir.join("sub")).unwrap();
+        let dir=fixture("git");  fs::create_dir_all(dir.join("sub")).unwrap();
         let sh=|c:&str|{let o=Command::new("/bin/sh").args(["-c",c]).current_dir(&dir).output().unwrap(); assert!(o.status.success(),"{c}: {}",String::from_utf8_lossy(&o.stderr));};
         sh("git init -q -b main && git config user.email t@t && git config user.name t && printf 'a\\nb\\n' > f.txt && git add f.txt && git commit -qm base");
         sh("git checkout -qb feat && printf 'x\\n' > g.txt && git add g.txt && git commit -qm side && git checkout -q main");
@@ -1091,7 +1106,7 @@ mod tests {
     }
     #[test]
     fn tree_scan_lists_dirs_first_and_only_opens_requested_dirs() {
-        let dir=std::env::temp_dir().join(format!("gs3-tree-{}",std::process::id())); let _=fs::remove_dir_all(&dir);
+        let dir=fixture("tree"); 
         for d in ["src/inner","z/node_modules/pkg","target/release"] {fs::create_dir_all(dir.join(d)).unwrap();}
         // A real repository boundary keeps this fixture isolated even when TMPDIR sits inside another repo.
         assert!(Command::new("git").arg("init").arg("-q").arg(&dir).status().unwrap().success());
@@ -1110,7 +1125,7 @@ mod tests {
     }
     #[test]
     fn preview_reads_text_and_refuses_what_must_never_show() {
-        let dir=std::env::temp_dir().join(format!("gs3-preview-{}",std::process::id())); let _=fs::remove_dir_all(&dir);
+        let dir=fixture("preview"); 
         for d in ["src","assets","docs"] {fs::create_dir_all(dir.join(d)).unwrap();}
         fs::write(dir.join("src/main.rs"),"fn main() {}\n").unwrap();
         fs::write(dir.join("nota.txt"),"hola\n").unwrap();
@@ -1150,7 +1165,7 @@ mod tests {
     }
     #[test]
     fn a_task_file_updates_the_roster_without_pressing_r() {
-        let root=std::env::temp_dir().join(format!("gs3-roster-{}",std::process::id())); let _=fs::remove_dir_all(&root);
+        let root=fixture("roster"); 
         let agent=root.join("agent"); let sessions=agent.join("sessions").join("proj"); let tasks=agent.join("gentle-agents").join("tasks");
         fs::create_dir_all(&sessions).unwrap(); fs::create_dir_all(&tasks).unwrap();
         let session=sessions.join("2026-01-01T00-00-00-000Z_0d0d0d0d-0d0d-0d0d-0d0d-0d0d0d0d0d0d.jsonl"); fs::write(&session,"").unwrap();
@@ -1170,7 +1185,7 @@ mod tests {
     }
     #[test]
     fn the_roster_counts_only_this_session_and_its_subagents_tasks() {
-        let root=std::env::temp_dir().join(format!("gs3-sess-{}",std::process::id())); let _=fs::remove_dir_all(&root);
+        let root=fixture("sess"); 
         let agent=root.join("agent"); let sessions=agent.join("sessions").join("proj"); let tasks=agent.join("gentle-agents").join("tasks");
         let sub_sessions=agent.join("gentle-agents").join("sessions");
         fs::create_dir_all(&sessions).unwrap(); fs::create_dir_all(&tasks).unwrap(); fs::create_dir_all(&sub_sessions).unwrap();
@@ -1199,8 +1214,8 @@ mod tests {
     }
     #[test]
     fn profiles_store_reads_a_fixture_and_refuses_links_and_garbage() {
-        let dir=std::env::temp_dir().join(format!("gs3-profstore-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
+        let dir=fixture("profstore");
+         fs::create_dir_all(&dir).unwrap();
         // The store the package really writes: kind, version, profiles by name, and a global active.
         let store=json!({"kind":"gentle-pi.agent_model_profiles","version":1,"active":"b",
             "profiles":{"a":{"orchestrator":{"model":"m1"}},"b":{"worker":"m2"}}});
@@ -1242,7 +1257,7 @@ mod tests {
     }
     #[test]
     fn a_pin_file_updates_the_roster_without_pressing_r() {
-        let root=std::env::temp_dir().join(format!("gs3-pinwatch-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())); let _=fs::remove_dir_all(&root);
+        let root=fixture("pinwatch");
         let agent=root.join("agent"); let sessions=agent.join("sessions").join("proj");
         fs::create_dir_all(&sessions).unwrap(); fs::create_dir_all(root.join(".git/gentle-ai")).unwrap(); fs::create_dir_all(root.join(".pi/gentle-ai")).unwrap();
         let session=sessions.join("s.jsonl"); fs::write(&session,"").unwrap();
