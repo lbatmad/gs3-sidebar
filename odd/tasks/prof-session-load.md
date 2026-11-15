@@ -62,10 +62,10 @@ S9. "No tocar `sensitive()`, ni el gate de TREE, ni el render de markdown/códig
 
 | # | Spec | Ruta | Commit |
 |---|------|------|--------|
-| T1 | S2 | `.pi/extensions/profile-server.ts` + harness `scripts/tests/profile-server.mjs` | |
-| T2 | S1, S3, S5 | `gs3/hud/src/sources.rs`: path del socket, cliente, eventos, spawn con ventana compartida | |
-| T3 | S1, S4 | `gs3/hud/src/core.rs` + `ui.rs`: estado del perfil de sesión, marcas, cards | |
-| T4 | S1, S6 | `gs3/hud/src/main.rs`: clic por canal, arranque/r con `get` | |
+| T1 | S2 | `.pi/extensions/profile-server.ts` + harness `scripts/tests/profile-server.mjs` | 5b14e3d |
+| T2 | S1, S3, S5 | `gs3/hud/src/sources.rs`: path del socket, cliente, eventos, spawn con ventana compartida | 5469e36 |
+| T3 | S1, S4 | `gs3/hud/src/core.rs` + `ui.rs`: estado del perfil de sesión, marcas, cards | 5469e36 |
+| T4 | S1, S6 | `gs3/hud/src/main.rs`: clic por canal, arranque/r con `get` | 5469e36 |
 | T5 | S8 | `--help`, `docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md` | |
 | T6 | S7 | verificación: `cargo test`, harness node, build+install, `/reload` + E2E del socket | |
 
