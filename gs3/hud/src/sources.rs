@@ -13,7 +13,7 @@ use anyhow::{anyhow, Context, Result};
 use notify::{RecursiveMode, Watcher};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
-use std::{fs, io::{BufRead, BufReader, Read, Seek, SeekFrom, Write}, os::unix::net::UnixStream, path::{Path, PathBuf}, process::{Command, Stdio}, sync::mpsc::{self, Sender}, thread, time::{Duration, Instant}};
+use std::{fs, io::{BufRead, BufReader, Read, Seek, SeekFrom, Write}, os::unix::net::UnixStream, path::{Path, PathBuf}, process::{Command, Stdio}, sync::mpsc::{self, Sender}, sync::Mutex, thread, time::{Duration, Instant}};
 
 // Drain both pipes concurrently: even a noisy subprocess cannot deadlock the timeout.
 pub fn run(cwd:&Path,program:&str,args:&[&str],seconds:u64)->Result<String> {
@@ -495,13 +495,24 @@ fn use_profile_requests(id:&str,name:&str)->Vec<(&'static str,Value)> {
 }
 /// Explicit clicks only; coalesce pending requests and discard clicks within one second of the last attempt.
 fn pane_worker(socket:PathBuf,requests:Vec<(&'static str,Value)>)->Sender<Instant> {
+    pane_worker_throttled(socket,requests,None)
+}
+/// `use_profile` spawns a fresh worker per click intent, so its 1 s window must be shared
+/// across workers: two workers sending at once would interleave two focus → text → Enter
+/// sequences and concatenate the texts into the pane's input box.
+static USE_PROFILE_WINDOW: Mutex<Option<Instant>> = Mutex::new(None);
+fn pane_worker_throttled(socket:PathBuf,requests:Vec<(&'static str,Value)>,shared:Option<&'static Mutex<Option<Instant>>>)->Sender<Instant> {
     let (send,rx)=mpsc::channel::<Instant>();
     thread::spawn(move||{
-        let mut last:Option<Instant>=None;
+        let mut local:Option<Instant>=None;
         while let Ok(mut at)=rx.recv() {
             while let Ok(next)=rx.try_recv() {at=next;}
-            if last.is_some_and(|prev|at.saturating_duration_since(prev)<Duration::from_secs(1)) {continue}
-            last=Some(at);
+            let cell: &mut Option<Instant> = match shared {
+                Some(m) => &mut *m.lock().unwrap(),
+                None => &mut local,
+            };
+            if cell.is_some_and(|prev|at.saturating_duration_since(prev)<Duration::from_secs(1)) {continue}
+            *cell=Some(at);
             for (method,params) in &requests {
                 if request(&socket,method,params.clone()).is_err() {break}
             }
@@ -512,7 +523,7 @@ pub fn model_picker(socket:PathBuf,id:String)->Sender<Instant> { pane_worker(soc
 pub fn profiles_command(socket:PathBuf,id:String)->Sender<Instant> { pane_worker(socket,profiles_command_requests(&id)) }
 /// One worker per click intent: the name is fixed in the requests, so a later click with another
 /// name can never leak into an in-flight sequence, and the same 1 s throttle governs repeats.
-pub fn use_profile(socket:PathBuf,id:String,name:String)->Sender<Instant> { pane_worker(socket,use_profile_requests(&id,&name)) }
+pub fn use_profile(socket:PathBuf,id:String,name:String)->Sender<Instant> { pane_worker_throttled(socket,use_profile_requests(&id,&name),Some(&USE_PROFILE_WINDOW)) }
 pub fn pane(socket:&Path,id:&str)->Result<Option<Value>> {
     let found=match request(socket,"pane.get",json!({"pane_id":id})) {
         Ok(v) if v["pane"].is_object()=>Some(v["pane"].clone()),
@@ -762,6 +773,39 @@ mod tests {
         thread::sleep(Duration::from_millis(200));
         assert_eq!(focus.load(std::sync::atomic::Ordering::SeqCst),2);
         drop(send); fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn profile_clicks_across_workers_share_the_one_second_window() {
+        // main.rs spawns a fresh worker per click intent, so two clicks create two
+        // workers; without a shared window their sequences interleave and the pane's
+        // input box receives "/profile uno/profile uno" (concatenated texts, one Enter).
+        let dir=std::env::temp_dir().join(format!("gs3-profuse-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
+        let socket=dir.join("herdr.sock");
+        let listener=std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let focus=std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen=focus.clone();
+        thread::spawn(move||{
+            while let Ok((mut stream,_))=listener.accept() {
+                let mut line=String::new();
+                {let mut r=BufReader::new(stream.try_clone().unwrap()); let _=r.read_line(&mut line);}
+                if serde_json::from_str::<Value>(&line).map(|v|text(&v,"method")=="pane.focus").unwrap_or(false) {seen.fetch_add(1,std::sync::atomic::Ordering::SeqCst);}
+                let _=writeln!(stream,"{}",json!({"result":{"type":"ok"}}));
+            }
+        });
+        let w1=use_profile(socket.clone(),"w1:p1".into(),"uno".into());
+        w1.send(Instant::now()).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        let w2=use_profile(socket.clone(),"w1:p1".into(),"uno".into());
+        w2.send(Instant::now()).unwrap();
+        thread::sleep(Duration::from_millis(400));
+        assert_eq!(focus.load(std::sync::atomic::Ordering::SeqCst),1,"un doble clic entre dos workers envía una sola secuencia");
+        // After the shared window a click sends again.
+        thread::sleep(Duration::from_millis(500));
+        w2.send(Instant::now()).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(focus.load(std::sync::atomic::Ordering::SeqCst),2);
+        drop(w1); drop(w2); fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn session_files_switch_append_and_truncate() {
