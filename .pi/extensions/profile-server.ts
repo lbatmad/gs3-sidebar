@@ -29,7 +29,7 @@
  * environment, so TMPDIR differs between the rail and the agent process.
  */
 import net from "node:net";
-import { readFileSync, unlinkSync, chmodSync } from "node:fs";
+import { readFileSync, unlinkSync, chmodSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -102,7 +102,7 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 		return { name: entry.name, models };
 	}
 
-	function handle(request: unknown, socket: net.Socket): void {
+	async function handle(request: unknown, socket: net.Socket): Promise<void> {
 		const id = (request as { id?: unknown })?.id;
 		const method = (request as { method?: unknown })?.method;
 		const params = (request as { params?: Record<string, unknown> })?.params ?? {};
@@ -132,24 +132,31 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 			}
 			const models = store.profiles[name]!;
 			bindings.set(sessionId, { name, origin: "user", modelProfiles: models });
-			// A profile with an orchestrator route switches the live model, mirroring
-			// the panel's live orchestrator switch.
+			// A profile with an orchestrator route switches the live model, mirroring the
+			// panel's live orchestrator switch. The switch is awaited and its real outcome
+			// travels with the reply: reporting "loaded" while the session kept the previous
+			// model would make the rail claim a switch that never happened.
 			const orchestrator = models["orchestrator"];
-			if (typeof orchestrator?.model === "string" && orchestrator.model.length > 0 && setModel) {
-				try {
-					void setModel(orchestrator.model);
-				} catch {
-					// The binding is already recorded; a failed live switch must not
-					// fail the reply.
+			let live: "switched" | "failed" | "none" = "none";
+			if (typeof orchestrator?.model === "string" && orchestrator.model.length > 0) {
+				live = "failed";
+				if (setModel) {
+					try {
+						if (await setModel(orchestrator.model)) live = "switched";
+					} catch {
+						live = "failed";
+					}
 				}
 			}
-			reply(socket, { id, result: { ok: true, profile: { name, models } } });
+			reply(socket, { id, result: { ok: true, live, profile: { name, models } } });
 			return;
 		}
 		reply(socket, { id, error: { message: "unknown method" } });
 	}
 
 	function stop(): void {
+		// `serving` holds the socket path; closing the listener removes it too, and this
+		// unlink also covers a path left behind by a crashed previous session.
 		const path = serving;
 		serving = "";
 		const running = server;
@@ -165,9 +172,9 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 	}
 
 	function start(pane: string): void {
-		if (serving === pane) return;
-		stop();
 		const path = socketPath(pane);
+		if (serving === path) return;
+		stop();
 		// A previous session may have died without unlinking its socket.
 		try {
 			unlinkSync(path);
@@ -186,26 +193,39 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 				const newline = data.indexOf("\n");
 				if (newline === -1) return;
 				const line = data.slice(0, newline);
-				try {
-					handle(JSON.parse(line), socket);
-				} catch {
-					reply(socket, { error: { message: "malformed request" } });
-				}
+				handle(JSON.parse(line), socket).catch(() => reply(socket, { error: { message: "malformed request" } }));
 			});
 		});
 		listening.on("error", () => {
 			// Another listener (a second session on the same pane) wins; stay dormant.
 			if (server === listening) stop();
 		});
-		listening.listen(path, () => {
+		const previousUmask = process.umask(0o077);
+		try {
+			listening.listen(path, () => {
+				process.umask(previousUmask);
+			// 0600 from the first byte: the window between bind and chmod is what a
+			// permissive umask would leave open to another local user.
 			try {
 				chmodSync(path, 0o600);
+				if ((statSync(path).mode & 0o077) !== 0) throw new Error("permissive socket");
 			} catch {
-				// Best effort: the socket is still keyed by uid in its name.
+				// Refuse to serve rather than expose the session's routing on an open socket.
+				listening.close();
+				try {
+					unlinkSync(path);
+				} catch {
+					// Already gone.
+				}
+				return;
 			}
-			server = listening;
-			serving = pane;
-		});
+				server = listening;
+				serving = path;
+			});
+		} catch (error) {
+			process.umask(previousUmask);
+			throw error;
+		}
 	}
 
 	pi.on("session_start", (_event, ctx) => {

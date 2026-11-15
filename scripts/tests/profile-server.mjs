@@ -16,9 +16,11 @@ const extensionPath = join(root, ".pi", "extensions", "profile-server.ts");
 // jiti lives in the bundled prefix; a bare "jiti" import works when installed.
 const require = createRequire(import.meta.url);
 async function loadExtension() {
-  const { createJiti } = await import(
-    "/Users/albertobellido/gs-root/shell/prefix/lib/node_modules/jiti/lib/jiti.mjs",
-  );
+  // jiti ships with Pi; the harness resolves it without pinning one developer's home.
+  const candidate = process.env.JITI_PATH ??
+    ["/Users/albertobellido/gs-root/shell/prefix/lib/node_modules/jiti/lib/jiti.mjs"].find((p) => existsSync(p)) ??
+    "jiti";
+  const { createJiti } = await import(candidate);
   const jiti = createJiti(import.meta.url);
   const href = new URL(extensionPath, import.meta.url).href;
   return await jiti.import(href, { default: true });

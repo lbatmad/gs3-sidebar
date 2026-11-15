@@ -1188,6 +1188,11 @@ fn profiles_card(s: &State, w: usize) -> Card {
     if let Some(v) = session {
         let profile = session_profile(v);
         c.row(vec![seg("◉ ", Gold), seg("perfil de sesión: ", Text), seg(text_of(profile, "name"), Gold)], vec![]);
+        // The extension reports what actually happened to the live model; the routing below is
+        // the profile's configuration, so a failed switch must be visible, never implied.
+        if profile["live"].as_str()==Some("failed") {
+            c.row(vec![seg("  switch en vivo falló · sigue el modelo anterior", Coral)], vec![]);
+        }
         let models = &profile["models"];
         let host = models["orchestrator"]["model"].as_str().unwrap_or("");
         let host_tier = models["orchestrator"]["tier"].as_str().unwrap_or("");
@@ -2570,6 +2575,22 @@ mod tests {
         let l = on(&s, Tab::Prof, 60);
         assert!(l.iter().any(|l| l.contains("canal de perfiles no disponible")));
         assert!(l.iter().any(|l| l.contains("gentle-ai-explore")), "vista global intacta con el canal caído");
+    }
+    #[test]
+    fn failed_live_switch_is_visible_in_the_card() {
+        // The routing shown is the profile's configuration; when the session could not adopt
+        // it, the card says so instead of implying a switch that did not happen.
+        let mut s = roster_sample();
+        s.profile_channel = Some(Some(serde_json::json!({
+            "name":"beta","live":"failed",
+            "models":{"orchestrator":{"model":"p/beta-host"}}
+        })));
+        let l = on(&s, Tab::Prof, 60);
+        assert!(l.iter().any(|l| l.contains("switch en vivo falló")), "el fallo del switch se muestra: {l:#?}");
+        // A successful or absent outcome adds no noise.
+        s.profile_channel = Some(Some(serde_json::json!({"name":"beta","live":"switched","models":{}})));
+        let l = on(&s, Tab::Prof, 60);
+        assert!(!l.iter().any(|l| l.contains("switch en vivo falló")));
     }
     #[test]
     fn wrapped_channel_reply_still_names_the_session_profile() {

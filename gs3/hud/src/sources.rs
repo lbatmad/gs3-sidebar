@@ -489,6 +489,9 @@ fn profiles_command_requests(id:&str)->Vec<(&'static str,Value)> {
 /// the environment, so TMPDIR differs between this rail and the agent process.
 /// One JSON request per connection; the profile name travels as data, never as
 /// command text — nothing is typed into the agent pane.
+/// The process owner's uid, read once: the channel socket is keyed and verified by it.
+fn unix_uid()->Option<u32> {use std::sync::OnceLock;static U:OnceLock<Option<u32>>=OnceLock::new();*U.get_or_init(||std::process::Command::new("id").arg("-u").output().ok().and_then(|o|String::from_utf8(o.stdout).ok()).and_then(|s|s.trim().parse().ok()))}
+
 pub fn profile_channel_socket(pane:&str,uid:u32)->PathBuf {
     PathBuf::from(format!("/tmp/gs3-profile-{uid}-{pane}.sock"))
 }
@@ -497,6 +500,15 @@ pub fn profile_channel_socket(pane:&str,uid:u32)->PathBuf {
 /// model map). A missing socket means the extension is not loaded: the caller
 /// renders that, it is not an error to report.
 fn profile_channel(socket:&Path,payload:Value)->Result<Value> {
+    // The socket path is predictable from the pane id, so the owner is checked before any
+    // byte is written: another local user could otherwise answer for the extension and hand
+    // the rail a forged binding.
+    let meta=fs::symlink_metadata(socket)?;
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    if !meta.file_type().is_socket() {return Err(anyhow!("not a socket"))}
+    let owner=meta.uid();
+    if owner!=unix_uid().ok_or_else(||anyhow!("no uid"))? {return Err(anyhow!("socket owned by another user"))}
+    if meta.mode()&0o077!=0 {return Err(anyhow!("socket is group/world accessible"))}
     let mut stream=UnixStream::connect(socket)?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?; stream.set_write_timeout(Some(Duration::from_secs(3)))?;
     writeln!(stream,"{payload}")?;
@@ -556,8 +568,16 @@ pub fn profile_channel_worker(socket:PathBuf,tx:Sender<crate::core::Event>) {
             // the event must carry the profile object itself (name + model map), never the
             // wrapper: the cards read `name` and `models` at the top level.
             match profile_channel_use(&socket,&name) {
-                Ok(reply) if reply["ok"]==serde_json::json!(true)=>{let _=tx.send(crate::core::Event::ProfileChannel(reply["profile"].clone()));}
-                Ok(_)=>{let _=tx.send(crate::core::Event::ProfileChannel(serde_json::Value::Bool(false)));}
+                Ok(reply) if reply["ok"]==serde_json::json!(true)=>{
+                    // `live` says whether the session really switched model: the card shows the
+                    // profile's configured routing either way, so the outcome has to travel.
+                    let mut profile=reply["profile"].clone();
+                    profile["live"]=reply["live"].clone();
+                    let _=tx.send(crate::core::Event::ProfileChannel(profile));
+                }
+                // A rejected name leaves the previous binding in place: re-read it instead of
+                // pretending the session has no profile.
+                Ok(_)=>{let _=tx.send(match profile_channel_get(&socket){Ok(p)=>crate::core::Event::ProfileChannel(p.unwrap_or(serde_json::Value::Bool(false))),Err(_)=>crate::core::Event::ProfileChannelDown});}
                 Err(_)=>{let _=tx.send(crate::core::Event::ProfileChannelDown);}
             }
         }
@@ -797,6 +817,8 @@ mod tests {
         let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
         let socket=dir.join("channel.sock");
         let listener=std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&socket,std::fs::Permissions::from_mode(0o600)).unwrap();
         let used=std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let seen=used.clone();
         let serving=listener.try_clone().unwrap();
@@ -827,6 +849,24 @@ mod tests {
         drop(listener); fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
+    fn profile_channel_refuses_a_non_socket_or_open_socket() {
+        // The path is predictable from the pane id: a plain file, or a socket another user
+        // could talk to, must be refused before the rail writes anything into it.
+        let dir=std::env::temp_dir().join(format!("gs3-profbad-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
+        let impostor=dir.join("plain.sock");
+        fs::write(&impostor,"{}").unwrap();
+        let err=profile_channel_get(&impostor).err().map(|e|e.to_string()).unwrap_or_default();
+        assert!(err.contains("not a socket"),"un archivo común no es canal: {err}");
+        let open=dir.join("open.sock");
+        let listener=std::os::unix::net::UnixListener::bind(&open).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&open,std::fs::Permissions::from_mode(0o666)).unwrap();
+        let err=profile_channel_get(&open).err().map(|e|e.to_string()).unwrap_or_default();
+        assert!(err.contains("group/world"),"un socket abierto al grupo/mundo se rechaza: {err}");
+        drop(listener); fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
     fn profile_clicks_share_the_one_second_window() {
         // Two click intents must double-load nothing: the shared window discards
         // the second click whatever worker moment it lands on.
@@ -834,6 +874,8 @@ mod tests {
         let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
         let socket=dir.join("channel.sock");
         let listener=std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&socket,std::fs::Permissions::from_mode(0o600)).unwrap();
         let count=std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seen=count.clone();
         thread::spawn(move||{
