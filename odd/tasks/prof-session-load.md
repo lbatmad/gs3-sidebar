@@ -21,17 +21,19 @@ S1. "al hacer click en cualquiero perfil del radiobutton, quiero que se cargue e
     entrada `orchestrator`, filas de roles desde el resto) con una etiqueta de
     sesión en vez de "global".
 S2. Canal: la extensión `.pi/extensions/profile-server.ts` (auto-descubierta por
-    Pi, recargable con `/reload`) escucha `${TMPDIR}/gs3-profile-${uid}-${pane}.sock`
-    (el pane es el agente, el que ya viaja en `--gs3-herdr-pane`), 0600, ownership
-    verificada por uid en ambos extremos (patrón del bridge herdr-session). Métodos:
+    Pi, recargable con `/reload`) escucha `/tmp/gs3-profile-${uid}-${pane}.sock`
+    (pane = agente, el que ya viaja en `--gs3-herdr-pane`; base fija `/tmp` porque
+    TMPDIR difiere entre el proceso del HUD y el de pi — el bundled shell
+    reconstruye el env, ver L2), 0600, ownership verificada por uid en el cliente
+    (patrón del bridge herdr-session). Métodos:
     `get` → binding actual de la sesión (o nada); `use {name}` → atar el perfil,
     switch en vivo del orquestador si corresponde, y responder
     `{ok, profile:{name, models}}`. Nombre inválido o ausente del store →
     `{ok:false, error, names}`; el rail nunca arma comandos con el nombre, sólo lo
     envía como dato JSON.
 S3. El HUD deriva el mismo path de socket desde su `--pane` (uid por `id -u`
-    cacheado); al arrancar y con `r` consulta `get` para conocer el perfil de sesión
-    ya cargado. Canal ausente (extensión no cargada, socket perdido) → una fila
+    cacheado, base `/tmp`); al arrancar y con `r` consulta `get` para conocer el
+    perfil de sesión ya cargado. Canal ausente (extensión no cargada, socket perdido) → una fila
     "canal no disponible" en la card ⌁ Perfiles; el resto del rail sigue igual.
 S4. Marcas: el perfil cargado en la sesión se marca `◉` en la card ⌁ Perfiles
     (distinta de `●` activo global del store y `▣` pin de repo); un renglón anuncia
@@ -84,3 +86,8 @@ Contexto: el camino actual (clic → texto `/profile <nombre>` + Enter al pane,
 commits 4e86472 y 34b78a6) tipea el comando en el chat del agente; el usuario lo
 rechaza explícitamente. Antecedentes: L5/L6 de `odd/tasks/prof-profiles.md` (el
 clic de perfil fue publish de repo, luego /profile por texto; ambos por el chat).
+
+L2 (hallazgo de diseño, pre-T1): TMPDIR difiere entre procesos — el HUD corre con
+`/var/folders/.../T/` y el pi del bundled shell con `gs-root/shell/tmp/...` porque
+el shell reconstruye el env. Un socket derivado de TMPDIR no sería encontrable por
+ambas partes: base fija `/tmp` con uid en el nombre (S2/S3 reescritas).
