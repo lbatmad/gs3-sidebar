@@ -29,7 +29,7 @@ async function loadExtension() {
 const PANE = "w9:pZ";
 // Kept short on purpose: unix socket paths cap near 104 bytes, and an isolated runner points this
 // at its own short scratch directory through the same variable the extension reads.
-const SOCKET_BASE = process.env.GS3_PROFILE_SOCKET_DIR?.trim() || "/tmp";
+const SOCKET_BASE = process.env.GS3_PROFILE_SOCKET_DIR || "/tmp";
 const SOCKET = join(SOCKET_BASE, `gs3-profile-${process.getuid()}-${PANE}.sock`);
 process.env.GS3_PROFILE_SOCKET_DIR = SOCKET_BASE;
 

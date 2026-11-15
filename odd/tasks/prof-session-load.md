@@ -116,6 +116,15 @@ L3 (causa raíz del "no pasa nada", evidencia `path:line`):
   antes del switch vivo.
 
 
+L6 (segunda corrida de review, lineage review-1de69238b8933a2d):
+
+- El lente de reliability encontró que el HUD normalizaba `GS3_PROFILE_SOCKET_DIR`
+  distinto que la extensión (trim). Dos intentos de igualar el recorte chocaron con
+  diferencias reales entre los conjuntos de espacios de Rust y JavaScript
+  (`U+FEFF` lo recorta JS y no Rust; `U+0085` al revés). Decisión: **no normalizar
+  en ninguno de los dos lados** — el valor viaja verbatim y el default es `/tmp`.
+  Así los dos procesos no pueden divergir por construcción.
+
 L5 (corrección de portabilidad de fixtures, tras el review nativo):
 
 - El validador aislado rechazó la corrección por una razón de *preparación*, no de

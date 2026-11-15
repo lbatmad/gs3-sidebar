@@ -38,7 +38,9 @@ const BINDINGS_SYMBOL_KEY = "gentle-pi:session-profile-bindings";
 // Fixed /tmp by default: the bundled shell rebuilds the environment, so TMPDIR differs between
 // the rail and the agent process. GS3_PROFILE_SOCKET_DIR lets an isolated runner point both sides
 // at a short scratch directory (unix socket paths cap at ~104 bytes).
-const SOCKET_BASE = process.env.GS3_PROFILE_SOCKET_DIR?.trim() || "/tmp";
+// Used verbatim, with no trimming: the rail reads the same variable with the same rule, and any
+// normalisation on one side alone would make the two derive different socket files.
+const SOCKET_BASE = process.env.GS3_PROFILE_SOCKET_DIR || "/tmp";
 
 interface RoutingEntry {
 	model?: string;
