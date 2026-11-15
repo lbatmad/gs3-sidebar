@@ -114,6 +114,18 @@ L3 (causa raíz del "no pasa nada", evidencia `path:line`):
   `provider/model` del orquestador ahora se resuelve vía `ctx.modelRegistry.find`
   antes del switch vivo.
 
+
+L3b (verificación en vivo del fix, pane de prueba w2:p6B):
+
+- Un pi TUI real (pane w2:p6B, cwd = repo, bridge + flags por CLI) lista
+  `profile-server.ts` en `[Extensions]` sin errores; tras `/reload` aparece
+  `/tmp/gs3-profile-501-w2:p6B.sock` (0600).
+- Round trip contra el socket real: `get` → sin binding; `use Grok-muse` → ok
+  con el mapa de modelos; `get` → `Grok-muse`. (El pane de prueba resolvió el
+  store estándar `~/.pi/gentle-ai` porque su lanzamiento de prueba no llevaba
+  `GENTLE_PI_CONFIG_HOME`; la sesión viva sí lo tiene — store bundleado.)
+- El socket se retira con su pane al cerrarlo. Commit del fix: a753bd9.
+
 L2 (hallazgo de diseño, pre-T1): TMPDIR difiere entre procesos — el HUD corre con
 `/var/folders/.../T/` y el pi del bundled shell con `gs-root/shell/tmp/...` porque
 el shell reconstruye el env. Un socket derivado de TMPDIR no sería encontrable por
