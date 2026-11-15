@@ -483,12 +483,13 @@ fn profiles_command_requests(id:&str)->Vec<(&'static str,Value)> {
         ("pane.send_keys",json!({"pane_id":id,"keys":["Enter"]})),
     ]
 }
-/// `/gentle:profiles publish <name>`: the same path, with a name that already passed the package's
-/// own sendable rule; Pi toggles the committed repo declaration (a second publish removes it).
-fn publish_profile_requests(id:&str,name:&str)->Vec<(&'static str,Value)> {
+/// `/profile <name>`: the same path, with a name that already passed the package's own sendable
+/// rule; Pi binds the profile to the current session only (the profile-use extension) — no repo
+/// declaration, no pins, no global routing are touched.
+fn use_profile_requests(id:&str,name:&str)->Vec<(&'static str,Value)> {
     vec![
         ("pane.focus",json!({"pane_id":id})),
-        ("pane.send_text",json!({"pane_id":id,"text":format!("/gentle:profiles publish {name}")})),
+        ("pane.send_text",json!({"pane_id":id,"text":format!("/profile {name}")})),
         ("pane.send_keys",json!({"pane_id":id,"keys":["Enter"]})),
     ]
 }
@@ -511,7 +512,7 @@ pub fn model_picker(socket:PathBuf,id:String)->Sender<Instant> { pane_worker(soc
 pub fn profiles_command(socket:PathBuf,id:String)->Sender<Instant> { pane_worker(socket,profiles_command_requests(&id)) }
 /// One worker per click intent: the name is fixed in the requests, so a later click with another
 /// name can never leak into an in-flight sequence, and the same 1 s throttle governs repeats.
-pub fn publish_profile(socket:PathBuf,id:String,name:String)->Sender<Instant> { pane_worker(socket,publish_profile_requests(&id,&name)) }
+pub fn use_profile(socket:PathBuf,id:String,name:String)->Sender<Instant> { pane_worker(socket,use_profile_requests(&id,&name)) }
 pub fn pane(socket:&Path,id:&str)->Result<Option<Value>> {
     let found=match request(socket,"pane.get",json!({"pane_id":id})) {
         Ok(v) if v["pane"].is_object()=>Some(v["pane"].clone()),
@@ -724,11 +725,11 @@ mod tests {
         }
     }
     #[test]
-    fn publish_command_requests_carry_the_valid_name_verbatim() {
+    fn use_command_requests_carry_the_valid_name_verbatim() {
         // Only a name the package itself would accept ever reaches the request builder.
-        assert_eq!(publish_profile_requests("w1:p1","uno"), vec![
+        assert_eq!(use_profile_requests("w1:p1","uno"), vec![
             ("pane.focus",json!({"pane_id":"w1:p1"})),
-            ("pane.send_text",json!({"pane_id":"w1:p1","text":"/gentle:profiles publish uno"})),
+            ("pane.send_text",json!({"pane_id":"w1:p1","text":"/profile uno"})),
             ("pane.send_keys",json!({"pane_id":"w1:p1","keys":["Enter"]})),
         ]);
     }

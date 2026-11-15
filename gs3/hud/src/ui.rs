@@ -57,9 +57,9 @@ pub struct Ui {
     /// PROF: an explicit click asked for the `/gentle:profiles` screen; main consumes this intent
     /// off the render path and the pane worker throttles repeats.
     pub open_profiles: bool,
-    /// PROF: the profile whose repo declaration a click asked to publish (toggle); main hands it to
-    /// a per-name pane worker.
-    pub publish_profile: Option<String>,
+    /// PROF: the profile a click asked to bind to the current session (`/profile <name>`, a
+    /// session-only binding); main hands it to a per-name pane worker.
+    pub use_profile: Option<String>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GitView { #[default] Graph, Branches }
@@ -84,8 +84,8 @@ pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, Scrol
     PickProfile(String),
     /// PROF: open the `/gentle:profiles` screen on the bound agent pane (text + Enter via herdr).
     ProfilesCommand,
-    /// PROF: publish (toggle) the repo profile declaration for this name through the agent pane.
-    PublishProfile(String),
+    /// PROF: bind this profile to the current session through the agent pane (`/profile <name>`).
+    UseProfile(String),
     /// MEDIA · YouTube: open the search box, transport, and a click on the seek bar as a 0.0–1.0 fraction.
     Search, PlayPause, PrevTrack, NextTrack, Seek(f64),
     /// MEDIA · Spotify: consent in the browser, renew the stored token, list playlists, open one.
@@ -165,7 +165,7 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::ProfilesCommand => ui.open_profiles = true,
         // The name in the intent already passed the sendable check at render time; act() re-checks
         // so a hand-built event can never smuggle an argument into the pane.
-        Action::PublishProfile(name) if crate::core::is_valid_profile_name(&name) => ui.publish_profile = Some(name),
+        Action::UseProfile(name) if crate::core::is_valid_profile_name(&name) => ui.use_profile = Some(name),
         _ => {}
     }
 }
@@ -1118,9 +1118,10 @@ fn profile_store_card(s: &State, w: usize) -> Option<Card> {
         // a square beside the store's own circular marks, so global-active (●) and repo-pinned never
         // read alike at 48 columns.
         if pinned { left.insert(1, seg("▣ ", Cyan)); }
-        // A sendable name publishes the repo declaration (a toggle); anything else keeps the old
-        // visual-only selection, so no stored string can ever become a command argument.
-        let action = if crate::core::is_valid_profile_name(&p.name) { Action::PublishProfile(p.name.clone()) } else { Action::PickProfile(p.name.clone()) };
+        // A sendable name binds the profile to the current session (`/profile`, a session-only
+        // binding); anything else keeps the old visual-only selection, so no stored string can
+        // ever become a command argument.
+        let action = if crate::core::is_valid_profile_name(&p.name) { Action::UseProfile(p.name.clone()) } else { Action::PickProfile(p.name.clone()) };
         // The store holds no descriptions: the role count and the host model are the distinctive data.
         let roles = if p.roles == 1 { "1 rol".to_string() } else { format!("{} roles", p.roles) };
         let mut right = vec![seg(roles, Dim)];
@@ -2494,12 +2495,12 @@ mod tests {
         assert!(find(&l, "● dos").contains("b/m1"), "el activo lleva su marca y el modelo del host");
         assert!(find(&l, "○ uno").contains("2 roles"), "la cuenta de roles es el dato distintivo");
         find(&l, "○ raro ..");
-        // A click on a valid name sends the publish intent (toggle of the repo declaration);
-        // a second click would toggle it back. Nothing is written by the rail itself.
+        // A click on a valid name sends the session-bind intent (`/profile`, a session-only
+        // binding); nothing is written by the rail itself.
         let f = frame(&s, 48, 0); let (x, y) = at(&f, "○ uno");
-        assert_eq!(click(&f, x, y), Some(Action::PublishProfile("uno".into())));
-        assert!(apply(&mut s, Event::Ui(Action::PublishProfile("uno".into()))));
-        assert_eq!(s.ui.publish_profile.as_deref(), Some("uno"));
+        assert_eq!(click(&f, x, y), Some(Action::UseProfile("uno".into())));
+        assert!(apply(&mut s, Event::Ui(Action::UseProfile("uno".into()))));
+        assert_eq!(s.ui.use_profile.as_deref(), Some("uno"));
         assert!(!s.ui.save, "la publicación no toca el disco desde el rail");
         // The visual selection is still what an unsendable name falls back to.
         let f = frame(&s, 48, 0); let (x, y) = at(&f, "○ raro ..");
@@ -2525,11 +2526,11 @@ mod tests {
         // A pinned-but-unknown name is announced as stale, never as a live pin.
         // The announcement row names what subagent launches resolve.
         assert!(l.iter().any(|l| l.contains("subagentes") && l.contains("dos")), "el anuncio nombra el perfil: {l:#?}");
-        // A valid name click sends the publish intent with that exact name.
+        // A valid name click sends the session-bind intent with that exact name.
         let f = frame(&s, 48, 0); let (x, y) = at(&f, "▣ dos");
-        assert_eq!(click(&f, x, y), Some(Action::PublishProfile("dos".into())));
-        assert!(apply(&mut s, Event::Ui(Action::PublishProfile("dos".into()))));
-        assert_eq!(s.ui.publish_profile.as_deref(), Some("dos"));
+        assert_eq!(click(&f, x, y), Some(Action::UseProfile("dos".into())));
+        assert!(apply(&mut s, Event::Ui(Action::UseProfile("dos".into()))));
+        assert_eq!(s.ui.use_profile.as_deref(), Some("dos"));
         assert!(!s.ui.save);
         // A weird-but-stored name never becomes a command argument: the click keeps the old
         // visual-selection behaviour and sends nothing.
