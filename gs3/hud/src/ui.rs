@@ -238,6 +238,8 @@ fn mark(name: &str, tone: Tone) -> Vec<Seg> { vec![seg(MARK, Tone::Purple), seg(
 fn tab_name(t: Tab, short: bool, tone: Tone, strong: bool) -> Seg { if t == Tab::Config { seg(CONFIG_ICON, Tone::Purple) } else { Seg { text: t.name(short).into(), tone, bold: strong } } }
 pub fn plain(line: &[Seg]) -> String { line.iter().map(|g| g.text.as_str()).collect() }
 fn width_of(line: &[Seg]) -> usize { line.iter().map(|g| g.text.width()).sum() }
+/// A JSON field as display text: `""` when missing, never a panic.
+fn text_of(v: &serde_json::Value, key: &str) -> String { v[key].as_str().unwrap_or("").to_string() }
 fn fit(line: Vec<Seg>, width: usize) -> Vec<Seg> {
     let mut out = Vec::new(); let mut room = width;
     for g in line {
@@ -1106,11 +1108,16 @@ fn profile_store_card(s: &State, w: usize) -> Option<Card> {
     let r = s.roster.as_ref()?;
     if r.profiles.len() < 2 { return None }
     let mut c = Card::new("profiles-store", mark("Perfiles", Cyan), w);
+    // The session channel answer: None until the first reply, Some(None) when the channel is
+    // down (the extension is not loaded), Some(profile) when the session has a binding.
+    let session = s.profile_channel.as_ref().and_then(|o| o.as_ref());
+    let session_name = session.map(|v| text_of(v, "name")).filter(|n| !n.is_empty());
     for p in &r.profiles {
         let picked = s.ui.profile_pick.as_deref() == Some(p.name.as_str());
         // The store marks its own active profile (`active`); a stale marker would have been dropped by
         // the parser, so no row ever carries a mark it cannot justify.
-        let (bullet, tone) = if p.active { ("● ", Mint) } else { ("○ ", Dim) };
+        let loaded = session_name.as_deref() == Some(p.name.as_str());
+        let (bullet, tone) = if loaded { ("◉ ", Gold) } else if p.active { ("● ", Mint) } else { ("○ ", Dim) };
         let pinned = r.pinned.as_deref() == Some(p.name.as_str());
         let mut left = if picked { vec![seg(bullet, tone), seg("▸ ", Gold), seg(p.name.clone(), Gold)] }
                    else { vec![seg(bullet, tone), seg(p.name.clone(), Text)] };
@@ -1141,6 +1148,13 @@ fn profile_store_card(s: &State, w: usize) -> Option<Card> {
     if let Some(name) = &r.pinned {
         c.row(vec![seg("▣ ", Cyan), seg("subagentes: ", Text), seg(name.clone(), Cyan)], vec![seg("pineado", Dim)]);
     }
+    // What the session itself resolves: the channel's binding (loaded by a click, or before the rail
+    // started), or why no answer exists. The channel being down names the extension, not an error.
+    if let Some(v) = session {
+        c.row(vec![seg("◉ ", Gold), seg("sesión: ", Text), seg(text_of(v, "name"), Gold)], vec![seg("cargado", Dim)]);
+    } else if s.profile_channel_down {
+        c.row(vec![seg("◉ ", Dim), seg("canal no disponible", Dim)], vec![seg("extensión", Dim)]);
+    }
     Some(c)
 }
 /// `• name ··· model (effort)` on one row when it fits, else the model on its own indented row.
@@ -1162,7 +1176,33 @@ fn profiles_card(s: &State, w: usize) -> Card {
     use Tone::*;
     let mut c = Card::new("profiles", mark("Profiles & Clusters", PinkBright), w);
     let r = s.roster.clone().unwrap_or_default();
-    if !r.profile_source.is_empty() {c.row(vec![seg(r.profile_source.clone(), Dim)], vec![]);}
+    // A session profile is loaded through the channel: this card shows the loaded profile's
+    // model map (host from its `orchestrator` entry, one row per role) instead of the global
+    // store, with the session label naming what resolved it.
+    let session = s.profile_channel.as_ref().and_then(|o| o.as_ref());
+    if let Some(v) = session {
+        c.row(vec![seg("◉ ", Gold), seg("perfil de sesión: ", Text), seg(text_of(v, "name"), Gold)], vec![]);
+        let models = &v["models"];
+        let host = models["orchestrator"]["model"].as_str().unwrap_or("");
+        let host_tier = models["orchestrator"]["tier"].as_str().unwrap_or("");
+        // A profile without an `orchestrator` entry keeps the live host model (no live switch happened).
+        let (model,thinking)=if host.is_empty() {
+            match r.configured_host.as_ref() {Some(a)=>(a.model.as_str(),a.thinking.as_str()),None=>(r.model.as_str(),r.thinking.as_str())}
+        } else {(host,host_tier)};
+        model_rows(&mut c, vec![seg("🎯 ", Border), bold("host / orquestador", Border)], model, thinking);
+        if let Some(entries) = models.as_object() {
+            for (role,route) in entries {
+                if role=="orchestrator" {continue}
+                c.row(vec![], vec![]);
+                model_rows(&mut c, vec![seg("• ", Salmon), seg(role.clone(), Salmon)], route["model"].as_str().unwrap_or(""), route["tier"].as_str().unwrap_or(""));
+            }
+        }
+        c.divider();
+    } else if s.profile_channel_down {
+        c.row(vec![seg("canal de perfiles no disponible", Dim)], vec![seg("extensión", Dim)]);
+        c.divider();
+    } else if !r.profile_source.is_empty() {c.row(vec![seg(r.profile_source.clone(), Dim)], vec![]);}
+    if session.is_none() {
     // A profile without an `orchestrator` entry keeps the host defaults of settings.json;
     // the store never rewrites STATUS, only this card.
     let (model,thinking)=match r.configured_host.as_ref() {
@@ -1175,6 +1215,7 @@ fn profiles_card(s: &State, w: usize) -> Card {
         c.row(vec![], vec![]);
         let (bt, nt) = agent_tones(&a.name);
         model_rows(&mut c, vec![seg("• ", bt), seg(a.name.clone(), nt)], &a.model, &a.thinking);
+    }
     }
     if r.total > 0 {
         c.divider();
@@ -2462,6 +2503,67 @@ mod tests {
         find(&prof,"profile-host (high)"); find(&prof,"profile-refuter");
         assert!(!prof.iter().any(|l|l.contains("long-model-name-v2") || l.contains("claude-opus")));
         find(&prof,"5 ✓ · 1 en curso");
+    }
+    #[test]
+    fn session_profile_marks_the_loaded_row_and_announces_itself() {
+        let mut s = roster_sample();
+        let mut r = s.roster.take().unwrap();
+        r.profiles = profiles(Some(&serde_json::json!({
+            "kind":"gentle-pi.agent_model_profiles","version":1,"active":"dos",
+            "profiles":{"uno":{"orchestrator":{"model":"a/host-1"},"worker":{"model":"a/m2"}},
+                "dos":{"orchestrator":"b/m1"},"raro ..":{"worker":"c/m1"}}})));
+        r.pinned = Some("dos".into());
+        s.roster = Some(r);
+        // Channel up, no binding yet: no ◉ anywhere, the channel is not reported as down.
+        s.profile_channel = Some(None);
+        let l = on(&s, Tab::Prof, 48);
+        let store=l.iter().filter(|l| l.contains("Perfiles")).count();
+        let _=store;
+        assert!(!l.iter().any(|l| l.contains("◉ ")), "sin binding no hay marca ◉: {l:#?}");
+        assert!(!l.iter().any(|l| l.contains("canal no disponible")), "canal arriba sin binding no es un error");
+        // A loaded session profile: its row carries ◉ (distinct from ● and ▣) and the
+        // announcement names it.
+        s.profile_channel = Some(Some(serde_json::json!({"name":"uno","models":{}})));
+        let l = on(&s, Tab::Prof, 48);
+        let row=find(&l, "uno");
+        assert!(row.contains("◉"), "la fila del perfil cargado lleva ◉: {row}");
+        // The store's own active and the repo pin keep their marks beside the session's ◉.
+        find(&l, "● ▣ dos");
+        assert!(l.iter().any(|l| l.contains("sesión:") && l.contains("uno")), "el anuncio nombra el perfil de sesión");
+        // Channel down (extension not loaded): the card names it, never as a panic.
+        s.profile_channel = None; s.profile_channel_down = true;
+        let l = on(&s, Tab::Prof, 48);
+        assert!(l.iter().any(|l| l.contains("canal no disponible")), "el canal caído se nombra");
+    }
+    #[test]
+    fn session_profile_rewrites_profiles_card_with_its_models() {
+        let mut s = roster_sample();
+        // The loaded profile's model map replaces the global store rows, labeled by name.
+        s.profile_channel = Some(Some(serde_json::json!({
+            "name":"beta",
+            "models":{"orchestrator":{"model":"p/beta-host","tier":"high"},"explore":{"model":"p/beta-explore"}}
+        })));
+        let l = on(&s, Tab::Prof, 60);
+        assert!(l.iter().any(|l| l.contains("perfil de sesión") && l.contains("beta")), "la card nombra el perfil de sesión");
+        find(&l, "beta-host (high)");
+        find(&l, "explore"); find(&l, "beta-explore");
+        // The global store's rows do not leak into the session view.
+        assert!(!l.iter().any(|l| l.contains("long-model-name-v2")), "el store global no se mezcla con la sesión");
+        // No orchestrator entry in the profile: the live host model stays.
+        s.profile_channel = Some(Some(serde_json::json!({
+            "name":"gamma",
+            "models":{"explore":{"model":"p/gamma-explore"}}
+        })));
+        let l = on(&s, Tab::Prof, 60);
+        let host_line=l.iter().find(|l| l.contains("host / orquestador")).unwrap();
+        let host_block=&l[l.iter().position(|l| l.contains("host / orquestador")).unwrap()..].join("\n");
+        assert!(host_block.contains("gpt-6.1-sol"), "sin orchestrator queda el host vivo: {host_block}");
+        find(&l, "gamma-explore");
+        // Channel down: the card says so and keeps the global view.
+        s.profile_channel = None; s.profile_channel_down = true;
+        let l = on(&s, Tab::Prof, 60);
+        assert!(l.iter().any(|l| l.contains("canal de perfiles no disponible")));
+        assert!(l.iter().any(|l| l.contains("gentle-ai-explore")), "vista global intacta con el canal caído");
     }
     #[test]
     fn profiles_button_is_always_present_and_sends_the_command_intent() {

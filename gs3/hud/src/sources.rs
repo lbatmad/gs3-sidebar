@@ -483,47 +483,90 @@ fn profiles_command_requests(id:&str)->Vec<(&'static str,Value)> {
         ("pane.send_keys",json!({"pane_id":id,"keys":["Enter"]})),
     ]
 }
-/// `/profile <name>`: the same path, with a name that already passed the package's own sendable
-/// rule; Pi binds the profile to the current session only (the profile-use extension) — no repo
-/// declaration, no pins, no global routing are touched.
-fn use_profile_requests(id:&str,name:&str)->Vec<(&'static str,Value)> {
-    vec![
-        ("pane.focus",json!({"pane_id":id})),
-        ("pane.send_text",json!({"pane_id":id,"text":format!("/profile {name}")})),
-        ("pane.send_keys",json!({"pane_id":id,"keys":["Enter"]})),
-    ]
+/// The session profile channel: the profile-server extension of the agent's Pi
+/// process listens on /tmp/gs3-profile-<uid>-<pane>.sock (pane = the agent pane the
+/// rail watches). The base is a fixed /tmp on purpose: the bundled shell rebuilds
+/// the environment, so TMPDIR differs between this rail and the agent process.
+/// One JSON request per connection; the profile name travels as data, never as
+/// command text — nothing is typed into the agent pane.
+pub fn profile_channel_socket(pane:&str,uid:u32)->PathBuf {
+    PathBuf::from(format!("/tmp/gs3-profile-{uid}-{pane}.sock"))
+}
+/// One channel round trip: `get` (the session's current binding, or nothing) or
+/// `use {name}` (bind the profile to the session; the reply carries the profile's
+/// model map). A missing socket means the extension is not loaded: the caller
+/// renders that, it is not an error to report.
+fn profile_channel(socket:&Path,payload:Value)->Result<Value> {
+    let mut stream=UnixStream::connect(socket)?;
+    stream.set_read_timeout(Some(Duration::from_secs(3)))?; stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+    writeln!(stream,"{payload}")?;
+    let mut line=String::new(); BufReader::new(&stream).read_line(&mut line)?;
+    let v:Value=serde_json::from_str(&line)?;
+    if !v["error"].is_null() {return Err(anyhow!("{}",v["error"]))} Ok(v["result"].clone())
+}
+/// The session's current profile binding: `Some(name)` (plus the profile's model
+/// map when the store still knows it), `None` (no binding yet), or an error
+/// (channel down — extension not loaded, or the socket was lost).
+pub fn profile_channel_get(socket:&Path)->Result<Option<Value>> {
+    let result=profile_channel(socket,json!({"id":"hud","method":"get","params":{}}))?;
+    Ok(if result["profile"].is_null() {None} else {Some(result["profile"].clone())})
+}
+/// Ask the agent's session to load a profile. The name already passed the
+/// package's own sendable rule at render time; here it is data on a 0600 socket,
+/// never a command. The reply is the loaded profile (name + model map).
+pub fn profile_channel_use(socket:&Path,name:&str)->Result<Value> {
+    profile_channel(socket,json!({"id":"hud","method":"use","params":{"name":name}}))
 }
 /// Explicit clicks only; coalesce pending requests and discard clicks within one second of the last attempt.
 fn pane_worker(socket:PathBuf,requests:Vec<(&'static str,Value)>)->Sender<Instant> {
-    pane_worker_throttled(socket,requests,None)
-}
-/// `use_profile` spawns a fresh worker per click intent, so its 1 s window must be shared
-/// across workers: two workers sending at once would interleave two focus → text → Enter
-/// sequences and concatenate the texts into the pane's input box.
-static USE_PROFILE_WINDOW: Mutex<Option<Instant>> = Mutex::new(None);
-fn pane_worker_throttled(socket:PathBuf,requests:Vec<(&'static str,Value)>,shared:Option<&'static Mutex<Option<Instant>>>)->Sender<Instant> {
     let (send,rx)=mpsc::channel::<Instant>();
     thread::spawn(move||{
-        let mut local:Option<Instant>=None;
+        let mut last:Option<Instant>=None;
         while let Ok(mut at)=rx.recv() {
             while let Ok(next)=rx.try_recv() {at=next;}
-            let cell: &mut Option<Instant> = match shared {
-                Some(m) => &mut *m.lock().unwrap(),
-                None => &mut local,
-            };
-            if cell.is_some_and(|prev|at.saturating_duration_since(prev)<Duration::from_secs(1)) {continue}
-            *cell=Some(at);
+            if last.is_some_and(|prev|at.saturating_duration_since(prev)<Duration::from_secs(1)) {continue}
+            last=Some(at);
             for (method,params) in &requests {
                 if request(&socket,method,params.clone()).is_err() {break}
             }
         }
     }); send
 }
+/// Profile clicks share one process-wide 1 s window: a double click spawns two
+/// click intents, and two channel requests racing each other would double-load
+/// the profile; the second click inside the window is simply discarded.
+static USE_PROFILE_WINDOW: Mutex<Option<Instant>> = Mutex::new(None);
+/// A profile click: one `use` request to the session profile channel per click
+/// intent, throttled by the shared window. The reply (the loaded profile's name
+/// and model map) is emitted as an event; the render thread never blocks on it.
+pub fn profile_channel_worker(socket:PathBuf,tx:Sender<crate::core::Event>) {
+    let (send,rx)=mpsc::channel::<String>();
+    PROFILE_CLICK_SENDER.get_or_init(||send);
+    thread::spawn(move||{
+        while let Ok(name)=rx.recv() {
+            let mut latest=name;
+            while let Ok(next)=rx.try_recv() {latest=next;}
+            let name=latest;
+            {
+                let mut cell=USE_PROFILE_WINDOW.lock().unwrap();
+                if cell.is_some_and(|prev|Instant::now().saturating_duration_since(prev)<Duration::from_secs(1)) {continue}
+                *cell=Some(Instant::now());
+            }
+            match profile_channel_use(&socket,&name) {
+                Ok(profile)=>{let _=tx.send(crate::core::Event::ProfileChannel(profile));}
+                Err(_)=>{let _=tx.send(crate::core::Event::ProfileChannelDown);}
+            }
+        }
+    });
+}
+/// The render thread's handle for click intents: a send enqueues the profile
+/// name; the worker throttles it and answers through the event channel.
+pub fn profile_click(name:String) {
+    if let Some(send)=PROFILE_CLICK_SENDER.get() {let _=send.send(name);}
+}
+static PROFILE_CLICK_SENDER: std::sync::OnceLock<Sender<String>> = std::sync::OnceLock::new();
 pub fn model_picker(socket:PathBuf,id:String)->Sender<Instant> { pane_worker(socket,model_picker_requests(&id)) }
 pub fn profiles_command(socket:PathBuf,id:String)->Sender<Instant> { pane_worker(socket,profiles_command_requests(&id)) }
-/// One worker per click intent: the name is fixed in the requests, so a later click with another
-/// name can never leak into an in-flight sequence, and the same 1 s throttle governs repeats.
-pub fn use_profile(socket:PathBuf,id:String,name:String)->Sender<Instant> { pane_worker_throttled(socket,use_profile_requests(&id,&name),Some(&USE_PROFILE_WINDOW)) }
 pub fn pane(socket:&Path,id:&str)->Result<Option<Value>> {
     let found=match request(socket,"pane.get",json!({"pane_id":id})) {
         Ok(v) if v["pane"].is_object()=>Some(v["pane"].clone()),
@@ -736,13 +779,84 @@ mod tests {
         }
     }
     #[test]
-    fn use_command_requests_carry_the_valid_name_verbatim() {
-        // Only a name the package itself would accept ever reaches the request builder.
-        assert_eq!(use_profile_requests("w1:p1","uno"), vec![
-            ("pane.focus",json!({"pane_id":"w1:p1"})),
-            ("pane.send_text",json!({"pane_id":"w1:p1","text":"/profile uno"})),
-            ("pane.send_keys",json!({"pane_id":"w1:p1","keys":["Enter"]})),
-        ]);
+    fn profile_channel_socket_path_is_deterministic() {
+        // Both sides derive the same path independently: the extension from the
+        // gs3-herdr-pane flag, the rail from its --pane. Fixed /tmp base, uid in the name.
+        assert_eq!(profile_channel_socket("w2:p4D",501), PathBuf::from("/tmp/gs3-profile-501-w2:p4D.sock"));
+        assert_eq!(profile_channel_socket("w1:p1",0), PathBuf::from("/tmp/gs3-profile-0-w1:p1.sock"));
+    }
+    #[test]
+    fn profile_channel_get_and_use_round_trip_through_a_fake_socket() {
+        // A fake profile-server: `get` returns a bound profile, `use` records the
+        // name it received (as JSON data on the socket, never as command text).
+        let dir=std::env::temp_dir().join(format!("gs3-profchan-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
+        let socket=dir.join("channel.sock");
+        let listener=std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let used=std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen=used.clone();
+        let serving=listener.try_clone().unwrap();
+        thread::spawn(move||{
+            let listener=serving;
+            while let Ok((mut stream,_))=listener.accept() {
+                let mut line=String::new();
+                {let mut r=BufReader::new(stream.try_clone().unwrap()); let _=r.read_line(&mut line);}
+                let v:Value=serde_json::from_str(&line).unwrap();
+                let reply=match text(&v,"method") {
+                    "get"=>json!({"id":v["id"],"result":{"profile":{"name":"alpha","models":{"orchestrator":{"model":"p/host"}}}}}),
+                    "use"=>{seen.lock().unwrap().push(v["params"]["name"].as_str().unwrap_or_default().to_string()); json!({"id":v["id"],"result":{"ok":true,"profile":{"name":v["params"]["name"],"models":{}}}})},
+                    _=>json!({"id":v["id"],"error":{"message":"unknown method"}}),
+                };
+                let _=writeln!(stream,"{reply}");
+            }
+        });
+        // get: the session's current binding comes back as the profile object.
+        let bound=profile_channel_get(&socket).unwrap().unwrap();
+        assert_eq!(text(&bound,"name"),"alpha");
+        // use: the name travels as JSON data and the reply confirms the load.
+        let loaded=profile_channel_use(&socket,"beta").unwrap();
+        assert_eq!(loaded["ok"],json!(true));
+        assert_eq!(*used.lock().unwrap(), vec!["beta".to_string()]);
+        // A down channel is an error the caller renders, never a panic.
+        let dead=dir.join("dead.sock");
+        assert!(profile_channel_get(&dead).is_err());
+        drop(listener); fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn profile_clicks_share_the_one_second_window() {
+        // Two click intents must double-load nothing: the shared window discards
+        // the second click whatever worker moment it lands on.
+        let dir=std::env::temp_dir().join(format!("gs3-profclk-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
+        let socket=dir.join("channel.sock");
+        let listener=std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let count=std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen=count.clone();
+        thread::spawn(move||{
+            while let Ok((mut stream,_))=listener.accept() {
+                let mut line=String::new();
+                {let mut r=BufReader::new(stream.try_clone().unwrap()); let _=r.read_line(&mut line);}
+                if serde_json::from_str::<Value>(&line).map(|v|text(&v,"method")=="use").unwrap_or(false) {seen.fetch_add(1,std::sync::atomic::Ordering::SeqCst);}
+                let _=writeln!(stream,"{}",json!({"result":{"ok":true,"profile":{"name":"uno","models":{}}}}));
+            }
+        });
+        let (tx,rx)=mpsc::channel::<crate::core::Event>();
+        profile_channel_worker(socket.clone(),tx);
+        profile_click("uno".into());
+        thread::sleep(Duration::from_millis(150));
+        profile_click("uno".into());
+        thread::sleep(Duration::from_millis(350));
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst),1,"un doble clic carga una sola vez");
+        // After the shared window a click loads again.
+        thread::sleep(Duration::from_millis(600));
+        profile_click("uno".into());
+        thread::sleep(Duration::from_millis(150));
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst),2);
+        // The reply arrives as an event carrying the loaded profile.
+        let mut events=0;
+        while let Ok(crate::core::Event::ProfileChannel(v))=rx.try_recv() {assert_eq!(text(&v["profile"],"name"),"uno"); events+=1;}
+        assert_eq!(events,2,"cada carga responde con un evento");
+        fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn profiles_command_clicks_are_coalesced_and_throttled() {
@@ -773,39 +887,6 @@ mod tests {
         thread::sleep(Duration::from_millis(200));
         assert_eq!(focus.load(std::sync::atomic::Ordering::SeqCst),2);
         drop(send); fs::remove_dir_all(&dir).unwrap();
-    }
-    #[test]
-    fn profile_clicks_across_workers_share_the_one_second_window() {
-        // main.rs spawns a fresh worker per click intent, so two clicks create two
-        // workers; without a shared window their sequences interleave and the pane's
-        // input box receives "/profile uno/profile uno" (concatenated texts, one Enter).
-        let dir=std::env::temp_dir().join(format!("gs3-profuse-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _=fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
-        let socket=dir.join("herdr.sock");
-        let listener=std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let focus=std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let seen=focus.clone();
-        thread::spawn(move||{
-            while let Ok((mut stream,_))=listener.accept() {
-                let mut line=String::new();
-                {let mut r=BufReader::new(stream.try_clone().unwrap()); let _=r.read_line(&mut line);}
-                if serde_json::from_str::<Value>(&line).map(|v|text(&v,"method")=="pane.focus").unwrap_or(false) {seen.fetch_add(1,std::sync::atomic::Ordering::SeqCst);}
-                let _=writeln!(stream,"{}",json!({"result":{"type":"ok"}}));
-            }
-        });
-        let w1=use_profile(socket.clone(),"w1:p1".into(),"uno".into());
-        w1.send(Instant::now()).unwrap();
-        thread::sleep(Duration::from_millis(200));
-        let w2=use_profile(socket.clone(),"w1:p1".into(),"uno".into());
-        w2.send(Instant::now()).unwrap();
-        thread::sleep(Duration::from_millis(400));
-        assert_eq!(focus.load(std::sync::atomic::Ordering::SeqCst),1,"un doble clic entre dos workers envía una sola secuencia");
-        // After the shared window a click sends again.
-        thread::sleep(Duration::from_millis(500));
-        w2.send(Instant::now()).unwrap();
-        thread::sleep(Duration::from_millis(200));
-        assert_eq!(focus.load(std::sync::atomic::Ordering::SeqCst),2);
-        drop(w1); drop(w2); fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn session_files_switch_append_and_truncate() {

@@ -392,6 +392,11 @@ pub struct State {
     pub git:Git, pub pr:Vec<String>, pub engram:Engram, pub mcp:Option<Vec<Mcp>>,
     /// PROF roster (None: no agent dir data) and Stack · Ecosistema versions (empty until probed).
     pub roster:Option<Roster>, pub stack:Vec<Tool>,
+    /// PROF session profile channel: None until the first answer, Some(None) when the channel is
+    /// up with no binding, Some(profile) when the session resolves a bound profile (name + model map).
+    pub profile_channel:Option<Option<Value>>,
+    /// PROF: true when the last channel answer was an error (extension not loaded, socket lost).
+    pub profile_channel_down:bool,
     /// TREE tab scan (None until the first answer).
     pub tree:Option<Tree>,
     /// GIT tab inspector (selected branch diff / file diff), fetched on demand.
@@ -405,9 +410,14 @@ pub struct State {
     pub ui:Ui,
 }
 impl State {
-    pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),tree:None,detail:Detail::default(),preview:None,media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
+    pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),profile_channel:None,profile_channel_down:false,tree:None,detail:Detail::default(),preview:None,media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
 }
-pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Tree(Tree), Detail(Detail), Preview(Preview), Media(Youtube), Spotify(Spotify), Ui(ui::Action), Key(ui::Key) }
+pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Tree(Tree), Detail(Detail), Preview(Preview), Media(Youtube), Spotify(Spotify), Ui(ui::Action), Key(ui::Key),
+    /// PROF: a session profile channel reply — the loaded profile (name + model map) after a
+    /// click, or the channel's current binding (or `Null` when the channel is down).
+    ProfileChannel(Value),
+    /// PROF: the session profile channel is down (extension not loaded, socket lost).
+    ProfileChannelDown }
 /// The rail never plays both at once: whichever source the human starts pauses the other. Spotify is
 /// device playback and the video is a separate mpv window, so nothing else coordinates them. Only a
 /// *start* counts: both engines keep reporting while they play, and pausing on every report would make
@@ -442,6 +452,14 @@ pub fn apply(s:&mut State,e:Event)->bool {
             if s.ui.git_branch.is_none() && s.ui.git_file.as_ref().is_some_and(|f|!v.files.iter().any(|x|&x.path==f)) {s.ui.git_file=None;}
             s.git=v;
         } Event::Pr(v)=>s.pr=v, Event::Engram(v)=>s.engram=v, Event::Mcp(v)=>s.mcp=v, Event::Roster(v)=>s.roster=v, Event::Stack(v)=>s.stack=v,
+        Event::ProfileChannel(v)=> {
+            // `false` = the channel answered with no binding (up, nothing loaded);
+            // `true` = the profile object the session resolves (name + model map).
+            // A down channel never produces this event: it produces ProfileChannelDown.
+            if v.is_boolean() {s.profile_channel=Some(None); s.profile_channel_down=false;}
+            else {s.profile_channel=Some(Some(v)); s.profile_channel_down=false;}
+        }
+        Event::ProfileChannelDown=> {s.profile_channel_down=true;}
         // Only the answer for what is still selected is kept (clicks may outrun git).
         // Like Detail: only the scan of the current open set is kept.
         Event::Tree(t) if t.open==s.ui.tree_open => s.tree=Some(t),
