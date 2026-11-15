@@ -134,6 +134,24 @@ try {
   reply = await request({ id: "5", method: "bogus", params: {} });
   check("unknown method is rejected", !!reply?.error, JSON.stringify(reply));
 
+  // A malformed line still gets an answer: JSON.parse runs before any promise exists.
+  reply = await new Promise((resolve, reject) => {
+    const socket = net.createConnection(SOCKET);
+    const timer = setTimeout(() => { socket.destroy(); reject(new Error("timeout")); }, 2000);
+    let data = "";
+    socket.on("error", (error) => { clearTimeout(timer); reject(error); });
+    socket.on("connect", () => socket.write("{not json}\n"));
+    socket.on("data", (chunk) => {
+      data += chunk;
+      if (!data.includes("\n")) return;
+      clearTimeout(timer); socket.destroy();
+      try { resolve(JSON.parse(data.slice(0, data.indexOf("\n")))); } catch (error) { reject(error); }
+    });
+  });
+  check("malformed request is answered", reply?.error?.message === "malformed request", JSON.stringify(reply));
+  reply = await request({ id: "6", method: "get", params: {} });
+  check("server still serves after a malformed line", reply?.result?.profile?.name === "alpha", JSON.stringify(reply));
+
   await fire("session_shutdown", ctx);
   await new Promise((resolve) => setTimeout(resolve, 150));
   check("socket removed after session_shutdown", !existsSync(SOCKET));

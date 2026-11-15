@@ -193,10 +193,21 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 				const newline = data.indexOf("\n");
 				if (newline === -1) return;
 				const line = data.slice(0, newline);
-				handle(JSON.parse(line), socket).catch(() => reply(socket, { error: { message: "malformed request" } }));
+				// JSON.parse runs before any promise exists, so it needs its own guard; the
+				// handler's asynchronous failures are answered separately.
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(line);
+				} catch {
+					reply(socket, { error: { message: "malformed request" } });
+					return;
+				}
+				handle(parsed, socket).catch(() => reply(socket, { error: { message: "request failed" } }));
 			});
 		});
 		listening.on("error", () => {
+			// An asynchronous bind failure must not leave the process on a restrictive umask.
+			process.umask(previousUmask);
 			// Another listener (a second session on the same pane) wins; stay dormant.
 			if (server === listening) stop();
 		});
