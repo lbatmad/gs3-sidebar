@@ -24,8 +24,12 @@ S2. Canal: la extensión `.pi/extensions/profile-server.ts` (auto-descubierta po
     Pi, recargable con `/reload`) escucha `/tmp/gs3-profile-${uid}-${pane}.sock`
     (pane = agente, el que ya viaja en `--gs3-herdr-pane`; base fija `/tmp` porque
     TMPDIR difiere entre el proceso del HUD y el de pi — el bundled shell
-    reconstruye el env, ver L2), 0600, ownership verificada por uid en el cliente
-    (patrón del bridge herdr-session). Métodos:
+    reconstruye el env, ver L2; **la extensión registra el flag ella misma**:
+    `getFlag` sólo ve flags registrados por la extensión que pregunta —
+    `loader.js` `if (!extension.flags.has(name)) return undefined` — y el flag lo
+    registra el bridge, otra extensión; dos registros del mismo nombre son un
+    merge first-wins, no un conflicto), 0600, ownership verificada por uid en el
+    cliente (patrón del bridge herdr-session). Métodos:
     `get` → binding actual de la sesión (o nada); `use {name}` → atar el perfil,
     switch en vivo del orquestador si corresponde, y responder
     `{ok, profile:{name, models}}`. Nombre inválido o ausente del store →
@@ -86,6 +90,29 @@ Contexto: el camino actual (clic → texto `/profile <nombre>` + Enter al pane,
 commits 4e86472 y 34b78a6) tipea el comando en el chat del agente; el usuario lo
 rechaza explícitamente. Antecedentes: L5/L6 de `odd/tasks/prof-profiles.md` (el
 clic de perfil fue publish de repo, luego /profile por texto; ambos por el chat).
+
+
+L3 (causa raíz del "no pasa nada", evidencia `path:line`):
+
+- Síntoma: `/reload` en la sesión viva imprimía "Reloaded keybindings,
+  extensions…" sin diagnósticos (la caja de recursos sólo aparece con errores),
+  pero el socket nunca aparecía (`ls /tmp/gs3-profile-*` vacío).
+- La extensión SÍ cargaba: un pi TUI real en un pane de prueba con el repo como
+  cwd lista `profile-server.ts` en `[Extensions]` (sin errores de carga).
+- El reload SÍ emite `session_start` con `mode: "tui"`:
+  `dist/modes/interactive/interactive-mode.js:1565` y
+  `dist/core/agent-session.js:3016,3046` (reload), ctx desde
+  `dist/core/extensions/runner.js:613-624,813-819`.
+- Causa raíz: `dist/core/extensions/loader.js:299-303` — `getFlag(name)` devuelve
+  `undefined` si el flag no está en `extension.flags` **de la extensión que
+  pregunta**; `gs3-herdr-pane` lo registra el bridge (otra extensión), así que la
+  extensión lo leía como ausente y quedaba dormante sin error. Fix: la extensión
+  registra el flag ella misma (registro duplicado = merge first-wins en el
+  runner, `dist/core/extensions/runner.js:432-443`).
+- Fix adicional (worker, RED→GREEN): `pi.setModel` espera un objeto de modelo,
+  no un string (`dist/core/agent-session.js:2822-2827`); la ruta
+  `provider/model` del orquestador ahora se resuelve vía `ctx.modelRegistry.find`
+  antes del switch vivo.
 
 L2 (hallazgo de diseño, pre-T1): TMPDIR difiere entre procesos — el HUD corre con
 `/var/folders/.../T/` y el pi del bundled shell con `gs-root/shell/tmp/...` porque

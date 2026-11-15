@@ -80,6 +80,12 @@ function reply(socket: net.Socket, payload: Record<string, unknown>): void {
 }
 
 export default function profileChannelExtension(pi: ExtensionAPI): void {
+	// getFlag only sees flags the *calling* extension registered (loader.js:
+	// `if (!extension.flags.has(name)) return undefined`). The bridge registers
+	// gs3-herdr-pane too; registering it here as well is a merge, not a conflict
+	// (the runner deduplicates first-wins), and it is what makes the CLI value
+	// readable from this extension.
+	pi.registerFlag("gs3-herdr-pane", { type: "string", description: "agent pane the gs3 rail watches (set by the gs3 launcher)" });
 	let server: net.Server | undefined;
 	let serving = "";
 	let sessionId: string | undefined;
@@ -210,7 +216,17 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 		} catch {
 			sessionId = undefined;
 		}
-		setModel = (model: string) => pi.setModel(model);
+		setModel = async (route: string) => {
+			const separator = route.indexOf("/");
+			if (separator <= 0 || separator === route.length - 1) return false;
+			const model = ctx.modelRegistry.find(route.slice(0, separator), route.slice(separator + 1));
+			if (!model) return false;
+			try {
+				return await pi.setModel(model);
+			} catch {
+				return false;
+			}
+		};
 		let pane: string | undefined;
 		try {
 			const flag = pi.getFlag("gs3-herdr-pane");

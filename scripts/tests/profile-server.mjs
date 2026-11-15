@@ -69,11 +69,14 @@ const BINDINGS = Symbol.for("gentle-pi:session-profile-bindings");
 globalThis[BINDINGS] = new Map();
 
 const handlers = {};
+// The CLI value, as pi's runtime.flagValues would hold it after the launcher
+// passed --gs3-herdr-pane (the bridge registers the same flag; pi merges).
 const flags = new Map([["gs3-herdr-pane", PANE]]);
+const registered = new Set();
 const setModelCalls = [];
 const fakePi = {
-  registerFlag: (name, options) => { flags.set(name, options?.default); },
-  getFlag: (name) => flags.get(name),
+  registerFlag: (name, options) => { registered.add(name); if (!flags.has(name)) flags.set(name, options?.default); },
+  getFlag: (name) => (registered.has(name) ? flags.get(name) : undefined),
   on: (event, handler) => { (handlers[event] ??= []).push(handler); },
   setModel: async (model) => { setModelCalls.push(model); return true; },
 };
@@ -86,9 +89,14 @@ try {
   const install = await loadExtension();
   check("extension default export is a function", typeof install === "function");
   install(fakePi);
+  // getFlag only sees flags the calling extension registered (loader.js), so the
+  // extension must register gs3-herdr-pane itself even though the bridge does too.
+  check("extension registers the pane flag itself", registered.has("gs3-herdr-pane"));
 
+  const model = { provider: "provider", id: "alpha-host" };
   const ctx = {
     mode: "tui",
+    modelRegistry: { find: (provider, id) => provider === model.provider && id === model.id ? model : undefined },
     sessionManager: { getSessionId: () => "sess-test-1", getSessionFile: () => "/tmp/sess-test-1.jsonl" },
   };
   await fire("session_start", ctx);
@@ -111,7 +119,7 @@ try {
   check("binding recorded for the session", binding?.name === "alpha" && binding?.origin === "user"
     && binding?.modelProfiles?.explore?.model === "provider/alpha-explore", JSON.stringify(binding));
   check("live model switched to the orchestrator route", setModelCalls.length === 1
-    && setModelCalls[0] === "provider/alpha-host", JSON.stringify(setModelCalls));
+    && setModelCalls[0] === model, JSON.stringify(setModelCalls));
 
   reply = await request({ id: "3", method: "get", params: {} });
   check("get after use reports the binding", reply?.result?.profile?.name === "alpha", JSON.stringify(reply));
