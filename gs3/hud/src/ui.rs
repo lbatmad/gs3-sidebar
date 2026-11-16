@@ -694,7 +694,11 @@ fn changes_card(s: &State, w: usize) -> Card {
     // What the last write did: git's own words, verbatim.
     if let Some((ok,text))=s.git_notice.as_ref() {
         let tone=if *ok {Tone::Mint} else {Tone::Coral};
-        for line in text.lines().take(4) {c.row(vec![seg(format!("{} ",if *ok {"✔"} else {"✖"}),tone),seg(line.to_string(),tone)],vec![]);}
+        // Git's own words, all of them: a hook explains itself in whatever lines it needs. A very
+        // long error keeps its tail visible by naming how many lines the card is not drawing.
+        let lines:Vec<&str>=text.lines().collect();
+        for (i,line) in lines.iter().enumerate().take(12) {c.row(vec![seg(if i==0 {format!("{} ",if *ok {"✔"} else {"✖"})} else {"  ".into()},tone),seg(line.to_string(),tone)],vec![]);}
+        if lines.len()>12 {c.row(vec![seg(format!("  … {} líneas más",lines.len()-12),Tone::Dim)],vec![]);}
     }
     c
 }

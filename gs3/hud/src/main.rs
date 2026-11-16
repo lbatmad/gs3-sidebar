@@ -79,8 +79,9 @@ fn main()->Result<()> {
     let profiles=sources::profiles_command(a.socket.clone(),a.pane.clone());
     // PROF: profile clicks load the profile through the session channel (no text reaches
     // the agent pane); the reply updates the cards as an Event::ProfileChannel.
-    // GIT · Cambios writes run in the repository root the rail already read.
+    // GIT · Cambios writes run in the repository root the rail already read, through one writer.
     let root=sources::git_root(&a.cwd).unwrap_or_else(||a.cwd.clone());
+    let git_writes=sources::git_writes(root.clone(),data_tx.clone());
     let profile_socket=sources::profile_channel_socket(&a.pane,uid().parse().unwrap_or(0));
     sources::profile_channel_worker(profile_socket.clone(),data_tx.clone());
     // The channel's current binding joins startup and every refresh.
@@ -114,24 +115,13 @@ fn main()->Result<()> {
         if state.ui.screenshot {state.ui.screenshot=false; let _=capture.send(());}
         if state.ui.open_picker {state.ui.open_picker=false; let _=picker.send(std::time::Instant::now());}
         if state.ui.open_profiles {state.ui.open_profiles=false; let _=profiles.send(std::time::Instant::now());}
-        // GIT · Cambios: one explicit click, one write; the result comes back as Event::GitNotice.
-        if let Some((path,staged))=state.ui.git_stage.take() {
-            let root=root.clone(); let tx=data_tx.clone();
-            std::thread::spawn(move||{let notice=match sources::git_stage(&root,&path,staged) {Ok(())=>None,Err(e)=>Some(e)};
-                let _=tx.send(crate::core::Event::GitNotice(notice.is_none(),notice.unwrap_or_else(||format!("{} {}",if staged {"staged"} else {"unstage"},path))));});
-        }
-        if let Some(staged)=state.ui.git_stage_all.take() {
-            let root=root.clone(); let tx=data_tx.clone();
-            std::thread::spawn(move||{let notice=match sources::git_stage_all(&root,staged) {Ok(())=>None,Err(e)=>Some(e)};
-                let _=tx.send(crate::core::Event::GitNotice(notice.is_none(),notice.unwrap_or_else(||if staged {"todo staged".into()} else {"nada staged".into()})));});
-        }
+        // GIT · Cambios: every click becomes one message for the single git writer, which
+        // serializes the writes and applies the shared 1 s window.
+        if let Some((path,staged))=state.ui.git_stage.take() {let _=git_writes.send(sources::GitWrite::Stage(path,staged));}
+        if let Some(staged)=state.ui.git_stage_all.take() {let _=git_writes.send(sources::GitWrite::Bulk(staged));}
         if state.ui.git_commit_now {
             state.ui.git_commit_now=false;
-            let message=state.ui.commit_message.trim().to_string(); let root=root.clone(); let tx=data_tx.clone();
-            std::thread::spawn(move||{
-                let sent=match sources::git_commit(&root,&message) {Ok(head)=>crate::core::Event::GitNotice(true,head),Err(e)=>crate::core::Event::GitNotice(false,e)};
-                let _=tx.send(sent);
-            });
+            let _=git_writes.send(sources::GitWrite::Commit(state.ui.commit_message.trim().to_string()));
         }
         if let Some(name)=state.ui.use_profile.take() {
             // The click goes through the session profile channel: the name is data on a

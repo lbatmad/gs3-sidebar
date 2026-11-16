@@ -26,31 +26,83 @@ pub fn run(cwd:&Path,program:&str,args:&[&str],seconds:u64)->Result<String> {
     if status.success() {Ok(stdout.trim_end().into())} else {Err(anyhow!("{}: {}",program,stderr.trim()))}
 }
 pub fn git(cwd:&Path,args:&[&str])->Result<String> {run(cwd,"git",args,3)}
+/// One git mutation the human asked for with an explicit click.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GitWrite { Stage(String,bool), Bulk(bool), Commit(String) }
+/// One writer thread for every mutation: the index is a single resource, so writes are
+/// serialized and share one 1 s window — a double click never chains two writes, and two clicks
+/// can never race each other into a git index lock.
+pub fn git_writes(root:PathBuf,tx:Sender<crate::core::Event>)->Sender<GitWrite> {
+    let (send,rx)=mpsc::channel::<GitWrite>();
+    thread::spawn(move||{
+        let mut last:Option<Instant>=None;
+        while let Ok(mut write)=rx.recv() {
+            while let Ok(next)=rx.try_recv() {write=next;}
+            let now=Instant::now();
+            if last.is_some_and(|prev|now.saturating_duration_since(prev)<Duration::from_secs(1)) {continue}
+            last=Some(now);
+            let (ok,text)=apply_git_write(&root,&write);
+            let _=tx.send(crate::core::Event::GitNotice(ok,text));
+        }
+    }); send
+}
+/// Every write reports git's own words: a failure is git's stderr, never a formatted guess.
+fn apply_git_write(root:&Path,write:&GitWrite)->(bool,String) {
+    let result:std::result::Result<String,String>=match write {
+        GitWrite::Stage(path,staged)=>git_stage(root,path,*staged).map(|_|format!("{} {path}",if *staged {"staged"} else {"unstage"})),
+        GitWrite::Bulk(staged)=>git_stage_all(root,*staged),
+        GitWrite::Commit(message)=>git_commit(root,message),
+    };
+    match result {Ok(text)=>(true,text),Err(e)=>(false,e)}
+}
+/// Stage or unstage everything the card lists, **skipping sensitive paths**: a bulk action must
+/// never reach what its own row refuses. Paths come from git's porcelain, so nothing is guessed.
+pub fn git_stage_all(root:&Path,staged:bool)->std::result::Result<String,String> {
+    let status=git_write(root,&["status","--porcelain=v1","-z","--no-renames","--untracked-files=all"],10)?;
+    let changes=crate::core::parse_changes(&status);
+    let entries=if staged {changes.unstaged.iter().chain(changes.staged.iter())} else {changes.staged.iter().chain(changes.staged.iter())};
+    let mut seen=Vec::<String>::new(); let (mut done,mut skipped)=(0usize,0usize);
+    for entry in entries {
+        if seen.contains(&entry.path) {continue}
+        seen.push(entry.path.clone());
+        if crate::core::sensitive(&entry.path) {skipped+=1; continue}
+        match git_stage(root,&entry.path,staged) {Ok(())=>done+=1,Err(e)=>return Err(e)}
+    }
+    Ok(if skipped>0 {format!("{done} {}{}",if staged {"staged"} else {"unstage"},format!(" · {skipped} sensible(s) omitido(s)"))} else {format!("{done} {}{}",if staged {"staged"} else {"unstage"},"")})
+}
 /// The rail's only history write. Plain `git commit -m <message>`: no `--amend`, no `--no-verify`,
 /// no push. The message is argv, so no shell ever sees it. Returns `<short hash> <subject>`.
 pub fn git_commit(root:&Path,message:&str)->std::result::Result<String,String> {
     let message=message.trim();
     if message.is_empty() {return Err("el mensaje está vacío".into())}
+    // A credential file staged outside the rail must not reach history through a rail click.
+    let staged=git_write(root,&["diff","--cached","--name-only","-z"],10)?;
+    if let Some(bad)=staged.split('\0').find(|p|!p.is_empty() && crate::core::sensitive(p)) {
+        return Err(format!("no se commitea desde el rail: {bad} está staged. Desstagealo y volvé a intentar."))
+    }
     git_write(root,&["commit","-m",message],30)?;
     let head=git_write(root,&["log","-1","--format=%h %s"],5)?;
     Ok(head.trim().to_string())
 }
-/// Stage or unstage one path. The path is argv, never interpolated, and a path outside the
-/// repository or a sensitive name is refused before git runs.
+/// Stage or unstage one path. The path is argv and travels with literal pathspecs, so a name with
+/// a wildcard can never match a sibling; a path outside the repository or a sensitive name is
+/// refused before git runs.
 pub fn git_stage(root:&Path,path:&str,staged:bool)->std::result::Result<(),String> {
     if path.is_empty() || path.starts_with('/') || path.split('/').any(|part|part=="..") {return Err(format!("ruta fuera del repo: {path}"))}
     if crate::core::sensitive(path) {return Err(format!("no se stagea desde el rail: {path}"))}
-    if staged {git_write(root,&["add","--",path],10)?;} else {git_write(root,&["restore","--staged","--",path],10)?;}
-    Ok(())
-}
-/// Stage or unstage everything, still refusing nothing: `git add -A -- .` / `git restore --staged -- .`.
-pub fn git_stage_all(root:&Path,staged:bool)->std::result::Result<(),String> {
-    if staged {git_write(root,&["add","-A","--","."],20)?;} else {git_write(root,&["restore","--staged","--","."],20)?;}
+    if staged {git_write(root,&["add","--",path],10)?; return Ok(())}
+    // `restore --staged` needs HEAD; a repository with no commit yet unstage through `rm --cached`.
+    if git_write(root,&["rev-parse","--verify","HEAD"],5).is_ok() {
+        git_write(root,&["restore","--staged","--",path],10)?;
+    } else {
+        git_write(root,&["rm","--cached","--",path],10)?;
+    }
     Ok(())
 }
 /// A write keeps git's own words: on failure the caller shows the raw stderr, not a formatted guess.
 fn git_write(cwd:&Path,args:&[&str],seconds:u64)->std::result::Result<String,String> {
-    let mut child=Command::new("git").args(args).current_dir(cwd).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e|e.to_string())?;
+    // Literal pathspecs: a path is a path, so a name containing `*` can never match a sibling.
+    let mut child=Command::new("git").args(args).current_dir(cwd).env("GIT_LITERAL_PATHSPECS","1").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e|e.to_string())?;
     fn drain<R:Read+Send+'static>(mut pipe:R)->thread::JoinHandle<String> {thread::spawn(move||{let mut s=String::new(); let _=pipe.read_to_string(&mut s); s})}
     let out=drain(child.stdout.take().unwrap()); let err=drain(child.stderr.take().unwrap());
     let deadline=Instant::now()+Duration::from_secs(seconds);
@@ -909,6 +961,54 @@ mod tests {
         git_stage(&dir,"b.txt",false).unwrap();
         let status=run(&dir,"git",&["status","--porcelain=v1"],5).unwrap();
         assert!(status.contains("?? b.txt"),"unstage devuelve el archivo al worktree: {status}");
+    }
+    #[test]
+    fn bulk_staging_skips_sensitive_and_commit_refuses_them() {
+        // A bulk action must never reach what its own row refuses, and a credential staged
+        // outside the rail must not reach history through a rail click.
+        let dir=fixture("gitbulk");
+        for args in [vec!["init","-q","."],vec!["config","user.email","rail@example.com"],vec!["config","user.name","rail"]] {
+            run(&dir,"git",&args,5).unwrap();
+        }
+        let secret=format!(".{}{}","e","nv");
+        fs::write(dir.join("a.txt"),"a\n").unwrap();
+        fs::write(dir.join(&secret),"SECRET=1\n").unwrap();
+        let out=git_stage_all(&dir,true).unwrap();
+        assert!(out.contains("omitido"),"el bulk informa los sensibles omitidos: {out}");
+        let status=run(&dir,"git",&["status","--porcelain=v1"],5).unwrap();
+        assert!(status.contains(&format!("?? {secret}")),"el sensible queda fuera del índice: {status}");
+        assert!(status.contains("A  a.txt"),"el archivo normal sí se stagea: {status}");
+        // Staged deliberately outside the rail: the commit refuses instead of shipping it.
+        run(&dir,"git",&["add","--force","--",&secret],5).unwrap();
+        let err=git_commit(&dir,"feat: con secreto").unwrap_err();
+        assert!(err.contains("no se commitea desde el rail"),"el commit rechaza un sensible staged: {err}");
+        // Unstage works before the first commit (no HEAD yet).
+        run(&dir,"git",&["rm","--cached","--",&secret],5).unwrap();
+        git_stage(&dir,"a.txt",false).unwrap();
+        let status=run(&dir,"git",&["status","--porcelain=v1"],5).unwrap();
+        assert!(status.contains("?? a.txt"),"unstage sin HEAD devuelve el archivo al worktree: {status}");
+    }
+    #[test]
+    fn git_writes_drop_a_repeat_inside_the_shared_window() {
+        // One writer, one window: a double click produces one write, not two racing ones.
+        let dir=fixture("gitwin");
+        for args in [vec!["init","-q","."],vec!["config","user.email","rail@example.com"],vec!["config","user.name","rail"]] {
+            run(&dir,"git",&args,5).unwrap();
+        }
+        fs::write(dir.join("a.txt"),"a\n").unwrap();
+        run(&dir,"git",&["add","--","a.txt"],5).unwrap();
+        let (tx,rx)=mpsc::channel::<crate::core::Event>();
+        let writes=git_writes(dir.clone(),tx);
+        writes.send(GitWrite::Commit("feat: uno".into())).unwrap();
+        writes.send(GitWrite::Commit("feat: dos".into())).unwrap();
+        thread::sleep(Duration::from_millis(400));
+        let mut notices=Vec::new();
+        while let Ok(crate::core::Event::GitNotice(ok,text))=rx.try_recv() {notices.push((ok,text));}
+        assert_eq!(notices.len(),1,"un doble clic escribe una sola vez");
+        assert!(notices[0].0,"la escritura sale bien: {:?}",notices[0]);
+        // Coalescing like every other click worker: one write, the newest intent wins.
+        let head=run(&dir,"git",&["log","-1","--format=%s"],5).unwrap();
+        assert_eq!(head.trim(),"feat: dos","una sola escritura, con el último clic: {head}");
     }
     #[test]
     fn profile_channel_socket_path_is_deterministic() {
