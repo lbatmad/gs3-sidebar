@@ -84,6 +84,26 @@ function reply(socket: net.Socket, payload: Record<string, unknown>): void {
 	socket.end(`${JSON.stringify(payload)}\n`);
 }
 
+/**
+ * Push one event to the rail. The rail listens on /tmp/gs3-agent-<uid>-<pane>.sock (0600), the
+ * extension connects, writes one JSON line and closes. A missing rail or a failed connect is
+ * silent on purpose: the channel is a nicety, it must never disturb the session.
+ */
+function pushAgentEvent(pane: string, type: "blocked" | "working" | "idle" | "note", text: string, socket: net.Socket | undefined): void {
+	if (socket) return;
+	const base = process.env.GS3_AGENT_EVENT_DIR?.trim() || "/tmp";
+	const path = join(base, `gs3-agent-${process.getuid()}-${pane}.sock`);
+	try {
+		const client = net.createConnection(path);
+		client.on("error", () => client.destroy());
+		client.on("connect", () => {
+			client.end(`${JSON.stringify({ type, text, ts: Date.now() })}\n`);
+		});
+	} catch {
+		// The rail is not running or the socket moved: nothing to report.
+	}
+}
+
 export default function profileChannelExtension(pi: ExtensionAPI): void {
 	// getFlag only sees flags the *calling* extension registered (loader.js:
 	// `if (!extension.flags.has(name)) return undefined`). The bridge registers
@@ -272,6 +292,47 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 		}
 		if (pane === undefined) return;
 		start(pane);
+	});
+	// MAIN · Agente: the rail shows what this process says, not what the screen suggests.
+	pi.registerCommand("gs3", {
+		description: "Send a note to the gs3 rail: /gs3 note <text>",
+		handler: (args, ctx) => {
+			const text = (args ?? "").trim().replace(/^note\s+/i, "");
+			let pane: string | undefined;
+			try {
+				const flag = pi.getFlag("gs3-herdr-pane");
+				pane = typeof flag === "string" && flag.length > 0 ? flag : undefined;
+			} catch {
+				pane = undefined;
+			}
+			if (pane === undefined) { ctx.ui.notify("gs3: no hay rail asociado a esta sesión.", "warning"); return; }
+			if (text.length === 0) { ctx.ui.notify("gs3: usá /gs3 note <texto>.", "info"); return; }
+			pushAgentEvent(pane, "note", text, undefined);
+			ctx.ui.notify("gs3: nota enviada al rail.", "info");
+		},
+	});
+	// The herdr integration already knows when the session blocks; forward it verbatim.
+	pi.events.on("herdr:blocked", (data: { active?: boolean; label?: string } | undefined) => {
+		let pane: string | undefined;
+		try {
+			const flag = pi.getFlag("gs3-herdr-pane");
+			pane = typeof flag === "string" && flag.length > 0 ? flag : undefined;
+		} catch {
+			pane = undefined;
+		}
+		if (pane === undefined) return;
+		pushAgentEvent(pane, data?.active ? "blocked" : "idle", data?.label ?? (data?.active ? "esperando aprobación" : "desbloqueado"), undefined);
+	});
+	pi.on("agent_start", (_event, ctx) => {
+		if (ctx?.mode !== "tui") return;
+		let pane: string | undefined;
+		try {
+			const flag = pi.getFlag("gs3-herdr-pane");
+			pane = typeof flag === "string" && flag.length > 0 ? flag : undefined;
+		} catch {
+			pane = undefined;
+		}
+		if (pane !== undefined) pushAgentEvent(pane, "working", "turno en marcha", undefined);
 	});
 	pi.on("session_shutdown", () => stop());
 }

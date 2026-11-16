@@ -698,6 +698,46 @@ pub fn profile_click(name:String) {
 static PROFILE_CLICK_SENDER: std::sync::OnceLock<Sender<String>> = std::sync::OnceLock::new();
 pub fn model_picker(socket:PathBuf,id:String)->Sender<Instant> { pane_worker(socket,model_picker_requests(&id)) }
 pub fn profiles_command(socket:PathBuf,id:String)->Sender<Instant> { pane_worker(socket,profiles_command_requests(&id)) }
+/// MAIN · Agente: the rail listens and the agent process pushes one JSON line per event. The
+/// socket is 0600 in /tmp, which is the whole admission rule: only this user can open it, and
+/// everything that arrives is treated as untrusted input (bounded line, closed type set, sanitised
+/// text). The rail never writes anything back.
+pub fn agent_event_socket(pane:&str,uid:u32)->PathBuf {
+    let base=std::env::var("GS3_AGENT_EVENT_DIR").ok().filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(||PathBuf::from("/tmp"));
+    base.join(format!("gs3-agent-{uid}-{pane}.sock"))
+}
+/// One accepted line: `{"type":"blocked|working|idle|note","text":"…","ts":<ms>}`. Anything else
+/// is dropped: unknown types, empty bodies, oversized lines and non-JSON never reach the card.
+pub fn parse_agent_event(line:&str)->Option<Value> {
+    if line.len()>4096 || line.is_empty() {return None}
+    let v:Value=serde_json::from_str(line).ok()?;
+    let kind=text(&v,"type");
+    if !matches!(kind,"blocked"|"working"|"idle"|"note") {return None}
+
+    let clean=|s:String| s.chars().filter(|c|!c.is_control()).take(240).collect::<String>();
+    Some(json!({"type":kind,"text":clean(text(&v,"text").to_string()),"ts":v["ts"].as_u64().unwrap_or(0)}))
+}
+pub fn agent_events(socket:PathBuf,tx:Sender<crate::core::Event>) {
+    thread::spawn(move||{
+        let _=fs::remove_file(&socket);
+        let listener=match std::os::unix::net::UnixListener::bind(&socket) {
+            Ok(l)=>l,
+            Err(_)=>{let _=tx.send(crate::core::Event::AgentChannelDown); return}
+        };
+        use std::os::unix::fs::PermissionsExt;
+        let _=fs::set_permissions(&socket,fs::Permissions::from_mode(0o600));
+        for stream in listener.incoming().flatten() {
+            let tx=tx.clone();
+            thread::spawn(move||{
+                let mut reader=BufReader::new(stream);
+                for line in reader.by_ref().lines() {
+                    let Ok(line)=line else {break};
+                    if let Some(event)=parse_agent_event(&line) {let _=tx.send(crate::core::Event::AgentEvent(event));}
+                }
+            });
+        }
+    });
+}
 pub fn pane(socket:&Path,id:&str)->Result<Option<Value>> {
     let found=match request(socket,"pane.get",json!({"pane_id":id})) {
         Ok(v) if v["pane"].is_object()=>Some(v["pane"].clone()),
@@ -1012,6 +1052,38 @@ mod tests {
         // Coalescing like every other click worker: one write, the newest intent wins.
         let head=run(&dir,"git",&["log","-1","--format=%s"],5).unwrap();
         assert_eq!(head.trim(),"feat: dos","una sola escritura, con el último clic: {head}");
+    }
+    #[test]
+    fn agent_event_lines_are_closed_set_and_bounded() {
+        // Only the four known types survive, controls are stripped and a huge line is dropped.
+        let ok=parse_agent_event("{\"type\":\"blocked\",\"text\":\"esperando aprobación\",\"ts\":1700000000000}").unwrap();
+        assert_eq!(text(&ok,"type"),"blocked"); assert_eq!(text(&ok,"text"),"esperando aprobación"); assert_eq!(ok["ts"],serde_json::json!(1700000000000u64));
+        assert!(parse_agent_event("{\"type\":\"bogus\",\"text\":\"x\"}").is_none(),"un tipo desconocido se descarta");
+        assert!(parse_agent_event("no json").is_none(),"una línea malformada se descarta");
+        assert!(parse_agent_event(&format!("{{\"type\":\"note\",\"text\":\"{}\"}}","x".repeat(5000))).is_none(),"una línea gigante se descarta");
+        let dirty=parse_agent_event("{\"type\":\"note\",\"text\":\"a\\u0007b\\u001bc\"}").unwrap();
+        assert_eq!(text(&dirty,"text"),"abc","los controles no llegan a la card");
+    }
+    #[test]
+    fn agent_event_socket_delivers_a_pushed_line() {
+        // The rail listens, the agent process pushes: one line, one event.
+        let dir=fixture("agentevent");
+        let socket=dir.join("a.sock");
+        let (tx,rx)=mpsc::channel::<crate::core::Event>();
+        agent_events(socket.clone(),tx);
+        thread::sleep(Duration::from_millis(120));
+        let mut client=UnixStream::connect(&socket).unwrap();
+        writeln!(client,"{}",json!({"type":"working","text":"turno en marcha","ts":1})).unwrap();
+        drop(client);
+        let event=loop {
+            match rx.recv_timeout(Duration::from_secs(2)) {
+                Ok(crate::core::Event::AgentEvent(v))=>break v,
+                Ok(_)=>continue,
+                Err(_)=>panic!("no llegó ningún evento"),
+            }
+        };
+        assert_eq!(text(&event,"type"),"working"); assert_eq!(text(&event,"text"),"turno en marcha");
+        let _=fs::remove_dir_all(&dir);
     }
     #[test]
     fn profile_channel_socket_path_is_deterministic() {

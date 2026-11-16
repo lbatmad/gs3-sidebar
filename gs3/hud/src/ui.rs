@@ -491,7 +491,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
         && 7 <= scroll_hint.saturating_add(view_hint)
         && crate::cover::ready(s.media.spotify.cover_url.as_deref(), s.media.spotify.cover_png.as_deref(), true, true);
     match ui.tab {
-        Tab::Main => { voice_row(&mut body, s.voice, cw, ui.config.plain_controls); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); }
+        Tab::Main => { voice_row(&mut body, s.voice, cw, ui.config.plain_controls); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); if let Some(c) = agent_events_card(s, cw) { body.push(ui, c); } }
         Tab::Git => { body.push(ui, git_card(s, cw)); if let Some(c) = commit_card(s, cw) { body.push(ui, c); } body.push(ui, changes_card(s, cw)); body.push(ui, worktree_card(s, cw)); body.push(ui, pr_card(s, cw)); }
         Tab::Prof => { if let Some(c) = health_card(s, cw) { body.push(ui, c); } if let Some(c) = profile_store_card(s, cw) { body.push(ui, c); } body.push(ui, profiles_card(s, cw)); }
         Tab::Mem => { for c in [engram_card(s, cw), handoff_card(s, cw), stack_card(s, cw), tools_card(s, cw), mcp_card(s, cw)] { body.push(ui, c); } }
@@ -646,6 +646,31 @@ fn todos_card(s: &State, w: usize) -> Card {
     c
 }
 
+/// MAIN · Agente: what the session process says about itself — blocked, working, idle, a note —
+/// instead of what the rail can guess from the screen. Newest first, with the emitter's age.
+fn agent_events_card(s: &State, w: usize) -> Option<Card> {
+    use Tone::*;
+    if !s.agent_channel {
+        let mut c = Card::new("agent", mark("Agente", PinkBright), w);
+        c.row(vec![seg("◌ canal de eventos no disponible", Yellow)], vec![seg("extensión", Dim)]);
+        return Some(c);
+    }
+    if s.agent_events.is_empty() { return None }
+    let mut c = Card::new("agent", mark("Agente", PinkBright), w);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    for event in s.agent_events.iter().rev().take(5) {
+        let (glyph, tone) = match text_of(event, "type").as_str() {
+            "blocked" => ("◉", Coral), "working" => ("●", Gold), "idle" => ("○", Dim), _ => ("✎", Cyan),
+        };
+        // The text came from another process: the parser already stripped controls.
+        let body = text_of(event, "text");
+        let ts = event["ts"].as_u64().unwrap_or(0);
+        let age = if ts == 0 || now < ts { String::new() } else { format!("hace {}", elapsed(now - ts)) };
+        let right = if age.is_empty() { vec![] } else { vec![seg(age, Dim)] };
+        c.row(vec![seg(format!("{glyph} "), tone), seg(body, Text)], right);
+    }
+    Some(c)
+}
 // ---- 2:GIT ----------------------------------------------------------------------------
 fn changes_card(s: &State, w: usize) -> Card {
     let mut c=Card::new("changes",mark("Cambios",Tone::Gold),w);
@@ -2824,6 +2849,23 @@ mod tests {
             assert!(l.iter().any(|l| l.contains("/gentle:profiles")), "el botón sigue visible a {width}");
             assert!(l.iter().all(|l| l.width() <= usize::from(width)));
         }
+    }
+    #[test]
+    fn agent_card_shows_the_newest_events_and_a_missing_channel() {
+        let mut s = sample();
+        assert!(on(&s, Tab::Main, 48).iter().all(|l| !l.contains("Agente")), "sin eventos no se dibuja la card");
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        s.agent_events = (0..7).map(|i| serde_json::json!({"type": if i==6 {"blocked"} else {"note"}, "text": format!("evento {i}"), "ts": now - (7-i as u64)*60_000})).collect();
+        let l = on(&s, Tab::Main, 48);
+        assert!(l.iter().any(|x| x.contains("◉ evento 6")), "el más nuevo primero y su glifo: {l:#?}");
+        assert!(l.iter().any(|x| x.contains("hace 1m")), "la antigüedad la da el emisor");
+        assert!(!l.iter().any(|x| x.contains("evento 1")), "sólo los cinco últimos");
+        assert_eq!(l.iter().filter(|x| x.contains("evento ")).count(), 5);
+        // A channel that never opened says so instead of drawing an empty card.
+        let mut down = s.clone(); down.agent_channel = false; down.agent_events.clear();
+        let l = on(&down, Tab::Main, 48);
+        assert!(l.iter().any(|x| x.contains("canal de eventos no disponible")), "{l:#?}");
+        for w in [36u16, 42, 48] { for row in on(&s, Tab::Main, w) { assert!(row.width() <= usize::from(w), "{w} {row:?}"); } }
     }
     #[test]
     fn health_card_reports_stale_layers_roles_and_session() {

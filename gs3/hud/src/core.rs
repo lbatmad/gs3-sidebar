@@ -273,6 +273,9 @@ pub fn elapsed(ms:u64)->String {
         _=>format!("{}d {}h",s/86_400,(s%86_400)/3600),
     }
 }
+/// How many agent events the rail keeps: the card shows the newest five and the tail is the
+/// memory behind them.
+pub const AGENT_EVENTS_MAX:usize = 12;
 /// PROF roster: host defaults (`settings.json`), subagents (`agents/*.md`) and their task history.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>,
@@ -430,6 +433,9 @@ pub struct State {
     pub profile_channel_down:bool,
     /// GIT · Cambios: the last write's outcome, shown in the card (`Some((ok, text))`).
     pub git_notice:Option<(bool,String)>,
+    /// MAIN · Agente: events pushed by the agent process, newest last. `agent_channel` is `false`
+    /// only when the socket could not be opened at all.
+    pub agent_events:Vec<Value>, pub agent_channel:bool,
     /// TREE tab scan (None until the first answer).
     pub tree:Option<Tree>,
     /// GIT tab inspector (selected branch diff / file diff), fetched on demand.
@@ -443,7 +449,7 @@ pub struct State {
     pub ui:Ui,
 }
 impl State {
-    pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),profile_channel:None,profile_channel_down:false,git_notice:None,tree:None,detail:Detail::default(),preview:None,media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
+    pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),profile_channel:None,profile_channel_down:false,git_notice:None,agent_events:Vec::new(),agent_channel:true,tree:None,detail:Detail::default(),preview:None,media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
 }
 pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Tree(Tree), Detail(Detail), Preview(Preview), Media(Youtube), Spotify(Spotify), Ui(ui::Action), Key(ui::Key),
     /// PROF: a session profile channel reply — the loaded profile (name + model map) after a
@@ -453,7 +459,12 @@ pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String
     ProfileChannelDown,
     /// GIT · Cambios: the result of a stage/unstage/commit write. `true` + text on success
     /// (`<short hash> <subject>` for a commit), `false` + git's raw stderr on failure.
-    GitNotice(bool,String) }
+    GitNotice(bool,String),
+    /// MAIN · Agente: one event the agent process pushed to the rail (`type`, `text`, `ts`).
+    AgentEvent(Value),
+    /// MAIN · Agente: the event socket could not be opened; the card says so instead of drawing
+    /// a channel that does not exist.
+    AgentChannelDown }
 /// The rail never plays both at once: whichever source the human starts pauses the other. Spotify is
 /// device playback and the video is a separate mpv window, so nothing else coordinates them. Only a
 /// *start* counts: both engines keep reporting while they play, and pausing on every report would make
@@ -496,6 +507,14 @@ pub fn apply(s:&mut State,e:Event)->bool {
             else {s.profile_channel=Some(Some(v)); s.profile_channel_down=false;}
         }
         Event::ProfileChannelDown=> {s.profile_channel_down=true;}
+        Event::AgentEvent(v)=> {
+            // Events arrive from another process: keep a bounded tail and never trust the shape.
+            if text(&v,"type").is_empty() {return false}
+            s.agent_events.push(v);
+            let len=s.agent_events.len();
+            if len>AGENT_EVENTS_MAX {s.agent_events.drain(..len-AGENT_EVENTS_MAX);}
+        }
+        Event::AgentChannelDown=> {s.agent_channel=false;}
         Event::GitNotice(ok,text)=> {
             // A write changed the index or the history: the card and the graph are re-read from
             // git itself, so the rail never shows a state it did not observe.
@@ -838,6 +857,21 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
         let p=profiles(Some(&v));
         assert_eq!(p.iter().map(|p|(p.name.as_str(),p.active)).collect::<Vec<_>>(),[("a b",true),("esc  [31m",false),("x y",false)],"un nombre es sólo para mostrar: se aplana, no se confía en él");
         assert!(p.iter().all(|p|!p.name.chars().any(char::is_control)),"ninguna fila puede romperse con un control");
+    }
+    #[test]
+    fn agent_events_keep_a_bounded_tail() {
+        // Another process sends them: the rail keeps a tail, never an unbounded list.
+        let mut s=State::new("p".into(),std::path::PathBuf::from("/tmp"));
+        for i in 0..(AGENT_EVENTS_MAX+3) {
+            apply(&mut s,Event::AgentEvent(serde_json::json!({"type":"note","text":format!("n{i}"),"ts":i})));
+        }
+        assert_eq!(s.agent_events.len(),AGENT_EVENTS_MAX,"la cola está acotada");
+        assert_eq!(text(s.agent_events.last().unwrap(),"text"),format!("n{}",AGENT_EVENTS_MAX+2),"se guardan los más nuevos");
+        // A line without type never enters the state at all.
+        assert!(!apply(&mut s,Event::AgentEvent(serde_json::json!({"text":"sin tipo"}))));
+        assert!(s.agent_channel);
+        apply(&mut s,Event::AgentChannelDown);
+        assert!(!s.agent_channel,"el canal caído se registra");
     }
     #[test]
     fn profile_pin_reports_both_stale_layers_without_masking_winner() {

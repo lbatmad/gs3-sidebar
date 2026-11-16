@@ -17,6 +17,18 @@ Todas las capturas son de una sesión de demostración. Con menos de 44 columnas
 
 **Colores del contexto** (porcentaje usado): menos de 40 % verde `Óptimo` · menos de 65 % dorado `Medio` · menos de 80 % naranja `Alerta` · más, rojo `Crítico`.
 
+La tarjeta **⌁ Agente** muestra lo que el proceso de la sesión **dice de sí mismo**, no lo que la
+pantalla sugiere: `◉` bloqueado esperando aprobación, `●` un turno en marcha, `○` inactivo y `✎` una
+nota que el agente mandó con `/gs3 note <texto>`. Van los cinco más nuevos, el último arriba, con la
+antigüedad que calcula el propio emisor (`hace 4m`); sin eventos la tarjeta no se dibuja.
+
+El canal es un socket que **la barra escucha** y la extensión de Pi abre como cliente:
+`/tmp/gs3-agent-<uid>-<pane>.sock`, 0600 (`GS3_AGENT_EVENT_DIR` permite a un runner aislado usar un
+directorio corto propio). Todo lo que llega es entrada no confiable: la barra descarta líneas
+malformadas, de más de 4 KiB, con un `type` que no conoce o con caracteres de control, y nunca le
+escribe nada al agente. Si el socket no se puede abrir, la tarjeta lo dice y el resto del rail sigue
+igual.
+
 ## 2 · GIT — el repositorio
 
 ![GIT](assets/tab2.png)

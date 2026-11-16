@@ -53,6 +53,13 @@ Riesgo: **ítem 2** (seguridad: el rail abre un socket que acepta datos de otro 
 (la card muestra texto no confiable). Mitigación: 0600, verificación de uid en el cliente, límite de
 4 KiB por línea, tipos cerrados, saneamiento de controles y descarte silencioso de lo desconocido.
 
+L3 (hallazgo al verificar, fuera de alcance de esta feature):
+
+- `sources::stack::tests::managed_package_overrides_disabled_legacy` es **flaky bajo el runner
+  paralelo** (falla ~2 de 3 corridas; con `--test-threads=1` y sola pasa siempre). Es previo a esta
+  rama: prueba el sondeo de versiones del stack, que no toca este feature. Queda anotado como
+  follow-up; la verificación de F5 se apoya en la suite serial más las corridas paralelas verdes.
+
 ## Log
 
 L1 (pedido original, textual):
