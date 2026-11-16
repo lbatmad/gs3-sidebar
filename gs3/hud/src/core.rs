@@ -221,6 +221,13 @@ pub struct Engram {
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Handoff { pub id:i64, pub kind:String, pub at:Option<i64>, pub lines:Vec<String> }
+/// MAIN · Historial: spend by session and by day, read from the pane's session directory
+/// (`session_costs`). `today` and `week` (last 7 days) are day sums; `sessions` is newest first.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Costs { pub today:f64, pub week:f64, pub sessions:Vec<SessionCost> }
+/// One session's own spend: the day its file name carries and what it cost.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SessionCost { pub day:String, pub cost:f64 }
 /// Bounded handoff body: first lines only, each capped (the card shows even fewer).
 pub fn handoff_lines(content:&str)->Vec<String> {
     content.lines().map(str::trim).filter(|l|!l.is_empty()).take(40).map(|l|l.chars().take(300).collect()).collect()
@@ -231,6 +238,25 @@ pub fn ago(at:Option<i64>,now:i64)->String {
     if s<10 {"recién".into()} else if s<60 {format!("hace {s}s")} else if s<3600 {format!("hace {}m",s/60)} else if s<86_400 {format!("hace {}h",s/3600)} else {format!("hace {}d",s/86_400)}
 }
 pub fn now_secs()->i64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_secs() as i64).unwrap_or(0)}
+/// Days since the epoch for a `YYYY-MM-DD` date (Hinnant's civil calendar arithmetic). The
+/// session file names carry a UTC date, so the day grouping is UTC too, never a local clock.
+pub fn epoch_day(day:&str)->Option<i64> {
+    let b=day.as_bytes();
+    if b.len()!=10 || b[4]!=b'-' || b[7]!=b'-' {return None}
+    let d=|i:usize|(b[i] as char).to_digit(10).map(|n| n as i64);
+    let y=d(0)?*1000+d(1)?*100+d(2)?*10+d(3)?;
+    let m=d(5)?*10+d(6)?; let n=d(8)?*10+d(9)?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&n) {return None}
+    let y=y-i64::from(m<=2);
+    let era=if y>=0 {y/400} else {(y-399)/400};
+    let yoe=y-era*400;
+    let mp=m+if m>2 {-3} else {9};
+    let doy=(153*mp+2)/5+n-1;
+    let doe=yoe*365+yoe/4-yoe/100+doy;
+    Some(era*146097+doe-719468)
+}
+/// Today as an epoch day (UTC): the clock the day groupings read.
+pub fn today_day()->i64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|(d.as_secs()/86400) as i64).unwrap_or(0)}
 /// One Stack · Ecosistema entry: installed version or None.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tool { pub name:&'static str, pub version:Option<String> }
@@ -437,6 +463,8 @@ pub struct State {
     pub git:Git, pub pr:Vec<String>, pub engram:Engram, pub mcp:Option<Vec<Mcp>>,
     /// PROF roster (None: no agent dir data) and Stack · Ecosistema versions (empty until probed).
     pub roster:Option<Roster>, pub stack:Vec<Tool>,
+    /// MAIN · Historial: spend by session and by day (None until the session directory is read).
+    pub costs:Option<Costs>,
     /// PROF session profile channel: None until the first answer, Some(None) when the channel is
     /// up with no binding, Some(profile) when the session resolves a bound profile (name + model map).
     pub profile_channel:Option<Option<Value>>,
@@ -460,9 +488,9 @@ pub struct State {
     pub ui:Ui,
 }
 impl State {
-    pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),profile_channel:None,profile_channel_down:false,git_notice:None,agent_events:Vec::new(),agent_channel:true,tree:None,detail:Detail::default(),preview:None,media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
+    pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),costs:None,profile_channel:None,profile_channel_down:false,git_notice:None,agent_events:Vec::new(),agent_channel:true,tree:None,detail:Detail::default(),preview:None,media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
 }
-pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Tree(Tree), Detail(Detail), Preview(Preview), Media(Youtube), Spotify(Spotify), Ui(ui::Action), Key(ui::Key),
+pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Costs(Costs), Tree(Tree), Detail(Detail), Preview(Preview), Media(Youtube), Spotify(Spotify), Ui(ui::Action), Key(ui::Key),
     /// PROF: a session profile channel reply — the loaded profile (name + model map) after a
     /// click, or the channel's current binding (or `Null` when the channel is down).
     ProfileChannel(Value),
@@ -509,7 +537,7 @@ pub fn apply(s:&mut State,e:Event)->bool {
             // A previewed working-tree file that is no longer changed drops its selection.
             if s.ui.git_branch.is_none() && s.ui.git_file.as_ref().is_some_and(|f|!v.files.iter().any(|x|&x.path==f)) {s.ui.git_file=None;}
             s.git=v;
-        } Event::Pr(v)=>s.pr=v, Event::Engram(v)=>s.engram=v, Event::Mcp(v)=>s.mcp=v, Event::Roster(v)=>s.roster=v, Event::Stack(v)=>s.stack=v,
+        } Event::Pr(v)=>s.pr=v, Event::Engram(v)=>s.engram=v, Event::Mcp(v)=>s.mcp=v, Event::Roster(v)=>s.roster=v, Event::Stack(v)=>s.stack=v, Event::Costs(v)=>s.costs=Some(v),
         Event::ProfileChannel(v)=> {
             // `false` = the channel answered with no binding (up, nothing loaded);
             // `true` = the profile object the session resolves (name + model map).
@@ -660,6 +688,20 @@ mod tests {
         assert_eq!((t.session.input,t.session.output,t.session.read,t.session.write,t.session.used,t.session.cost),(4,8,2,3,17,0.5));
         t.ingest(&line[20..], false); assert_eq!(t.session.input,8);
         t.ingest(line,true); assert_eq!(t.session.input,4);
+    }
+    #[test]
+    fn epoch_day_maps_iso_dates_to_epoch_days() {
+        assert_eq!(epoch_day("1970-01-01"), Some(0));
+        assert_eq!(epoch_day("2024-01-01"), Some(19723));
+        assert_eq!(epoch_day("2026-11-16"), Some(20773));
+        // Month and year rollovers, leap and non-leap.
+        assert_eq!(epoch_day("2026-03-01"), epoch_day("2026-02-28").map(|d| d + 1));
+        assert_eq!(epoch_day("2024-03-01"), epoch_day("2024-02-29").map(|d| d + 1));
+        assert_eq!(epoch_day("2025-01-01"), epoch_day("2024-12-31").map(|d| d + 1));
+        // Only the package's own file-name shape is a date.
+        assert_eq!(epoch_day("not-a-date"), None);
+        assert_eq!(epoch_day("2026-13-01"), None);
+        assert_eq!(epoch_day("2026-11-32"), None);
     }
     #[test]
     fn tail_keeps_recent_turn_samples_and_counts_compactions() {

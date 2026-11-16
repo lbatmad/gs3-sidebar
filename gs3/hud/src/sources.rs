@@ -545,6 +545,44 @@ pub fn mcp(session:&Path)->Option<Vec<Mcp>> {
     let v:Value=serde_json::from_slice(&fs::read(dir.join("mcp.json")).ok()?).ok()?;
     Some(mcp_servers(&v))
 }
+/// MAIN · Historial: how many session files the card reads — the newest, by name.
+pub const COSTS_FILES:usize=30;
+/// Per-file byte ceiling: a pathological session cannot grow the rail's memory.
+pub const COSTS_FILE_MAX:u64=16*1024*1024;
+/// MAIN · Historial: spend by session and by day over the pane's session directory, newest
+/// first. Read-only and bounded: the `COSTS_FILES` newest `.jsonl` siblings (the ISO timestamp
+/// prefix makes name order chronological), symlinks never followed, each file capped at
+/// `COSTS_FILE_MAX` bytes. The clock is a parameter: a history built from the same files for
+/// the same today is the same value.
+pub fn session_costs(session:&Path,today:i64)->Option<Costs> {
+    let dir=session.parent()?;
+    let mut files:Vec<String>=fs::read_dir(dir).ok()?.flatten()
+        .map(|e|e.file_name().to_string_lossy().into_owned())
+        // Names only, never a symlink: a link could point outside the session directory.
+        .filter(|n|n.ends_with(".jsonl") && fs::symlink_metadata(dir.join(n)).is_ok_and(|m|m.is_file()))
+        .collect();
+    files.sort_by(|a,b|b.cmp(a));
+    let mut costs=Costs::default();
+    for name in files.into_iter().take(COSTS_FILES) {
+        // The day is the date in the file name; a name without one is not a session file.
+        let Some((day,epoch))=name.get(..10).and_then(|d|epoch_day(d).map(|e|(d,e))) else {continue};
+        let cost=file_cost(&dir.join(&name));
+        if epoch==today {costs.today+=cost;}
+        if epoch>today-7 {costs.week+=cost;}
+        costs.sessions.push(SessionCost{day:day.into(),cost});
+    }
+    Some(costs)
+}
+/// One session file's total spend: `usage.cost.total` of its assistant messages, nothing else.
+fn file_cost(path:&Path)->f64 {
+    let Ok(file)=fs::File::open(path) else {return 0.0};
+    let mut cost=0.0;
+    for line in BufReader::new(file).take(COSTS_FILE_MAX).lines().map_while(Result::ok) {
+        let Ok(v)=serde_json::from_str::<Value>(&line) else {continue};
+        if text(&v,"type")=="message" && text(&v["message"],"role")=="assistant" {cost+=v["message"]["usage"]["cost"]["total"].as_f64().unwrap_or(0.0);}
+    }
+    cost
+}
 pub fn read_tail(path:&Path,tail:&mut Tail)->Result<()> {
     let mut f=fs::File::open(path)?; let reset=f.metadata()?.len()<tail.offset;
     if reset {*tail=Tail::default();}
@@ -867,7 +905,7 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
                     // The tasks directory only exists after the first task: watching it again costs nothing.
                     if let (Some(w),Some(d))=(&mut watcher,&tasks_dir) {let _=w.watch(d,RecursiveMode::NonRecursive);}
                     if let (Some(w),Some(d))=(&mut watcher,&profiles_dir) {let _=w.watch(d,RecursiveMode::NonRecursive);}
-                    let _=tx.send(Event::Git(git_log(&cwd,page))); let _=tx.send(Event::Engram(engram(&cwd))); send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent); let _=tx.send(Event::Stack(stack(&cwd,session.as_deref())));}
+                    let _=tx.send(Event::Git(git_log(&cwd,page))); let _=tx.send(Event::Engram(engram(&cwd))); send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent); if let Some(p)=&session {let _=tx.send(Event::Costs(session_costs(p,today_day()).unwrap_or_default()));} let _=tx.send(Event::Stack(stack(&cwd,session.as_deref())));}
                 Ok(Local::Session(path))=>{
                     if let (Some(w),Some(p))=(&mut watcher,&session) {let _=w.unwatch(p.parent().unwrap_or(p));}
                     if let (Some(w),Some(d))=(&mut watcher,&tasks_dir) {let _=w.unwatch(d);}
@@ -890,6 +928,7 @@ pub fn local(cwd:PathBuf,socket:PathBuf,pane_id:String,tx:Sender<Event>)->Sender
                     if let (Some(w),Some(d))=(&mut watcher,&tasks_dir) {let _=w.watch(d,RecursiveMode::NonRecursive);}
                     if let (Some(w),Some(d))=(&mut watcher,&profiles_dir) {let _=w.watch(d,RecursiveMode::NonRecursive);}
                     let _=tx.send(Event::Session(session.as_ref().map(|p|p.to_string_lossy().into_owned()),tail.session.clone()));
+                    if let Some(p)=&session {let _=tx.send(Event::Costs(session_costs(p,today_day()).unwrap_or_default()));}
                     send_mcp(&session,&mut mcp_sent); send_roster(&session,&mut roster_sent);
                     let _=tx.send(Event::Stack(stack(&cwd,session.as_deref())));
                 }
@@ -975,6 +1014,41 @@ fn fixture(tag:&str)->PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_costs_group_spend_by_session_and_day() {
+        let dir = fixture("costs");
+        let write = |name: &str, body: &str| std::fs::write(dir.join(name), body).unwrap();
+        let msg = |cost: &str| format!(r#"{{"type":"message","message":{{"role":"assistant","usage":{{"cost":{{"total":{cost}}}}}}}}}"#);
+        // Today's session (two assistant turns), one within the week, one older.
+        write("2026-11-16T04-55-37-276Z_a.jsonl", &format!("{}\n{}\n{}\n", msg("0.25"), r#"{"type":"message","message":{"role":"user"}}"#, msg("0.5")));
+        write("2026-11-14T01-00-00-000Z_b.jsonl", &msg("1.0"));
+        write("2026-10-01T01-00-00-000Z_old.jsonl", &msg("5.0"));
+        // Not a session file, not a date in the name, and a symlink: none of them count.
+        write("notes.txt", "x");
+        write("someday.jsonl", &msg("99.0"));
+        std::os::unix::fs::symlink(dir.join("2026-10-01T01-00-00-000Z_old.jsonl"), dir.join("2026-11-15T00-00-00-000Z_link.jsonl")).unwrap();
+        let c = session_costs(&dir.join("2026-11-16T04-55-37-276Z_a.jsonl"), 20773).unwrap();
+        assert_eq!(c.today, 0.75);
+        assert_eq!(c.week, 1.75);
+        // Newest first: today's session, then the week's, then the older one.
+        assert_eq!(c.sessions.iter().map(|s| (s.day.as_str(), s.cost)).collect::<Vec<_>>(),
+            [("2026-11-16", 0.75), ("2026-11-14", 1.0), ("2026-10-01", 5.0)]);
+        // No session directory to read: no history, never a panic.
+        assert!(session_costs(&dir.join("missing").join("x.jsonl"), 0).is_none());
+    }
+    #[test]
+    fn session_costs_read_only_the_thirty_newest_files() {
+        let many = fixture("costs-many");
+        let msg = |i: usize| format!(r#"{{"type":"message","message":{{"role":"assistant","usage":{{"cost":{{"total":{i}.0}}}}}}}}"#);
+        for i in 0..31 { std::fs::write(many.join(format!("2025-01-{:02}T00-00-00-000Z_s{:02}.jsonl", i + 1, i)), msg(i)).unwrap(); }
+        // None of the 31 files falls in the last 7 days; the sums prove the cap.
+        let c = session_costs(&many.join("2025-01-31T00-00-00-000Z_s30.jsonl"), 20773).unwrap();
+        assert_eq!((c.today, c.week), (0.0, 0.0));
+        assert_eq!(c.sessions.len(), COSTS_FILES);
+        assert_eq!(c.sessions.last().unwrap().day, "2025-01-02");
+        // The oldest file dropped out of the cap, not out of thin air: 30 files of cost 1.0..30.0 each.
+        assert!(c.sessions.iter().map(|s| s.cost).sum::<f64>() < (1..=31).map(|i| i as f64).sum::<f64>());
+    }
     #[test]
     fn model_picker_requests_are_bound_focus_then_f9() {
         for pane in ["w1:p1", "bound-other"] {
@@ -1351,11 +1425,13 @@ mod tests {
         local.send(Local::Session(Some(old.to_string_lossy().into_owned()))).unwrap();
         let mut state=State::new("bound".into(),dir.clone()); state.session_path=Some(old.to_string_lossy().into_owned());
         apply(&mut state,rx.recv_timeout(Duration::from_secs(3)).unwrap()); assert_eq!(state.session.input,99);
-        // Binding also publishes Stack before later filesystem notifications.
-        match rx.recv_timeout(Duration::from_secs(3)).unwrap() {
-            Event::Stack(tools)=>{assert_eq!(tools.len(),6); assert_eq!(tools[1].version.as_deref(),Some(env!("CARGO_PKG_VERSION")));},
+        // Binding also publishes Stack before later filesystem notifications; the Historial
+        // read of the same batch may arrive between the two and is skipped here.
+        loop { match rx.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Event::Stack(tools)=>{assert_eq!(tools.len(),6); assert_eq!(tools[1].version.as_deref(),Some(env!("CARGO_PKG_VERSION"))); break},
+            Event::Costs(_)=>continue,
             _=>panic!("expected Stack after session binding"),
-        }
+        }}
         local.send(Local::Changed(notify::Event{kind:notify::EventKind::Create(notify::event::CreateKind::File),paths:vec![new.clone()],attrs:Default::default()})).unwrap();
         apply(&mut state,rx.recv_timeout(Duration::from_secs(3)).unwrap());
         assert_eq!(state.session_path.as_deref(),new.to_str()); assert_eq!(state.session.input,0); assert!(state.read_session);
