@@ -29,15 +29,19 @@ commitear.
 
 Un clic en `[stage]` corre `git add -- <ruta>` y un clic en `[unstage]` corre
 `git restore --staged -- <ruta>`, siempre con la ruta como argumento —nunca interpolada en un
-shell—; las filas `[stage all]` y `[unstage all]` hacen lo mismo sobre todo el árbol. Los clics de
-git comparten una ventana de un segundo, así que un doble clic no encadena dos escrituras. Después
+shell—; las filas `[stage all]` y `[unstage all]` recorren los archivos uno por uno —**omitiendo los
+sensibles**, que es lo que su propia fila niega— y las rutas viajan con pathspecs literales, así que
+un nombre con comodines nunca arrastra a un vecino. Un solo hilo escribe: los clics de git se
+serializan y comparten una ventana de un segundo, así que un doble clic no encadena dos escrituras
+ni puede chocar con el lock del índice. Después
 de cada acción la card y el grafo se releen desde git, y si algo falla se muestra el stderr de git
 tal cual.
 
 El renglón del mensaje es un editor en la propia barra (se escribe, `Backspace` borra, `Enter`
 confirma, `Esc` cancela) y `[✓ commit]` ejecuta un `git commit -m <mensaje>` liso: nunca `--amend`,
 nunca `--no-verify`, nunca push. Sólo se ofrece con al menos un archivo staged y un mensaje no
-vacío; si falta algo, la fila dice qué. Un commit exitoso muestra `<hash corto> <asunto>`; uno
+vacío; si falta algo, la fila dice qué. Si hay un archivo sensible ya staged (por fuera de la
+barra), el commit se niega a correr y lo dice. Un commit exitoso muestra `<hash corto> <asunto>`; uno
 fallido —hook, índice vacío, identidad sin configurar— muestra el error de git tal cual, deja el
 staging como git lo dejó y conserva el mensaje escrito. Ningún archivo sensible se stagea desde la
 barra (lo dice en la fila) y ninguna ruta fuera del repositorio se acepta.
