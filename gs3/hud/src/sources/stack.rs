@@ -41,7 +41,12 @@ fn package_version(dir: &Path, name: &str) -> Option<String> {
 
 fn probe(cwd: &Path, file: &Path, args: &[&str]) -> Option<String> {
     if !file.is_file() { return None; }
-    run(cwd, file.to_str()?, args, 3).ok().and_then(|text| clean_version(&text))
+    // Under `cargo test` the fixtures are throwaway `sh` scripts one line long, and the parallel
+    // runner can starve even those past any short wall-clock deadline (a 3 s probe timed out
+    // ~2 runs in 25 while the same test passed alone); the version logic under test is not that
+    // deadline. Production keeps the 3 s bound: a rail refresh may never hang on a probe.
+    let seconds = if cfg!(test) { 30 } else { 3 };
+    run(cwd, file.to_str()?, args, seconds).ok().and_then(|text| clean_version(&text))
 }
 
 // Resolve only identities we can prove from the personal package declarations.
