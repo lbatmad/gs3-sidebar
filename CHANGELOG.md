@@ -6,6 +6,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). E
 
 ### Añadido
 
+- `MAIN` · tarjeta **⌁ Historial**: historia de gasto y contexto, sólo lectura y sin nada que clickear. `hoy` y `· 7 días` suman el costo (`usage.cost.total`) de los mensajes `assistant` de cada sesión del directorio del pane, agrupado por día UTC (la fecha del nombre de cada `.jsonl`); la sparkline `ctx` dibuja los `totalTokens` de los últimos 24 turnos junto al conteo de `compactaciones` del log; y cada sesión reciente (hasta 6) muestra su costo propio. La lectura es acotada: los 30 `.jsonl` más nuevos, sin seguir symlinks, 16 MiB por archivo, refrescada al atar la sesión y con `r`. Sin turnos muestra `ctx sin tendencia`; antes de leer el directorio no hay tarjeta.
+
 - `MAIN` · tarjeta **⌁ Agente**: el proceso de la sesión empuja sus eventos por un socket que la barra escucha (`/tmp/gs3-agent-<uid>-<pane>.sock`, 0600) — bloqueado esperando aprobación, turno en marcha, inactivo, y notas que el agente manda con `/gs3 note <texto>`. Se ven los cinco más nuevos, con la antigüedad que calcula el emisor, y sin eventos no hay tarjeta. Todo lo que llega es entrada no confiable: se descartan líneas malformadas, de más de 4 KiB, con `type` desconocido o con caracteres de control, y la barra nunca escribe de vuelta al agente. Antes el estado de la sesión se infería de la pantalla y de los archivos de sesión; ahora también lo dice el proceso.
 
 

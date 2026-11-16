@@ -14,6 +14,7 @@ Todas las capturas son de una sesión de demostración. Con menos de 44 columnas
 | **⌁ Status** | `Project` y `Branch` (con `±N` cambios). Debajo, el modelo en mayúsculas espaciadas y su esfuerzo (`◆ MEDIUM ◆`): **es un botón** que abre el selector de modelos. Más abajo, el estado del agente (`idle` / `working` / `blocked`), el panel de herdr y `conectado`. |
 | **⌁ Context** | Tokens usados sobre el límite del modelo, medidor, `▲ in` / `▼ out` y `Cost`. Si no se conoce el límite muestra `/ — tokens` y `sin límite`. |
 | **⌁ Todos** | Las tareas de la sesión: `✓` hecha, `◉` en curso, `○` pendiente. Vacío: `sin tareas en esta sesión`. |
+| **⌁ Historial** | Gasto de la sesión por día: `hoy` y `· 7 días` (UTC, por la fecha del nombre de cada `.jsonl`); tendencia de contexto como sparkline de los últimos 24 turnos con el conteo de `compactaciones`; y las sesiones más nuevas con su costo individual, una fila por sesión. Sólo lectura: no hay nada que clickear. |
 
 **Colores del contexto** (porcentaje usado): menos de 40 % verde `Óptimo` · menos de 65 % dorado `Medio` · menos de 80 % naranja `Alerta` · más, rojo `Crítico`.
 
@@ -28,6 +29,15 @@ directorio corto propio). Todo lo que llega es entrada no confiable: la barra de
 malformadas, de más de 4 KiB, con un `type` que no conoce o con caracteres de control, y nunca le
 escribe nada al agente. Si el socket no se puede abrir, la tarjeta lo dice y el resto del rail sigue
 igual.
+
+La tarjeta **⌁ Historial** es historia de gasto y contexto, no del momento: `hoy` y `· 7 días`
+suman el costo (`usage.cost.total`) de los mensajes `assistant` de cada sesión, agrupado por día
+(UTC, por la fecha del nombre del archivo); la sparkline `ctx` dibuja los `totalTokens` de los
+últimos 24 turnos junto al número de `compactaciones` del log; y cada sesión reciente muestra su
+costo propio. La lectura es acotada: los 30 `.jsonl` más nuevos del directorio de sesiones del pane,
+sin seguir symlinks, cada archivo hasta 16 MiB. Es sólo lectura — la tarjeta no escribe ni ejecuta
+nada — y se refresca al atar la sesión y con `r`. Sin turnos muestra `ctx sin tendencia`; antes de
+leer el directorio, la tarjeta no se dibuja.
 
 ## 2 · GIT — el repositorio
 

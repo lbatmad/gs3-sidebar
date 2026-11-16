@@ -17,6 +17,7 @@ to collapse/expand it, and CONFIG rows; the wheel over the tab bar cycles tabs a
 elsewhere scrolls the body. MAIN's model section is a button: click any model-name,
 effort or `sin modelo` row (or the dim Status `▸`) to open the model picker in gs2.
 Above Status, a centered row of regular-weight controls operates the local Discord RPC client (Vesktop on Linux; official Discord on macOS) and capture selector. Mic toggles mute, headphones toggles deafen (coral = active, mint = off, dim = no client running), and the Discord control opens or focuses that client. Each five-cell slot plus one column on either side is clickable. Controls use Nerd Font glyphs by default, or portable ASCII labels with `plain_controls` enabled.
+The Agente card shows what the session process pushes to the rail; the Historial card is its read-only history: today's and last-7-days spend (`usage.cost.total` grouped by UTC day from the session file names), a sparkline of the last 24 turns' total tokens with the compaction count, and the newest sessions with their own cost. The read is bounded (30 newest session files, no symlinks, 16 MiB each) and refreshed on session binding and `r`.
 The first click asks for RPC consent; the token is kept private in `~/.config/gs3/discord-token.json` (0600). On macOS the connected peer's UID and executable path are checked before any RPC data is sent.
 It focuses only the bound pane, then sends fixed F9 to the model-picker extension.
 A dedicated worker keeps socket I/O off rendering, coalesces pending clicks and
