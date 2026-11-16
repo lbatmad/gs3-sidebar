@@ -19,9 +19,17 @@ Todas las capturas son de una sesión de demostración. Con menos de 44 columnas
 **Colores del contexto** (porcentaje usado): menos de 40 % verde `Óptimo` · menos de 65 % dorado `Medio` · menos de 80 % naranja `Alerta` · más, rojo `Crítico`.
 
 La tarjeta **⌁ Agente** muestra lo que el proceso de la sesión **dice de sí mismo**, no lo que la
-pantalla sugiere: `◉` bloqueado esperando aprobación, `●` un turno en marcha, `○` inactivo y `✎` una
-nota que el agente mandó con `/gs3 note <texto>`. Van los cinco más nuevos, el último arriba, con la
-antigüedad que calcula el propio emisor (`hace 4m`); sin eventos la tarjeta no se dibuja.
+pantalla sugiere: `◉` bloqueado esperando aprobación, `●` un turno en marcha, `○` inactivo (el turno
+terminó o se canceló) y `✎` una nota que el agente mandó con `/gs3 note <texto>`. Van los cinco más
+nuevos, el último arriba, con la antigüedad que calcula el propio emisor (`hace 4m`); sin eventos la
+tarjeta no se dibuja. La extensión avisa el **arranque y el final** del turno: si sólo avisara el
+arranque, la última fila seguiría diciendo `turno en marcha` mucho después de haber terminado.
+
+Cada evento trae la hora del emisor (`ts`) y uno que la barra nunca descartara seguiría afirmando un
+turno que ya no corre, así que la tarjeta es una **ventana de minutos**: pasados cinco, la barra
+descarta el evento por su propio reloj (un `tick` de un segundo redibuja sólo cuando algo vence, no
+en cada vuelta) y, si no queda ninguno, la tarjeta desaparece. Una línea sin `ts` tampoco se puede
+demostrar reciente y se descarta con las demás.
 
 El canal es un socket que **la barra escucha** y la extensión de Pi abre como cliente:
 `/tmp/gs3-agent-<uid>-<pane>.sock`, 0600 (`GS3_AGENT_EVENT_DIR` permite a un runner aislado usar un

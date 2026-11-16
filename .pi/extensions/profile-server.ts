@@ -342,5 +342,11 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 		const pane = paneFromArgv();
 		if (pane !== undefined) void pushAgentEvent(pane, "working", "turno en marcha", undefined);
 	});
+	// The rail is told when the turn ends too: without this the last event stays `working` — and a
+	// finished turn keeps claiming to run — because `agent_start` only ever reports a beginning.
+	pi.on("agent_settled", (event) => {
+		const pane = paneFromArgv();
+		if (pane !== undefined) void pushAgentEvent(pane, "idle", event?.aborted ? "turno cancelado" : "turno terminado", undefined);
+	});
 	pi.on("session_shutdown", () => stop());
 }

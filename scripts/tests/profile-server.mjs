@@ -181,6 +181,31 @@ try {
   await fire("session_shutdown", ctx);
   await new Promise((resolve) => setTimeout(resolve, 150));
   check("equals-form socket removed after shutdown", !existsSync(socketOf("w9:pY")));
+
+  // MAIN · Agente: the rail is told both ends of a turn. Only agent_start used to be forwarded, so
+  // the last line kept claiming a turn was running long after it had finished.
+  process.argv = ["node", "agent", "--gs3-herdr-pane", PANE];
+  const agentDir = mkdtempSync("/tmp/gs3-agent-events.XXXXXX");
+  process.env.GS3_AGENT_EVENT_DIR = agentDir;
+  const pushed = [];
+  const agentServer = net.createServer((socket) => {
+    let buffer = "";
+    socket.on("data", (chunk) => { buffer += chunk; });
+    socket.on("close", () => {
+      for (const line of buffer.split("\n")) { if (line.trim()) { try { pushed.push(JSON.parse(line)); } catch { /* a broken line is not an event */ } } }
+    });
+  });
+  const agentSocket = join(agentDir, `gs3-agent-${process.getuid()}-${PANE}.sock`);
+  await new Promise((resolve) => agentServer.listen(agentSocket, resolve));
+  await fire("agent_start", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await fire("agent_settled", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  agentServer.close();
+  check("agent_start reports the turn running", pushed[0]?.type === "working" && pushed[0]?.text === "turno en marcha", JSON.stringify(pushed));
+  check("agent_settled reports the turn finished", pushed[1]?.type === "idle" && pushed[1]?.text === "turno terminado", JSON.stringify(pushed));
+  check("every pushed event carries the emitter's time", pushed.length === 2 && pushed.every((e) => Number.isFinite(e.ts) && e.ts > 0), JSON.stringify(pushed));
+  rmSync(agentDir, { recursive: true, force: true });
 } catch (error) {
   failed += 1;
   console.log(`FAIL harness crashed: ${error?.stack ?? error}`);

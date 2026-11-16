@@ -2940,6 +2940,17 @@ mod tests {
         for w in [36u16, 42, 48] { for row in on(&s, Tab::Main, w) { assert!(row.width() <= usize::from(w), "{w} {row:?}"); } }
     }
     #[test]
+    fn an_expired_agent_event_stops_claiming_a_turn_is_running() {
+        // "turno en marcha" twelve minutes old is a lie the rail must clear by itself: no tick, no
+        // input, just the clock. One expired event and the card is gone.
+        let mut s = sample();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        s.agent_events = vec![serde_json::json!({"type":"working","text":"turno en marcha","ts": now - AGENT_EVENT_TTL_MS - 1})];
+        assert!(on(&s, Tab::Main, 48).iter().any(|l| l.contains("Agente")), "recién llegado se ve");
+        assert!(s.expire_agent_events(now), "el reloj vence el evento");
+        assert!(on(&s, Tab::Main, 48).iter().all(|l| !l.contains("Agente")), "vencido, la card se va");
+    }
+    #[test]
     fn health_card_reports_stale_layers_roles_and_session() {
         // Nothing wrong: one row, no invented warnings. The sample carries a role with no model,
         // so the healthy case gives that role a model first.

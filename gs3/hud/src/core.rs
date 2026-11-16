@@ -313,6 +313,10 @@ pub fn elapsed(ms:u64)->String {
 /// How many agent events the rail keeps: the card shows the newest five and the tail is the
 /// memory behind them.
 pub const AGENT_EVENTS_MAX:usize = 12;
+/// How long an agent event stays on the card. The emitter pushes `working` when a turn starts and
+/// nothing when it ends, so an event the rail never ages out keeps claiming a turn is running long
+/// after it finished; the rail dates every line the emitter sent (`ts`) and lets the clock clear it.
+pub const AGENT_EVENT_TTL_MS:u64 = 5 * 60 * 1000;
 /// PROF roster: host defaults (`settings.json`), subagents (`agents/*.md`) and their task history.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>,
@@ -489,6 +493,15 @@ pub struct State {
 }
 impl State {
     pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),costs:None,profile_channel:None,profile_channel_down:false,git_notice:None,agent_events:Vec::new(),agent_channel:true,tree:None,detail:Detail::default(),preview:None,media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
+    /// MAIN · Agente: drop every event the emitter did not date inside [`AGENT_EVENT_TTL_MS`] and say
+    /// whether anything went, so the rail redraws once when a line expires and never on a timer that
+    /// changes nothing. An undated line cannot prove it is fresh, so it expires too: the emitter
+    /// always sends `ts`, and the card is a window of minutes, not a log that grows forever.
+    pub fn expire_agent_events(&mut self, now:u64)->bool {
+        let before=self.agent_events.len();
+        self.agent_events.retain(|e| e["ts"].as_u64().is_some_and(|ts| now.saturating_sub(ts)<AGENT_EVENT_TTL_MS));
+        self.agent_events.len()!=before
+    }
 }
 pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Costs(Costs), Tree(Tree), Detail(Detail), Preview(Preview), Media(Youtube), Spotify(Spotify), Ui(ui::Action), Key(ui::Key),
     /// PROF: a session profile channel reply — the loaded profile (name + model map) after a
@@ -943,6 +956,20 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
         assert!(s.agent_channel);
         apply(&mut s,Event::AgentChannelDown);
         assert!(!s.agent_channel,"el canal caído se registra");
+    }
+    #[test]
+    fn agent_events_expire_after_the_window() {
+        // The card is a window of minutes, not a growing log: without an emitter-side end event a
+        // finished turn would keep claiming "turno en marcha" until five newer ones pushed it out.
+        let mut s=State::new("p".into(),std::path::PathBuf::from("/tmp"));
+        let now=1_000_000_000_000u64;
+        for (type_,body,ts) in [("working","turno en marcha",now-AGENT_EVENT_TTL_MS-1),("idle","turno terminado",now-AGENT_EVENT_TTL_MS+1),("note","sin hora",0)] {
+            apply(&mut s,Event::AgentEvent(serde_json::json!({"type":type_,"text":body,"ts":ts})));
+        }
+        assert!(s.expire_agent_events(now),"algo venció: el reloj pide un redibujo");
+        assert_eq!(s.agent_events.len(),1,"se va el vencido y el que no se puede fechar; el del borde se queda");
+        assert_eq!(text(&s.agent_events[0],"text"),"turno terminado");
+        assert!(!s.expire_agent_events(now),"sin vencimientos nuevos no se redibuja");
     }
     #[test]
     fn profile_pin_reports_both_stale_layers_without_masking_winner() {
