@@ -5,8 +5,9 @@
  * (/tmp/gs3-profile-<uid>-<pane>.sock) and sends no text or keys to the agent
  * pane: a profile click loads the profile through this socket instead of
  * typing a command into the chat. The pane id arrives as the gs3-herdr-pane
- * flag registered by the herdr-session bridge; without it there is no rail to
- * serve and the extension stays dormant.
+ * command-line argument (the flag is owned by the herdr-session bridge and
+ * read here straight from argv); without it there is no rail to serve and
+ * the extension stays dormant.
  *
  * Protocol: one JSON request per connection, one JSON reply per line.
  *   {"id":..,"method":"get","params":{}}
@@ -76,6 +77,30 @@ function bindingsStore(): Map<string, unknown> | undefined {
 	return value instanceof Map ? (value as Map<string, unknown>) : undefined;
 }
 
+/**
+ * The pane id the gs3 launcher passed as --gs3-herdr-pane. The herdr-session bridge owns that
+ * flag's registration; registering it here too is a loader conflict (resource-loader's
+ * detectExtensionConflicts reports two extensions registering one flag as an error), and
+ * getFlag would hide the value anyway (loader.js: a flag is only visible to the extension
+ * that registered it). The value therefore comes straight from the command line the launcher
+ * built, stopping at the "--" separator so a user argument can never pose as a pane.
+ */
+function paneFromArgv(argv: readonly string[] = process.argv): string | undefined {
+	for (let i = 0; i < argv.length; i++) {
+		const arg = argv[i]!;
+		if (arg === "--") return undefined;
+		if (arg === "--gs3-herdr-pane") {
+			const value = argv[i + 1];
+			return typeof value === "string" && value.length > 0 && value !== "--" ? value : undefined;
+		}
+		if (arg.startsWith("--gs3-herdr-pane=")) {
+			const value = arg.slice("--gs3-herdr-pane=".length);
+			return value.length > 0 ? value : undefined;
+		}
+	}
+	return undefined;
+}
+
 function socketPath(pane: string): string {
 	return join(SOCKET_BASE, `gs3-profile-${process.getuid()}-${pane}.sock`);
 }
@@ -109,12 +134,9 @@ function pushAgentEvent(pane: string, type: "blocked" | "working" | "idle" | "no
 }
 
 export default function profileChannelExtension(pi: ExtensionAPI): void {
-	// getFlag only sees flags the *calling* extension registered (loader.js:
-	// `if (!extension.flags.has(name)) return undefined`). The bridge registers
-	// gs3-herdr-pane too; registering it here as well is a merge, not a conflict
-	// (the runner deduplicates first-wins), and it is what makes the CLI value
-	// readable from this extension.
-	pi.registerFlag("gs3-herdr-pane", { type: "string", description: "agent pane the gs3 rail watches (set by the gs3 launcher)" });
+	// The bridge owns the gs3-herdr-pane flag; this extension registers nothing of its own
+	// (a second registration is the loader conflict this file used to trigger) and reads the
+	// pane from argv instead.
 	let server: net.Server | undefined;
 	let serving = "";
 	let sessionId: string | undefined;
@@ -287,13 +309,7 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 				return false;
 			}
 		};
-		let pane: string | undefined;
-		try {
-			const flag = pi.getFlag("gs3-herdr-pane");
-			pane = typeof flag === "string" && flag.length > 0 ? flag : undefined;
-		} catch {
-			pane = undefined;
-		}
+		const pane = paneFromArgv();
 		if (pane === undefined) return;
 		start(pane);
 	});
@@ -302,13 +318,7 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 		description: "Send a note to the gs3 rail: /gs3 note <text>",
 		handler: (args, ctx) => {
 			const text = (args ?? "").trim().replace(/^note\s+/i, "");
-			let pane: string | undefined;
-			try {
-				const flag = pi.getFlag("gs3-herdr-pane");
-				pane = typeof flag === "string" && flag.length > 0 ? flag : undefined;
-			} catch {
-				pane = undefined;
-			}
+			const pane = paneFromArgv();
 			if (pane === undefined) { ctx.ui.notify("gs3: no hay rail asociado a esta sesión.", "warning"); return; }
 			if (text.length === 0) { ctx.ui.notify("gs3: usá /gs3 note <texto>.", "info"); return; }
 			void pushAgentEvent(pane, "note", text, undefined).then((sent) => {
@@ -318,36 +328,18 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 	});
 	// The herdr integration already knows when the session blocks; forward it verbatim.
 	pi.events.on("herdr:blocked", (data: { active?: boolean; label?: string } | undefined) => {
-		let pane: string | undefined;
-		try {
-			const flag = pi.getFlag("gs3-herdr-pane");
-			pane = typeof flag === "string" && flag.length > 0 ? flag : undefined;
-		} catch {
-			pane = undefined;
-		}
+		const pane = paneFromArgv();
 		if (pane === undefined) return;
 		void pushAgentEvent(pane, data?.active ? "blocked" : "idle", data?.label ?? (data?.active ? "esperando aprobación" : "desbloqueado"), undefined);
 	});
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx?.mode !== "tui") return;
-		let pane: string | undefined;
-		try {
-			const flag = pi.getFlag("gs3-herdr-pane");
-			pane = typeof flag === "string" && flag.length > 0 ? flag : undefined;
-		} catch {
-			pane = undefined;
-		}
+		const pane = paneFromArgv();
 		if (pane !== undefined) void pushAgentEvent(pane, "idle", "sesión iniciada", undefined);
 	});
 	pi.on("agent_start", (_event, ctx) => {
 		if (ctx?.mode !== "tui") return;
-		let pane: string | undefined;
-		try {
-			const flag = pi.getFlag("gs3-herdr-pane");
-			pane = typeof flag === "string" && flag.length > 0 ? flag : undefined;
-		} catch {
-			pane = undefined;
-		}
+		const pane = paneFromArgv();
 		if (pane !== undefined) void pushAgentEvent(pane, "working", "turno en marcha", undefined);
 	});
 	pi.on("session_shutdown", () => stop());

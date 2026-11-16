@@ -30,8 +30,9 @@ const PANE = "w9:pZ";
 // Kept short on purpose: unix socket paths cap near 104 bytes, and an isolated runner points this
 // at its own short scratch directory through the same variable the extension reads.
 const SOCKET_BASE = process.env.GS3_PROFILE_SOCKET_DIR || "/tmp";
-const SOCKET = join(SOCKET_BASE, `gs3-profile-${process.getuid()}-${PANE}.sock`);
 process.env.GS3_PROFILE_SOCKET_DIR = SOCKET_BASE;
+const socketOf = (pane) => join(SOCKET_BASE, `gs3-profile-${process.getuid()}-${pane}.sock`);
+const SOCKET = socketOf(PANE);
 
 function request(payload) {
   return new Promise((resolve, reject) => {
@@ -75,9 +76,9 @@ const BINDINGS = Symbol.for("gentle-pi:session-profile-bindings");
 globalThis[BINDINGS] = new Map();
 
 const handlers = {};
-// The CLI value, as pi's runtime.flagValues would hold it after the launcher
-// passed --gs3-herdr-pane (the bridge registers the same flag; pi merges).
-const flags = new Map([["gs3-herdr-pane", PANE]]);
+// The gs3 launcher passes the pane as a CLI argument before any "--" separator; the bridge
+// owns the flag registration, so the extension reads the value straight from argv.
+process.argv = ["node", "agent", "--gs3-herdr-pane", PANE];
 const registered = new Set();
 const commands = new Set();
 const setModelCalls = [];
@@ -85,8 +86,8 @@ const fakePi = {
   // The extension registers a command and subscribes to events now that it also pushes to the rail.
   registerCommand: (name) => { commands.add(name); },
   events: { on: () => {} },
-  registerFlag: (name, options) => { registered.add(name); if (!flags.has(name)) flags.set(name, options?.default); },
-  getFlag: (name) => (registered.has(name) ? flags.get(name) : undefined),
+  registerFlag: (name) => { registered.add(name); },
+  getFlag: () => undefined,
   on: (event, handler) => { (handlers[event] ??= []).push(handler); },
   setModel: async (model) => { setModelCalls.push(model); return true; },
 };
@@ -99,9 +100,10 @@ try {
   const install = await loadExtension();
   check("extension default export is a function", typeof install === "function");
   install(fakePi);
-  // getFlag only sees flags the calling extension registered (loader.js), so the
-  // extension must register gs3-herdr-pane itself even though the bridge does too.
-  check("extension registers the pane flag itself", registered.has("gs3-herdr-pane"));
+  // The herdr-session bridge owns the gs3-herdr-pane flag; a second registration is a loader
+  // conflict ("Flag \"--gs3-herdr-pane\" conflicts with ..."), so this extension registers
+  // nothing and reads the launcher's argument from argv instead.
+  check("extension registers no flags", registered.size === 0, [...registered].join(", "));
   check("extension registers the /gs3 command", commands.has("gs3"));
 
   const model = { provider: "provider", id: "alpha-host" };
@@ -164,6 +166,21 @@ try {
   await fire("session_shutdown", ctx);
   await new Promise((resolve) => setTimeout(resolve, 150));
   check("socket removed after session_shutdown", !existsSync(SOCKET));
+
+  // A pane id after the "--" separator is a user argument, never a binding: dormant.
+  process.argv = ["node", "agent", "--", "--gs3-herdr-pane", "w9:pX"];
+  await fire("session_start", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  check("dormant when the pane only appears after --", !existsSync(socketOf("w9:pX")));
+
+  // The equals form is accepted too.
+  process.argv = ["node", "agent", "--gs3-herdr-pane=w9:pY"];
+  await fire("session_start", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  check("equals form starts the channel", existsSync(socketOf("w9:pY")));
+  await fire("session_shutdown", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  check("equals-form socket removed after shutdown", !existsSync(socketOf("w9:pY")));
 } catch (error) {
   failed += 1;
   console.log(`FAIL harness crashed: ${error?.stack ?? error}`);
