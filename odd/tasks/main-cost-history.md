@@ -14,13 +14,14 @@ F2 agrega gasto por sesión y por día, tendencia de contexto y una card nueva e
 
 | ID | Specs | Ruta | Commit |
 |----|-------|------|--------|
-| T1 | S2 | core: `Tail` conserva `(timestamp, totalTokens)` de los últimos 24 turnos + cuenta `type:"compaction"` | |
-| T2 | S1 | sources: `session_costs` lee los `.jsonl` hermanos (≤30, sin symlinks) y agrega costo por sesión y por día | |
-| T3 | S2, S3 | ui: card "Historial" en MAIN — hoy/7d/sesiones recientes, sparkline de ctx, compactaciones | |
-| T4 | S4 | HELP + `docs/tabs.md` + `gs3/hud/README.md` + `CHANGELOG.md` | |
-| T5 | S1–S4 | suite completa (`cd gs3/hud && CARGO_TARGET_DIR=../../target cargo test`), merge ff-only a main y push | |
+| T1 | S2 | core: `Tail` conserva `(timestamp, totalTokens)` de los últimos 24 turnos + cuenta `type:"compaction"` | c126aba |
+| T2 | S1 | sources: `session_costs` lee los `.jsonl` hermanos (≤30, sin symlinks) y agrega costo por sesión y por día | 4ddd216 |
+| T3 | S2, S3 | ui: card "Historial" en MAIN — hoy/7d/sesiones recientes, sparkline de ctx, compactaciones | 6f0ea9c |
+| T4 | S4 | HELP + `docs/tabs.md` + `gs3/hud/README.md` + `CHANGELOG.md` | b950dbc |
+| T5 | S1–S4 | suite completa (`cd gs3/hud && CARGO_TARGET_DIR=../../target cargo test`), merge ff-only a main y push | ver L3 (cierre) |
 
 ## Log
 
 - L1 (pedido original, verbatim): «TAREA AHORA: F2 · MAIN — histórico de costo y contexto. La pestaña MAIN ya muestra ctx % y costo del momento (state.session) pero no historia. Agregar: - gasto por sesión y por día (los .jsonl de sesión que el rail ya lee en sources.rs traen usage), - tendencia de contexto (últimos N turnos / compactaciones contadas), - una card nueva en MAIN, sólo lectura, sin escribir nada fuera de --config.»
 - L2 (evidencia, 2026-11-16): toda línea del `.jsonl` trae `timestamp` ISO; los `assistant` traen `usage.cost.total`; las compactaciones se persisten como `type:"compaction"` con `tokensBefore` (pi dist/core/session-manager.js:893). Directorio de sesiones actual: 30 `.jsonl` hermanos.
+- L3 (cierre, 2026-11-16): suite final 209 passed, 2 ignored, 0 failed (204 previos + 5 nuevos: `tail_keeps_recent_turn_samples_and_counts_compactions`, `epoch_day_maps_iso_dates_to_epoch_days`, `session_costs_group_spend_by_session_and_day`, `session_costs_read_only_the_thirty_newest_files`, `historial_card_shows_spend_days_trend_and_compactions`). RDD off para este clone (defecto nativo rctx2): F2 se entrega con tests reales + docs y sin recibo. Cambios previos sin commitear de otra tarea (`.pi/extensions/profile-server.ts`, `scripts/tests/profile-server.mjs`) quedaron fuera de la rama.
