@@ -491,7 +491,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
         && 7 <= scroll_hint.saturating_add(view_hint)
         && crate::cover::ready(s.media.spotify.cover_url.as_deref(), s.media.spotify.cover_png.as_deref(), true, true);
     match ui.tab {
-        Tab::Main => { voice_row(&mut body, s.voice, cw, ui.config.plain_controls); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); if let Some(c) = agent_events_card(s, cw) { body.push(ui, c); } }
+        Tab::Main => { voice_row(&mut body, s.voice, cw, ui.config.plain_controls); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); if let Some(c) = agent_events_card(s, cw) { body.push(ui, c); } if let Some(c) = history_card(s, cw) { body.push(ui, c); } }
         Tab::Git => { body.push(ui, git_card(s, cw)); if let Some(c) = commit_card(s, cw) { body.push(ui, c); } body.push(ui, changes_card(s, cw)); body.push(ui, worktree_card(s, cw)); body.push(ui, pr_card(s, cw)); }
         Tab::Prof => { if let Some(c) = health_card(s, cw) { body.push(ui, c); } if let Some(c) = profile_store_card(s, cw) { body.push(ui, c); } body.push(ui, profiles_card(s, cw)); }
         Tab::Mem => { for c in [engram_card(s, cw), handoff_card(s, cw), stack_card(s, cw), tools_card(s, cw), mcp_card(s, cw)] { body.push(ui, c); } }
@@ -668,6 +668,43 @@ fn agent_events_card(s: &State, w: usize) -> Option<Card> {
         let age = if ts == 0 || now < ts { String::new() } else { format!("hace {}", elapsed(now - ts)) };
         let right = if age.is_empty() { vec![] } else { vec![seg(age, Dim)] };
         c.row(vec![seg(format!("{glyph} "), tone), seg(body, Text)], right);
+    }
+    Some(c)
+}
+/// MAIN · Historial: spend by session and by day plus the context trend — read-only, everything
+/// it shows was already read from the session files. No card until the session directory was
+/// read (`state.costs`), so a rail without a session stays as it was.
+fn history_card(s: &State, w: usize) -> Option<Card> {
+    use Tone::*;
+    let costs = s.costs.as_ref()?;
+    let mut c = Card::new("historial", mark("Historial", PinkBright), w);
+    c.row(vec![seg("gasto ", Muted), seg("hoy", Gold)], vec![seg(fmt_cost(costs.today), Text)]);
+    c.row(vec![seg("· 7 días", Gold)], vec![seg(fmt_cost(costs.week), Text)]);
+    // Context trend: one bar per recent turn, low→high, drawn with block glyphs over the
+    // whole row the gauge already made familiar. No samples: said, not drawn.
+    if s.session.turns.is_empty() {
+        c.row(vec![seg("ctx sin tendencia", Dim)], vec![]);
+    } else {
+        let cells = w.saturating_sub(4);
+        let max = s.session.turns.iter().map(|(_, n)| *n as f64).fold(1.0_f64, f64::max);
+        let levels: Vec<usize> = s.session.turns.iter().map(|(_, n)| ((*n as f64) / max * 7.0).round() as usize).collect();
+        // One level per glyph: ▁▂▃▄▅▆█ (8 levels, index 1..=7).
+        const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+        let mut spark = String::new();
+        for lvl in levels { spark.push(BARS[lvl.clamp(1, 7)]); }
+        let spark = truncate(&spark, cells);
+        let right = if s.session.compactions > 0 { vec![seg(format!("compactaciones {}", s.session.compactions), Dim)] } else { vec![] };
+        c.row(vec![seg("ctx ", Muted), seg(spark, Cyan)], right);
+    }
+    // Sessions, newest first: the day without its year (the card is recent history) and
+    // what each one cost.
+    let inner = w.saturating_sub(4);
+    let shown = s.session.turns.is_empty() || inner >= 14;
+    if shown {
+        for sc in costs.sessions.iter().take(6) {
+            let day = sc.day.get(5..).unwrap_or(sc.day.as_str());
+            c.row(vec![seg(format!("sesión {day}"), Text)], vec![seg(fmt_cost(sc.cost), Muted)]);
+        }
     }
     Some(c)
 }
@@ -2619,6 +2656,41 @@ mod tests {
         let gauge = find(&l, "▰"); assert_eq!(gauge.matches('▰').count() + gauge.matches('▱').count(), 36);
         assert!(find(&l, "▲ 33.7k in").contains("▼ 14.4k out") && find(&l, "▲ 33.7k in").contains("Cost $0.250"));
         find(&on(&s, Tab::Tree, 42), "Escaneando…");
+    }
+    #[test]
+    fn historial_card_shows_spend_days_trend_and_compactions() {
+        let mut s = sample();
+        // No session directory read yet: no card, the tab stays as it was.
+        assert!(!on(&s, Tab::Main, 42).iter().any(|l| l.contains("Historial")));
+        s.costs = Some(Costs { today: 0.75, week: 1.75, sessions: vec![
+            SessionCost { day: "2026-11-16".into(), cost: 0.75 },
+            SessionCost { day: "2026-11-14".into(), cost: 1.0 },
+            SessionCost { day: "2026-10-01".into(), cost: 5.0 },
+        ]});
+        s.session.turns = vec![("2026-11-16T04:00:00Z".into(), 10_000), ("2026-11-16T04:01:00Z".into(), 300_000), ("2026-11-16T04:02:00Z".into(), 120_000)];
+        s.session.compactions = 2;
+        let l = on(&s, Tab::Main, 42);
+        assert!(find(&l, "⌁ Historial").starts_with(" ╔═ ⌁ Historial"));
+        assert!(find(&l, "hoy").contains("$0.750"), "today spend: {:?}", find(&l, "hoy"));
+        assert!(find(&l, "7 días").contains("$1.75"), "week spend: {:?}", find(&l, "7 días"));
+        // The context trend: a sparkline of the recent turns plus the compaction count.
+        let trend = l.iter().find(|x| x.contains("ctx")).expect("trend row");
+        assert!(trend.contains("█") && trend.chars().any(|ch| "▁▂▃▄▅▆▇".contains(ch)), "sparkline glyphs: {trend:?}");
+        assert!(find(&l, "compactaciones").contains("2"));
+        // Sessions, newest first, day shortened and cost with the card's own format.
+        assert!(find(&l, "11-16").contains("$0.750"));
+        assert!(find(&l, "11-14").contains("$1.00"));
+        assert!(find(&l, "10-01").contains("$5.00"));
+        // No turn samples: no sparkline row, the card says so instead of drawing nothing.
+        s.session.turns.clear();
+        let l = on(&s, Tab::Main, 42);
+        assert!(!l.iter().any(|x| x.contains("▁")));
+        find(&l, "sin tendencia");
+        // Collapsed like every card: the toggle keeps its id.
+        s.ui.config.collapsed.push("historial".into());
+        let l = on(&s, Tab::Main, 42);
+        assert_eq!(l.iter().filter(|x| x.contains("⌁ Historial")).count(), 1);
+        assert!(!l.iter().any(|x| x.contains("$0.750")), "collapsed shows no rows");
     }
     fn tree_sample() -> State {
         let mut s = git_sample(); s.ui.tab = Tab::Tree;
