@@ -89,19 +89,23 @@ function reply(socket: net.Socket, payload: Record<string, unknown>): void {
  * extension connects, writes one JSON line and closes. A missing rail or a failed connect is
  * silent on purpose: the channel is a nicety, it must never disturb the session.
  */
-function pushAgentEvent(pane: string, type: "blocked" | "working" | "idle" | "note", text: string, socket: net.Socket | undefined): void {
-	if (socket) return;
+function pushAgentEvent(pane: string, type: "blocked" | "working" | "idle" | "note", text: string, socket: net.Socket | undefined): Promise<boolean> {
+	if (socket) return Promise.resolve(false);
 	const base = process.env.GS3_AGENT_EVENT_DIR?.trim() || "/tmp";
 	const path = join(base, `gs3-agent-${process.getuid()}-${pane}.sock`);
-	try {
+	// The caller decides what a failed delivery means: hooks stay silent, an explicit command
+	// tells the human the truth.
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (ok: boolean) => { if (settled) return; settled = true; clearTimeout(timer); client.destroy(); resolve(ok); };
 		const client = net.createConnection(path);
-		client.on("error", () => client.destroy());
+		const timer = setTimeout(() => finish(false), 500);
+		client.on("error", () => finish(false));
+		client.on("close", () => finish(false));
 		client.on("connect", () => {
-			client.end(`${JSON.stringify({ type, text, ts: Date.now() })}\n`);
+			client.write(`${JSON.stringify({ type, text, ts: Date.now() })}\n`, () => finish(true));
 		});
-	} catch {
-		// The rail is not running or the socket moved: nothing to report.
-	}
+	});
 }
 
 export default function profileChannelExtension(pi: ExtensionAPI): void {
@@ -307,8 +311,9 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 			}
 			if (pane === undefined) { ctx.ui.notify("gs3: no hay rail asociado a esta sesión.", "warning"); return; }
 			if (text.length === 0) { ctx.ui.notify("gs3: usá /gs3 note <texto>.", "info"); return; }
-			pushAgentEvent(pane, "note", text, undefined);
-			ctx.ui.notify("gs3: nota enviada al rail.", "info");
+			void pushAgentEvent(pane, "note", text, undefined).then((sent) => {
+				ctx.ui.notify(sent ? "gs3: nota enviada al rail." : "gs3: el rail no está escuchando; la nota no llegó.", sent ? "info" : "warning");
+			});
 		},
 	});
 	// The herdr integration already knows when the session blocks; forward it verbatim.
@@ -321,7 +326,18 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 			pane = undefined;
 		}
 		if (pane === undefined) return;
-		pushAgentEvent(pane, data?.active ? "blocked" : "idle", data?.label ?? (data?.active ? "esperando aprobación" : "desbloqueado"), undefined);
+		void pushAgentEvent(pane, data?.active ? "blocked" : "idle", data?.label ?? (data?.active ? "esperando aprobación" : "desbloqueado"), undefined);
+	});
+	pi.on("session_start", (_event, ctx) => {
+		if (ctx?.mode !== "tui") return;
+		let pane: string | undefined;
+		try {
+			const flag = pi.getFlag("gs3-herdr-pane");
+			pane = typeof flag === "string" && flag.length > 0 ? flag : undefined;
+		} catch {
+			pane = undefined;
+		}
+		if (pane !== undefined) void pushAgentEvent(pane, "idle", "sesión iniciada", undefined);
 	});
 	pi.on("agent_start", (_event, ctx) => {
 		if (ctx?.mode !== "tui") return;
@@ -332,7 +348,7 @@ export default function profileChannelExtension(pi: ExtensionAPI): void {
 		} catch {
 			pane = undefined;
 		}
-		if (pane !== undefined) pushAgentEvent(pane, "working", "turno en marcha", undefined);
+		if (pane !== undefined) void pushAgentEvent(pane, "working", "turno en marcha", undefined);
 	});
 	pi.on("session_shutdown", () => stop());
 }

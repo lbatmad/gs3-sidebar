@@ -79,8 +79,12 @@ const handlers = {};
 // passed --gs3-herdr-pane (the bridge registers the same flag; pi merges).
 const flags = new Map([["gs3-herdr-pane", PANE]]);
 const registered = new Set();
+const commands = new Set();
 const setModelCalls = [];
 const fakePi = {
+  // The extension registers a command and subscribes to events now that it also pushes to the rail.
+  registerCommand: (name) => { commands.add(name); },
+  events: { on: () => {} },
   registerFlag: (name, options) => { registered.add(name); if (!flags.has(name)) flags.set(name, options?.default); },
   getFlag: (name) => (registered.has(name) ? flags.get(name) : undefined),
   on: (event, handler) => { (handlers[event] ??= []).push(handler); },
@@ -98,6 +102,7 @@ try {
   // getFlag only sees flags the calling extension registered (loader.js), so the
   // extension must register gs3-herdr-pane itself even though the bridge does too.
   check("extension registers the pane flag itself", registered.has("gs3-herdr-pane"));
+  check("extension registers the /gs3 command", commands.has("gs3"));
 
   const model = { provider: "provider", id: "alpha-host" };
   const ctx = {

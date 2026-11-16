@@ -720,24 +720,68 @@ pub fn parse_agent_event(line:&str)->Option<Value> {
 pub fn agent_events(socket:PathBuf,tx:Sender<crate::core::Event>) {
     thread::spawn(move||{
         let _=fs::remove_file(&socket);
-        let listener=match std::os::unix::net::UnixListener::bind(&socket) {
-            Ok(l)=>l,
-            Err(_)=>{let _=tx.send(crate::core::Event::AgentChannelDown); return}
-        };
+        // 0600 from the first byte: bound under a restrictive umask, so no window exists between
+        // bind and chmod in which another user could connect and stay connected.
+        let previous=process_umask(0o077);
+        let listener=std::os::unix::net::UnixListener::bind(&socket);
+        process_umask(previous);
+        let listener=match listener {Ok(l)=>l,Err(_)=>{let _=tx.send(crate::core::Event::AgentChannelDown); return}};
         use std::os::unix::fs::PermissionsExt;
-        let _=fs::set_permissions(&socket,fs::Permissions::from_mode(0o600));
+        if fs::set_permissions(&socket,fs::Permissions::from_mode(0o600)).is_err() {
+            let _=tx.send(crate::core::Event::AgentChannelDown);
+            return;
+        }
+        // Two connections are plenty for one rail; a third waits its turn instead of adding a
+        // thread nobody asked for.
+        let slots=std::sync::Arc::new(std::sync::Mutex::new(0usize));
         for stream in listener.incoming().flatten() {
-            let tx=tx.clone();
+            // Admission is the socket mode (0600 from the bind, under a 0077 umask): on this
+            // toolchain there is no stable peer-credential call, and the mode is what actually
+            // keeps another user out.
+            {
+                let mut open=slots.lock().unwrap();
+                if *open>=2 {continue}
+                *open+=1;
+            }
+            let tx=tx.clone(); let slots=slots.clone();
             thread::spawn(move||{
-                let mut reader=BufReader::new(stream);
-                for line in reader.by_ref().lines() {
-                    let Ok(line)=line else {break};
-                    if let Some(event)=parse_agent_event(&line) {let _=tx.send(crate::core::Event::AgentEvent(event));}
-                }
+                // A stolen or idle connection must not hold a thread forever.
+                let _=stream.set_read_timeout(Some(Duration::from_secs(30)));
+                read_agent_lines(stream,&tx);
+                let mut open=slots.lock().unwrap(); *open=open.saturating_sub(1);
             });
         }
     });
 }
+/// Read at most 4096 bytes per line *while reading*: an unterminated line is cut at the limit and
+/// dropped, so a client cannot grow the rail's memory by never sending a newline.
+fn read_agent_lines(stream:std::os::unix::net::UnixStream,tx:&Sender<crate::core::Event>) {
+    let mut reader=std::io::BufReader::new(stream);
+    loop {
+        let mut buf=Vec::new();
+        let mut chunk=[0u8;1024];
+        let mut too_long=false;
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0)=>break,
+                Ok(n)=>{
+                    if buf.len()+n>4096 {too_long=true; break}
+                    buf.extend_from_slice(&chunk[..n]);
+                    if chunk[..n].contains(&b'\n') {break}
+                }
+                Err(_)=>return,
+            }
+        }
+        if buf.is_empty() && !too_long {return}
+        if too_long {return}
+        let line=String::from_utf8_lossy(&buf);
+        // One read may carry several lines: each is judged on its own.
+        for part in line.split('\n').filter(|l|!l.trim().is_empty()) {
+            if let Some(event)=parse_agent_event(part) {let _=tx.send(crate::core::Event::AgentEvent(event));}
+        }
+    }
+}
+fn process_umask(mask:u32)->u32 {extern "C" {fn umask(mask:u32)->u32;} unsafe {umask(mask)}}
 pub fn pane(socket:&Path,id:&str)->Result<Option<Value>> {
     let found=match request(socket,"pane.get",json!({"pane_id":id})) {
         Ok(v) if v["pane"].is_object()=>Some(v["pane"].clone()),
@@ -1071,8 +1115,13 @@ mod tests {
         let socket=dir.join("a.sock");
         let (tx,rx)=mpsc::channel::<crate::core::Event>();
         agent_events(socket.clone(),tx);
-        thread::sleep(Duration::from_millis(120));
-        let mut client=UnixStream::connect(&socket).unwrap();
+        // Wait for readiness, never for a fixed delay: a slow worker must not fail this test.
+        let mut client=None;
+        for _ in 0..100 {
+            if let Ok(stream)=UnixStream::connect(&socket) {client=Some(stream); break}
+            thread::sleep(Duration::from_millis(10));
+        }
+        let mut client=client.expect("el listener no abrió el socket");
         writeln!(client,"{}",json!({"type":"working","text":"turno en marcha","ts":1})).unwrap();
         drop(client);
         let event=loop {
