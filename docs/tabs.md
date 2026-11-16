@@ -62,9 +62,13 @@ barra (lo dice en la fila) y ninguna ruta fuera del repositorio se acepta.
 Arriba de todo, **⌁ Salud del ruteo** dice qué no puede resolver la configuración: una capa de pin
 (pin de clon o declaración del repo) que nombra un perfil que el store ya no tiene, un perfil de
 sesión cuyo nombre desapareció del store, y cada rol configurado sin modelo utilizable. Una fila por
-aviso, con el conteo en el título, y debajo de cada uno la salida concreta (`publish <nombre>`, elegir
-otro perfil en la sesión, abrir la pantalla de perfiles). Cuando no hay nada roto queda una sola fila
-`✔ ruteo consistente`. La tarjeta es **sólo lectura**: informa y nombra la salida, no escribe el
+aviso, con el conteo en el título, y debajo de cada uno la salida que **de verdad** lo arregla:
+recrear el perfil faltante (o quitar el pin), elegir otro perfil de sesión, abrir la pantalla de
+perfiles. Los roles que se juzgan son los que resuelven: con un perfil de sesión cargado se miran
+sus modelos, no los globales — así no se avisa de un rol que la sesión ya resuelve ni se calla uno
+que la sesión pierde. Cuando no hay nada roto queda una sola fila `✔ ruteo consistente`; si el store
+no se puede leer, la tarjeta lo dice (`sin evaluar`) en vez de declarar un ruteo sano que no pudo
+comprobar. La tarjeta es **sólo lectura**: informa y nombra la salida, no escribe el
 store, ni los pins, ni el routing, y no ejecuta ninguna de esas acciones.
 
 Cuando el store de perfiles tiene **más de uno**, una primera tarjeta **⌁ Perfiles** los lista: una fila por perfil con su nombre, la cantidad de roles que enruta y el modelo que le da al host (`orchestrator`) cuando lo configura; el perfil marcado como `active` en el store lleva `●` (un `active` huérfano no marca nada) y el perfil cuyo **pin** gana en este repositorio lleva `▣` (marca cuadrada: lo que el repositorio pide, frente al círculo del store). El perfil **cargado en la sesión** lleva `◉`: un clic en un perfil con nombre enviable lo carga por el **canal de sesión** — la extensión `profile-server` del proceso Pi escucha `/tmp/gs3-profile-<uid>-<pane>.sock` (0600, base fija `/tmp` porque el shell bundleado reconstruye `TMPDIR`) y el clic le envía un único pedido JSON `use` con el nombre como dato: **nada se tipea en el chat del agente**. El perfil queda atado a la sesión actual (el mismo mecanismo que «Use in this session» de `/gentle:profiles`), y si tiene ruta de `orchestrator` el modelo vivo cambia; el rail sigue sin escribir configuración (el binding vive en la memoria del proceso Pi). Los clics repetidos dentro de 1 segundo se descartan. La declaración del repositorio (`.pi/gentle-ai/profile.json`) y el pin de clon se vigilan (debounce 300 ms) y la card anuncia qué perfil gana para los lanzamientos de subagentes (`▣ subagentes: …`) y cuál está cargado en la sesión (`◉ sesión: …`). Con un solo perfil no hay nada que elegir y la tarjeta no aparece; con un nombre no enviable (regla `isValidProfileName` de Pi) el clic queda en selección visual. Abrir la pantalla completa sigue siendo tarea de la fila `▸ /gentle:profiles`.

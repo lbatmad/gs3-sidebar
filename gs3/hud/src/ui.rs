@@ -1192,6 +1192,13 @@ fn tree_card(s: &State, w: usize) -> Card {
 fn health_card(s: &State, w: usize) -> Option<Card> {
     use Tone::*;
     let r = s.roster.as_ref()?;
+    // No readable store means no judge: "clean" would be a claim the rail cannot support.
+    if r.store_missing {
+        let mut c = Card::new("prof-health", [mark("Salud del ruteo", Gold), vec![seg(" · sin evaluar", Dim)]].concat(), w);
+        c.row(vec![seg("◌ store de perfiles ilegible", Yellow)], vec![seg("no se puede evaluar", Dim)]);
+        c.row(vec![seg("  ▸ revisá la ruta del store configurado", Dim)], vec![]);
+        return Some(c);
+    }
     let known = |name: &str| r.profiles.iter().any(|p| p.name == name);
     // Each issue is a compact row plus an optional exit row: at 36 columns the whole sentence
     // does not fit beside its remedy, and a truncated warning is not a warning.
@@ -1201,7 +1208,9 @@ fn health_card(s: &State, w: usize) -> Option<Card> {
         issues.push((
             vec![seg("▣ ", Cyan), seg(format!("pin {layer}: {name}"), Text)],
             vec![seg("no está en el store", Coral)],
-            Some(format!("publish {name}")),
+            // `publish` republishes a declaration; it does not restore a missing profile, so the
+            // exit is the one that actually fixes the orphan: recreate it, or drop the pin.
+            Some(format!("recreá {name} en la pantalla de perfiles, o quitá el pin")),
         ));
     }
     // A session binding whose profile left the store renders an empty map otherwise.
@@ -1215,8 +1224,23 @@ fn health_card(s: &State, w: usize) -> Option<Card> {
             ));
         }
     }
-    // A configured role with no usable model is reported, never guessed from a sibling.
-    let missing: Vec<&str> = r.agents.iter().filter(|a| a.model.is_empty()).map(|a| a.name.as_str()).collect();
+    // A role with no usable model is reported, never guessed from a sibling — and the roles
+    // judged are the ones that actually resolve: the session profile's map when one is loaded,
+    // the global assignments otherwise. Judging the global roster under a session profile would
+    // warn about roles the session already resolves, or stay quiet about roles it loses.
+    let mut missing: Vec<String> = Vec::new();
+    match s.profile_channel.as_ref().and_then(|o| o.as_ref()) {
+        Some(profile) => {
+            let models = &session_profile(profile)["models"];
+            if let Some(entries) = models.as_object() {
+                for (role, route) in entries {
+                    if role == "orchestrator" { continue }
+                    if route["model"].as_str().unwrap_or("").is_empty() { missing.push(role.clone()); }
+                }
+            }
+        }
+        None => { for a in r.agents.iter().filter(|a| a.model.is_empty()) { missing.push(a.name.clone()); } }
+    }
     for name in &missing {
         issues.push((
             // `rol <nombre>` keeps this row from reading like the roster row of the same role.
@@ -2821,12 +2845,30 @@ mod tests {
         let l = on(&s, Tab::Prof, 60);
         assert!(l.iter().any(|x| x.contains("Salud del ruteo") && x.contains("2 avisos")), "el título cuenta los avisos: {l:#?}");
         assert!(l.iter().any(|x| x.contains("pin clon: fantasma") && x.contains("no está en el store")), "el pin huérfano se nombra");
-        assert!(l.iter().any(|x| x.contains("publish fantasma")), "y su salida");
+        assert!(l.iter().any(|x| x.contains("recreá fantasma")), "y la salida que de verdad lo arregla, no `publish`");
         assert!(l.iter().any(|x| x.contains("rol review-risk") && x.contains("sin modelo")), "el rol sin modelo se cuenta");
         // A session profile that left the store would otherwise render an empty map as healthy.
         s.profile_channel = Some(Some(serde_json::json!({"name":"borrado","models":{}})));
         let l = on(&s, Tab::Prof, 60);
         assert!(l.iter().any(|x| x.contains("sesión: borrado") && x.contains("no está en el store")), "{l:#?}");
+        // The roles judged are the ones that resolve: with a session profile loaded, a role the
+        // profile resolves is not warned about even when the global roster lacks it.
+        s.profile_channel = Some(Some(serde_json::json!({"name":"uno","models":{"review-risk":{"model":"z/model"}}})));
+        let l = on(&s, Tab::Prof, 60);
+        assert!(!l.iter().any(|x| x.contains("rol review-risk")), "el perfil de sesión ya resuelve ese rol: {l:#?}");
+        // And a role the loaded profile does NOT resolve is warned about, even if the global
+        // roster has it.
+        s.profile_channel = Some(Some(serde_json::json!({"name":"uno","models":{"gentle-ai-explore":{"model":""}}})));
+        let l = on(&s, Tab::Prof, 60);
+        assert!(l.iter().any(|x| x.contains("rol gentle-ai-explore") && x.contains("sin modelo")), "el perfil de sesión pierde ese rol: {l:#?}");
+        // An unreadable store is not a clean routing: the card says it cannot judge.
+        s.profile_channel = None;
+        if let Some(r) = s.roster.as_mut() { r.store_missing = true; }
+        let l = on(&s, Tab::Prof, 60);
+        assert!(l.iter().any(|x| x.contains("Salud del ruteo") && x.contains("sin evaluar")), "el título dice que no se pudo evaluar: {l:#?}");
+        assert!(l.iter().any(|x| x.contains("store de perfiles ilegible")), "y la fila dice por qué");
+        assert!(!l.iter().any(|x| x.contains("ruteo consistente")), "un store ilegible nunca se reporta como sano");
+        if let Some(r) = s.roster.as_mut() { r.store_missing = false; }
         // Narrow widths keep every row inside the rail.
         for w in [36u16, 42, 60] { for row in on(&s, Tab::Prof, w) { assert!(row.width() <= usize::from(w), "{w} {row:?}"); } }
     }

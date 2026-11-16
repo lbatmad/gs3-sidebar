@@ -489,7 +489,7 @@ pub fn roster_of(session:&Path,cwd:&Path)->Option<Roster> {
     };
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_millis() as u64).unwrap_or(0);
     let mut r=configured_roster(roster(&settings,&agents,&tasks,now),models.as_ref(),source);
-    r.profiles=profiles(store.as_ref()); r.pinned=pinned; r.pin_stale=pin_stale;
+    r.profiles=profiles(store.as_ref()); r.pinned=pinned; r.pin_stale=pin_stale; r.store_missing=store.is_none();
     Some(r)
 }
 /// The session id inside a session log's name: the `<uuid>` tail after the last `_`. The same

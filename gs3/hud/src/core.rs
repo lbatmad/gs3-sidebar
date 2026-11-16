@@ -284,7 +284,10 @@ pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>
     pub profile_source:String, pub configured_host:Option<Agent>, pub profiles:Vec<Profile>, pub pinned:Option<String>,
     /// Pin layers that name a profile the store no longer has: `(capa, nombre)`. They never mask
     /// the winning layer; they are reported so an orphan pin stops being invisible.
-    pub pin_stale:Vec<(String,String)> }
+    pub pin_stale:Vec<(String,String)>,
+    /// True only when the profiles store could not be read: every routing judgement is then
+    /// unknown, which is not the same as a clean one. Default is the readable case.
+    pub store_missing:bool }
 /// One subagent: model/thinking from its frontmatter (`model`, `effort`/`thinking`), else its latest task, else the host.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Agent { pub name:String, pub model:String, pub thinking:String }
