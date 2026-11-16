@@ -14,7 +14,14 @@ pub struct Session {
     pub bash: u64, pub grep: u64, pub fetch: u64, pub search: u64, pub other: u64,
     /// Latest `todo` tool checklist (`details.gentleTodo.tasks` of its toolResult).
     pub todos: Vec<Todo>,
+    /// Context trend: `(timestamp, totalTokens)` of the last `TURN_SAMPLES` assistant turns, oldest first.
+    pub turns: Vec<(String, u64)>,
+    /// Entries of type `compaction` the log carried: the context was squeezed that many times.
+    pub compactions: u64,
 }
+/// How many recent turns the context trend keeps: enough to draw a sparkline, bounded so a
+/// long session never grows the rail's memory.
+pub const TURN_SAMPLES: usize = 24;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TodoStatus { #[default] Pending, InProgress, Done }
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -45,6 +52,7 @@ impl Tail {
                 "message" if text(&v["message"],"role")=="toolResult" && text(&v["message"],"toolName")=="todo" => {
                     if let Some(t)=v["message"]["details"]["gentleTodo"]["tasks"].as_array() {s.todos=todos(t);}
                 }
+                "compaction" => s.compactions+=1,
                 "message" if text(&v["message"],"role")=="assistant" => {
                     let m=&v["message"]; let u=&m["usage"];
                     for (key,dst) in [("input",&mut s.input),("output",&mut s.output),("cacheRead",&mut s.read),("cacheWrite",&mut s.write)] { *dst+=u[key].as_u64().unwrap_or(0); }
@@ -52,6 +60,9 @@ impl Tail {
                     s.cost+=u["cost"]["total"].as_f64().unwrap_or(0.0);
                     if let Some(m)=m["model"].as_str() {s.model=m.into();}
                     if let Some(p)=m["provider"].as_str() {s.provider=p.into();}
+                    // The context trend: the timestamp the entry itself carries, plus the tokens
+                    // of this turn. Kept oldest-first and bounded; unknown shapes are skipped.
+                    if let (Some(ts),Some(n))=(v["timestamp"].as_str(),u["totalTokens"].as_u64()) {s.turns.push((ts.into(),n)); let len=s.turns.len(); if len>TURN_SAMPLES {s.turns.drain(..len-TURN_SAMPLES);}}
                     for b in m["content"].as_array().into_iter().flatten().filter(|b|text(b,"type")=="toolCall") {
                         // Same buckets as the reference `recordToolCall`.
                         let name=text(b,"name").trim().to_lowercase(); if name.is_empty() {continue}
@@ -649,6 +660,24 @@ mod tests {
         assert_eq!((t.session.input,t.session.output,t.session.read,t.session.write,t.session.used,t.session.cost),(4,8,2,3,17,0.5));
         t.ingest(&line[20..], false); assert_eq!(t.session.input,8);
         t.ingest(line,true); assert_eq!(t.session.input,4);
+    }
+    #[test]
+    fn tail_keeps_recent_turn_samples_and_counts_compactions() {
+        let line = |ts: &str, tokens: u64| format!("{{\"type\":\"message\",\"timestamp\":\"{ts}\",\"message\":{{\"role\":\"assistant\",\"usage\":{{\"input\":1,\"output\":1,\"totalTokens\":{tokens},\"cost\":{{\"total\":0.1}}}}}}}}\n");
+        let mut t = Tail::default();
+        for i in 0..30 { t.ingest(line(&format!("2026-11-16T04:00:{i:02}Z"), 1000 + i).as_bytes(), false); }
+        // Only the newest TURN_SAMPLES turns stay, oldest first.
+        assert_eq!(t.session.turns.len(), TURN_SAMPLES);
+        assert_eq!(t.session.turns.first().unwrap(), &("2026-11-16T04:00:06Z".to_string(), 1006));
+        assert_eq!(t.session.turns.last().unwrap(), &("2026-11-16T04:00:29Z".to_string(), 1029));
+        // Compaction entries are counted, not parsed.
+        assert_eq!(t.session.compactions, 0);
+        t.ingest(b"{\"type\":\"compaction\",\"timestamp\":\"2026-11-16T05:00:00Z\",\"tokensBefore\":100}\n", false);
+        assert_eq!(t.session.compactions, 1);
+        // A reset (new session) clears the history with everything else.
+        t.ingest(b"", true);
+        assert!(t.session.turns.is_empty());
+        assert_eq!(t.session.compactions, 0);
     }
     #[test]
     fn todo_tool_results_replace_the_task_list() {
