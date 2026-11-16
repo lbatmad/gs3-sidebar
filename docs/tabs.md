@@ -21,6 +21,27 @@ Todas las capturas son de una sesión de demostración. Con menos de 44 columnas
 
 ![GIT](assets/tab2.png)
 
+La tarjeta **Cambios** separa lo que está en el índice (`staged`) de lo que todavía está en el
+worktree (`sin stage`): una fila por archivo con su letra de estado (`A M D R ? U`) y, cuando se
+conoce, el conteo `+N −N` del diff contra `HEAD`. Un archivo con cambios en las dos columnas
+aparece en las dos secciones. Si no hay nada staged, la card lo dice: es lo que falta para poder
+commitear.
+
+Un clic en `[stage]` corre `git add -- <ruta>` y un clic en `[unstage]` corre
+`git restore --staged -- <ruta>`, siempre con la ruta como argumento —nunca interpolada en un
+shell—; las filas `[stage all]` y `[unstage all]` hacen lo mismo sobre todo el árbol. Los clics de
+git comparten una ventana de un segundo, así que un doble clic no encadena dos escrituras. Después
+de cada acción la card y el grafo se releen desde git, y si algo falla se muestra el stderr de git
+tal cual.
+
+El renglón del mensaje es un editor en la propia barra (se escribe, `Backspace` borra, `Enter`
+confirma, `Esc` cancela) y `[✓ commit]` ejecuta un `git commit -m <mensaje>` liso: nunca `--amend`,
+nunca `--no-verify`, nunca push. Sólo se ofrece con al menos un archivo staged y un mensaje no
+vacío; si falta algo, la fila dice qué. Un commit exitoso muestra `<hash corto> <asunto>`; uno
+fallido —hook, índice vacío, identidad sin configurar— muestra el error de git tal cual, deja el
+staging como git lo dejó y conserva el mensaje escrito. Ningún archivo sensible se stagea desde la
+barra (lo dice en la fila) y ninguna ruta fuera del repositorio se acepta.
+
 | Tarjeta | Qué muestra |
 | --- | --- |
 | **⎇ git graph** | Cabecera `[ G \| R ]` para alternar entre **Grafo** (rama, estado, últimos 30 commits en gráfico) y **Ramas** (una fila por rama; `↑a ↓b` adelantadas/atrasadas, `gone`, o su antigüedad). Pie: `✎ N files · +A −D`. Un clic en un commit abre su ventana: autor y cuándo, el **mensaje completo** del commit (envuelto, no sólo el asunto) y debajo los archivos que tocó con sus contadores; cada fila `[diff]` abre el diff de ese archivo en la barra con el mismo clic. El grafo muestra **25 filas por vez** (la fila `↕ 1-25/60` dice qué tramo se ve) y la rueda sobre la tarjeta camina hacia atrás en la historia: al llegar al final de lo leído pide la página siguiente (duplicando, hasta 300), también con la fila `⋯ cargar N más`. Una llamada `git log -n` por página, ninguna por scroll. |

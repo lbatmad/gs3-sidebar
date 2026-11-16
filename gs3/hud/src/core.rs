@@ -72,6 +72,7 @@ pub struct Git {
     pub graph:Vec<String>,
     /// Working tree (`status --porcelain=v1 -z`) with `diff HEAD --numstat` line counts and totals.
     pub files:Vec<FileChange>, pub counts:Counts, pub added:u64, pub deleted:u64,
+    pub changes:Changes,
     pub branches:Vec<Branch>,
     /// How many commits `git log` was asked for: the graph grows one page at a time, up to `LOG_MAX`.
     pub log_limit:usize,
@@ -99,6 +100,24 @@ pub fn is_hash(s:&str)->bool { (7..=40).contains(&s.len()) && s.bytes().all(|b| 
 pub fn sensitive(path:&str)->bool {
     let name=path.rsplit('/').next().unwrap_or(path).to_lowercase();
     name.starts_with(".env") || ["secret","credential","token","passw","auth",".pem",".key",".p12",".pfx","id_rsa","id_ed25519",".netrc",".npmrc"].iter().any(|k|name.contains(k))
+}
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Changes { pub staged:Vec<Change>, pub unstaged:Vec<Change> }
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Change { pub index:char, pub worktree:char, pub path:String, pub numstat:Option<(u64,u64)> }
+/// Classify both status columns independently; rename records include an extra source path.
+pub fn parse_changes(out:&str)->Changes {
+    let mut changes=Changes::default(); let mut records=out.split('\0');
+    while let Some(record)=records.next() {
+        let Some(code)=record.get(..2) else {continue};
+        let Some(path)=record.get(3..).filter(|p|!p.is_empty()) else {continue};
+        let bytes=code.as_bytes(); let (x,y)=(bytes[0],bytes[1]);
+        if matches!(x,b'R'|b'C') || matches!(y,b'R'|b'C') {records.next();}
+        let entry=Change{index:x as char,worktree:y as char,path:path.into(),numstat:None};
+        if x!=b' ' && x!=b'?' {changes.staged.push(entry.clone());}
+        if y!=b' ' {changes.unstaged.push(entry);}
+    }
+    changes
 }
 /// `status --porcelain=v1 -z` → files and the reference's counters (`parseGitStatusPorcelain`).
 pub fn parse_status(out:&str)->(Vec<FileChange>,Counts) {
@@ -397,6 +416,8 @@ pub struct State {
     pub profile_channel:Option<Option<Value>>,
     /// PROF: true when the last channel answer was an error (extension not loaded, socket lost).
     pub profile_channel_down:bool,
+    /// GIT · Cambios: the last write's outcome, shown in the card (`Some((ok, text))`).
+    pub git_notice:Option<(bool,String)>,
     /// TREE tab scan (None until the first answer).
     pub tree:Option<Tree>,
     /// GIT tab inspector (selected branch diff / file diff), fetched on demand.
@@ -410,14 +431,17 @@ pub struct State {
     pub ui:Ui,
 }
 impl State {
-    pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),profile_channel:None,profile_channel_down:false,tree:None,detail:Detail::default(),preview:None,media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
+    pub fn new(pane:String,cwd:PathBuf)->Self {Self {voice:Voice::default(),pane,cwd,workspace:String::new(),label:String::new(),status:"unknown".into(),session_path:None,session:Session::default(),connected:false,git:Git::default(),pr:vec!["—".into()],engram:Engram::default(),mcp:None,roster:None,stack:Vec::new(),profile_channel:None,profile_channel_down:false,git_notice:None,tree:None,detail:Detail::default(),preview:None,media:Media::default(),quit:false,refresh:true,read_session:false,ui:Ui::default()}}
 }
 pub enum Event { Voice(Voice), Pane(Value), Status(String,String), Closed(String), Connection(bool), Session(Option<String>,Session), Git(Git), Pr(Vec<String>), Engram(Engram), Mcp(Option<Vec<Mcp>>), Roster(Option<Roster>), Stack(Vec<Tool>), Tree(Tree), Detail(Detail), Preview(Preview), Media(Youtube), Spotify(Spotify), Ui(ui::Action), Key(ui::Key),
     /// PROF: a session profile channel reply — the loaded profile (name + model map) after a
     /// click, or the channel's current binding (or `Null` when the channel is down).
     ProfileChannel(Value),
     /// PROF: the session profile channel is down (extension not loaded, socket lost).
-    ProfileChannelDown }
+    ProfileChannelDown,
+    /// GIT · Cambios: the result of a stage/unstage/commit write. `true` + text on success
+    /// (`<short hash> <subject>` for a commit), `false` + git's raw stderr on failure.
+    GitNotice(bool,String) }
 /// The rail never plays both at once: whichever source the human starts pauses the other. Spotify is
 /// device playback and the video is a separate mpv window, so nothing else coordinates them. Only a
 /// *start* counts: both engines keep reporting while they play, and pausing on every report would make
@@ -460,6 +484,11 @@ pub fn apply(s:&mut State,e:Event)->bool {
             else {s.profile_channel=Some(Some(v)); s.profile_channel_down=false;}
         }
         Event::ProfileChannelDown=> {s.profile_channel_down=true;}
+        Event::GitNotice(ok,text)=> {
+            // A write changed the index or the history: the card and the graph are re-read from
+            // git itself, so the rail never shows a state it did not observe.
+            s.git_notice=Some((ok,text)); s.refresh=true;
+        }
         // Only the answer for what is still selected is kept (clicks may outrun git).
         // Like Detail: only the scan of the current open set is kept.
         Event::Tree(t) if t.open==s.ui.tree_open => s.tree=Some(t),
@@ -603,6 +632,14 @@ mod tests {
         for l in [todo(r#"[{"title":"X"}]"#,"toolResult","bash"),todo(r#"[{"title":"X"}]"#,"assistant","todo"),todo(r#"{}"#,"toolResult","todo")] {t.ingest(l.as_bytes(),false);}
         assert_eq!(t.session.todos.len(),3);
         t.ingest(todo("[]","toolResult","todo").as_bytes(),false); assert!(t.session.todos.is_empty());
+    }
+    #[test]
+    fn changes_classify_porcelain_sections() {
+        let changes=parse_changes("M  staged.txt\0 M unstaged.txt\0MM both.txt\0?? new file\0R  renamed.txt\0old.txt\0");
+        assert_eq!(changes.staged.iter().map(|f| (f.index, f.worktree, f.path.as_str())).collect::<Vec<_>>(), [('M',' ',"staged.txt"),('M','M',"both.txt"),('R',' ',"renamed.txt")]);
+        assert_eq!(changes.unstaged.iter().map(|f| (f.index, f.worktree, f.path.as_str())).collect::<Vec<_>>(), [(' ','M',"unstaged.txt"),('M','M',"both.txt"),('?','?',"new file")]);
+        assert_eq!(parse_changes("").staged.len(),0);
+        assert_eq!(parse_changes("").unstaged.len(),0);
     }
     #[test]
     fn git_porcelain_numstat_branches_and_graph() {

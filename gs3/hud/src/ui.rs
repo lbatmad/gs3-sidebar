@@ -37,6 +37,10 @@ pub struct Ui {
     pub git_view: GitView, pub git_branch: Option<String>, pub git_file: Option<String>, pub git_commit: Option<String>,
     /// A bigger page of the graph was asked for by the wheel or by the card's own row.
     pub git_more: Option<usize>,
+    pub commit_message: String, pub editing_commit_message: Option<String>,
+    /// GIT · Cambios: the write a click asked for (path + whether to stage), a bulk staging, or a
+    /// commit. main consumes them off the render path and the worker throttles repeats.
+    pub git_stage: Option<(String, bool)>, pub git_stage_all: Option<bool>, pub git_commit_now: bool,
     /// TREE tab: expanded folders (sorted, root-relative) and the selected file.
     pub tree_open: Vec<String>, pub tree_pick: Option<String>,
     /// Explicit model-section click; main consumes this intent off the render path.
@@ -74,10 +78,12 @@ impl Ui {
 
 /// What a click, wheel step or key does. Pure intents: nothing here performs I/O.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, ScrollTo(usize), GitView(GitView), Branch(Option<String>), File(String),
+pub enum Action { Tab(Tab), Cycle(i32), Collapse(String), Hide(Tab), Edit, EditCommitMessage, ScrollTo(usize), GitView(GitView), Branch(Option<String>), File(String),
     /// MEDIA · `⌁ Pistas`: the index of the first track row to show, so the wheel can scroll a long
     /// playlist inside its card.
     ScrollList(usize), ScrollVideos(usize), ScrollGraph(usize), YtLists, YtOpenPlaylist(String), YtPlayVideo(usize), Commit(String),
+    /// GIT · Cambios: stage/unstage one path, stage/unstage everything, or commit the index.
+    Stage(String), Unstage(String), StageAll, UnstageAll, CommitNow,
     /// TREE: toggle a folder, fold every folder, open a changed file's diff in GIT, select an unchanged file.
     Dir(String), Fold, Inspect(String), Pick(String), MoreCommits(usize), ModelPicker, VoiceMute, VoiceDeaf, VoiceOpen, Screenshot,
     /// PROF: a click on a profile row; the HUD only keeps the name visible for the human.
@@ -96,7 +102,7 @@ pub enum Key { Char(char), Back, Enter, Esc }
 pub fn act(ui: &mut Ui, a: Action) {
     if matches!(a, Action::Search) { ui.spotify_prompt = None; ui.yt_lists = None; }
     match a {
-        Action::Tab(t) if ui.config.visible(t) => { if ui.tab != t { ui.editing = None; } ui.tab = t; }
+        Action::Tab(t) if ui.config.visible(t) => { if ui.tab != t { ui.editing = None; ui.editing_commit_message = None; } ui.tab = t; }
         Action::Cycle(d) => {
             let tabs = ui.tabs(); let i = tabs.iter().position(|t| *t == ui.tab).unwrap_or(0) as i32;
             act(ui, Action::Tab(tabs[(i + d).rem_euclid(tabs.len() as i32) as usize]));
@@ -142,6 +148,14 @@ pub fn act(ui: &mut Ui, a: Action) {
         Action::SpotifyShuffle(on) => ui.spotify_cmd = Some(SpotifyCmd::Shuffle(on)),
         Action::SpotifyRepeat(repeat) => ui.spotify_cmd = Some(SpotifyCmd::Repeat(repeat)),
         Action::Edit => ui.editing = Some(ui.config.name.clone()),
+        Action::EditCommitMessage => ui.editing_commit_message = Some(ui.commit_message.clone()),
+        // The gates live here as well as in the card: a hand-built event must not stage a
+        // sensitive path or commit an empty index.
+        Action::Stage(path) if !crate::core::sensitive(&path) => ui.git_stage = Some((path, true)),
+        Action::Unstage(path) => ui.git_stage = Some((path, false)),
+        Action::StageAll => ui.git_stage_all = Some(true),
+        Action::UnstageAll => ui.git_stage_all = Some(false),
+        Action::CommitNow if ui.commit_message.trim().len() > 0 => ui.git_commit_now = true,
         Action::ScrollTo(n) => ui.scroll[ui.tab.index()] = n,
         Action::ScrollList(n) => ui.track_scroll = n,
         Action::ScrollGraph(n) => ui.git_scroll = n,
@@ -170,6 +184,16 @@ pub fn act(ui: &mut Ui, a: Action) {
     }
 }
 pub fn key(s: &mut State, k: Key) {
+    if let Some(buf) = &mut s.ui.editing_commit_message {
+        match k {
+            Key::Char(c) if !c.is_control() && buf.chars().count()<1024 => buf.push(c),
+            Key::Back => { buf.pop(); }
+            Key::Enter => { s.ui.commit_message=buf.clone(); s.ui.editing_commit_message=None; }
+            Key::Esc => s.ui.editing_commit_message=None,
+            _ => {}
+        }
+        return;
+    }
     if let Some(buf) = &mut s.ui.editing {
         match k {
             Key::Char(c) if !c.is_control() && buf.chars().count() < NAME_MAX => buf.push(c),
@@ -468,7 +492,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
         && crate::cover::ready(s.media.spotify.cover_url.as_deref(), s.media.spotify.cover_png.as_deref(), true, true);
     match ui.tab {
         Tab::Main => { voice_row(&mut body, s.voice, cw, ui.config.plain_controls); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); }
-        Tab::Git => { body.push(ui, git_card(s, cw)); if let Some(c) = commit_card(s, cw) { body.push(ui, c); } body.push(ui, worktree_card(s, cw)); body.push(ui, pr_card(s, cw)); }
+        Tab::Git => { body.push(ui, git_card(s, cw)); if let Some(c) = commit_card(s, cw) { body.push(ui, c); } body.push(ui, changes_card(s, cw)); body.push(ui, worktree_card(s, cw)); body.push(ui, pr_card(s, cw)); }
         Tab::Prof => { if let Some(c) = profile_store_card(s, cw) { body.push(ui, c); } body.push(ui, profiles_card(s, cw)); }
         Tab::Mem => { for c in [engram_card(s, cw), handoff_card(s, cw), stack_card(s, cw), tools_card(s, cw), mcp_card(s, cw)] { body.push(ui, c); } }
         Tab::Tree => body.push(ui, tree_card(s, cw)),
@@ -623,6 +647,57 @@ fn todos_card(s: &State, w: usize) -> Card {
 }
 
 // ---- 2:GIT ----------------------------------------------------------------------------
+fn changes_card(s: &State, w: usize) -> Card {
+    let mut c=Card::new("changes",mark("Cambios",Tone::Gold),w);
+    let message=s.ui.editing_commit_message.as_ref().unwrap_or(&s.ui.commit_message);
+    c.row(vec![seg("mensaje: ",Tone::Gold),seg(if message.is_empty() {"escribir…"} else {message},Tone::Text)],vec![]);
+    c.on_click(Action::EditCommitMessage);
+    if s.git.changes.staged.is_empty() { c.row(vec![seg("faltan archivos staged para commit",Tone::Dim)],vec![]); }
+    for (title, entries, staged) in [("staged",&s.git.changes.staged,true),("sin stage",&s.git.changes.unstaged,false)] {
+        if entries.is_empty() {continue}
+        c.row(vec![seg(title,Tone::Gold)],vec![]);
+        let sensitive_row=entries.iter().any(|e|crate::core::sensitive(&e.path));
+        for entry in entries {
+            let letter=if staged {entry.index} else {entry.worktree};
+            let path=entry.path.replace(|ch:char|ch.is_control()," ");
+            // The verb cell is the click target: the rail stages/unstages, nothing else.
+            let verb=if crate::core::sensitive(&path) {"rail"} else if staged {"unstage"} else {"stage"};
+            let mut right=vec![seg(format!("[{verb}]"),if verb=="rail" {Tone::Dim} else {Tone::Cyan})];
+            if let Some((a,d))=entry.numstat {right.insert(0,seg(format!("+{a} −{d} "),Tone::Mint));}
+            let room=w.saturating_sub(7+width_of(&right));
+            let path=if path.width()>room {
+                let name=path.rsplit('/').next().unwrap_or(&path);
+                if name.width()+2<=room {format!("…/{name}")} else {truncate(&path,room)}
+            } else {path};
+            c.row(vec![seg(format!("{letter}  {path}"),Tone::Text)],right);
+            if !crate::core::sensitive(&entry.path) {
+                c.on_click(if staged {Action::Unstage(entry.path.clone())} else {Action::Stage(entry.path.clone())});
+            }
+        }
+        if entries.len()>1 {
+            let (label,action)=if staged {("[unstage all]",Action::UnstageAll)} else {("[stage all]",Action::StageAll)};
+            let _=sensitive_row;
+            c.row(vec![],vec![seg(label,Tone::Cyan)]);
+            c.on_click(action);
+        }
+    }
+    // The commit itself: only offered when it can succeed, and it says what is missing otherwise.
+    let ready=!s.git.changes.staged.is_empty() && !s.ui.commit_message.trim().is_empty();
+    c.divider();
+    if ready {
+        c.row(vec![seg("[✓ commit]",Tone::Mint)],vec![seg(format!("{} staged",s.git.changes.staged.len()),Tone::Dim)]);
+        c.on_click(Action::CommitNow);
+    } else {
+        let why=if s.git.changes.staged.is_empty() {"sin archivos staged"} else {"sin mensaje"};
+        c.row(vec![seg("[✓ commit]",Tone::Dim)],vec![seg(why,Tone::Dim)]);
+    }
+    // What the last write did: git's own words, verbatim.
+    if let Some((ok,text))=s.git_notice.as_ref() {
+        let tone=if *ok {Tone::Mint} else {Tone::Coral};
+        for line in text.lines().take(4) {c.row(vec![seg(format!("{} ",if *ok {"✔"} else {"✖"}),tone),seg(line.to_string(),tone)],vec![]);}
+    }
+    c
+}
 /// `formatGitStatusBadges`: `✔ clean`, or conflicts · mod · staged · untracked.
 fn status_badge(g: &Git) -> Vec<Seg> {
     use Tone::*;
@@ -2593,6 +2668,49 @@ mod tests {
         assert!(!l.iter().any(|l| l.contains("switch en vivo falló")));
     }
     #[test]
+    fn changes_card_stages_and_only_commits_when_it_can() {
+        let mut s = roster_sample();
+        // Two files: one unstaged, one already staged; the secret one is offered no click.
+        s.git.changes = parse_changes("M  staged.txt\0 M loose.txt\0?? .env\0");
+        s.ui.tab = Tab::Git;
+        let l = on(&s, Tab::Git, 48);
+        assert!(l.iter().any(|l| l.contains("M  loose.txt") && l.contains("[stage]")), "sin stage lleva [stage]: {l:#?}");
+        assert!(l.iter().any(|l| l.contains("M  staged.txt") && l.contains("[unstage]")), "staged lleva [unstage]");
+        assert!(l.iter().any(|l| l.contains("?  .env") && l.contains("[rail]")), "un archivo sensible no se stagea desde el rail");
+        // The unstaged row's click stages it; a staged row's click unstages it.
+        let f = frame(&s, 48, 0);
+        let (x, y) = at(&f, "loose.txt");
+        assert_eq!(click(&f, x, y), Some(Action::Stage("loose.txt".into())));
+        let (x, y) = at(&f, "staged.txt");
+        assert_eq!(click(&f, x, y), Some(Action::Unstage("staged.txt".into())));
+        // The sensitive row is inert: no action comes out of it.
+        let (x, y) = at(&f, ".env");
+        assert_eq!(click(&f, x, y), None, "la fila sensible no dispara nada");
+        // act() re-checks the gate: a hand-built event must not stage a sensitive path.
+        assert!(!apply(&mut s, Event::Ui(Action::Stage(".env".into()))));
+        assert_eq!(s.ui.git_stage, None);
+        // Commit is only offered with staged files and a message.
+        s.ui.commit_message.clear();
+        let l = on(&s, Tab::Git, 48);
+        assert!(l.iter().any(|l| l.contains("[✓ commit]") && l.contains("sin mensaje")), "{l:#?}");
+        s.ui.commit_message = "feat: algo".into();
+        let f = frame(&s, 48, 0);
+        let (x, y) = at(&f, "[✓ commit]");
+        assert_eq!(click(&f, x, y), Some(Action::CommitNow));
+        assert!(apply(&mut s, Event::Ui(Action::CommitNow)));
+        assert!(s.ui.git_commit_now, "el clic queda como intención para main");
+        // An empty message never sets the intent, even as a hand-built event.
+        let mut empty = s.clone(); empty.ui.commit_message = "   ".into(); empty.ui.git_commit_now = false;
+        assert!(!apply(&mut empty, Event::Ui(Action::CommitNow)));
+        assert!(!empty.ui.git_commit_now);
+        // The last write is reported verbatim, success or failure.
+        s.git_notice = Some((false, "error: hook falló\nsegunda línea".into()));
+        let l = on(&s, Tab::Git, 48);
+        assert!(l.iter().any(|l| l.contains("✖ error: hook falló")), "{l:#?}");
+        assert!(l.iter().any(|l| l.contains("segunda línea")));
+        for w in [36u16, 42, 48] { for l in on(&s, Tab::Git, w) { assert!(l.width() <= usize::from(w), "{w} {l:?}"); } }
+    }
+    #[test]
     fn wrapped_channel_reply_still_names_the_session_profile() {
         // The worker used to emit the raw {ok, profile} reply, which blanked the
         // cards ("perfil de sesión:" with no name, every global row gone). Both
@@ -2845,6 +2963,34 @@ mod tests {
         s.ui.config.collapsed = vec!["git".into()]; assert!(find(&render_lines(&s, 42), "⎇ git graph").ends_with("═ [+] ═╗"));
         s.git.files.clear(); s.git.counts = Counts::default(); s.git.dirty = Some(0); s.ui.config.collapsed.clear();
         assert!(find(&render_lines(&s, 42), "feat/x ").contains("✔ clean"));
+    }
+    #[test]
+    fn commit_message_editor_confirms_and_cancels() {
+        let mut s=git_sample();
+        act(&mut s.ui,Action::EditCommitMessage);
+        key(&mut s,Key::Char('h')); key(&mut s,Key::Char('i')); key(&mut s,Key::Back); key(&mut s,Key::Enter);
+        assert_eq!(s.ui.commit_message,"h");
+        act(&mut s.ui,Action::EditCommitMessage); key(&mut s,Key::Char('x')); key(&mut s,Key::Esc);
+        assert_eq!(s.ui.commit_message,"h");
+    }
+    #[test]
+    fn cambios_shows_nonempty_sections_and_counts_at_narrow_widths() {
+        let mut s=git_sample();
+        s.git.changes=parse_changes("M  staged.txt\0MM both.txt\0?? new.txt\0");
+        s.git.changes.staged[0].numstat=Some((3,1));
+        for width in [42,36] {
+            let lines=on(&s,Tab::Git,width);
+            let staged=lines.iter().position(|l|l.contains("staged")).expect("staged section");
+            let unstaged=lines.iter().position(|l|l.contains("sin stage")).expect("unstaged section");
+            assert!(staged<unstaged);
+            assert!(find(&lines,"staged.txt").contains("+3 −1"));
+            assert_eq!(lines.iter().filter(|l|l.contains("both.txt")).count(),2);
+            assert!(lines.iter().all(|l|l.width()<=width as usize));
+        }
+        s.git.changes=Changes::default();
+        let lines=on(&s,Tab::Git,36);
+        assert!(lines.iter().any(|l|l.contains("faltan archivos staged")));
+        assert!(!lines.iter().any(|l|l.contains("sin stage")));
     }
     #[test]
     fn working_tree_card_lists_changes() {

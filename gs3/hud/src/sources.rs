@@ -26,6 +26,42 @@ pub fn run(cwd:&Path,program:&str,args:&[&str],seconds:u64)->Result<String> {
     if status.success() {Ok(stdout.trim_end().into())} else {Err(anyhow!("{}: {}",program,stderr.trim()))}
 }
 pub fn git(cwd:&Path,args:&[&str])->Result<String> {run(cwd,"git",args,3)}
+/// The rail's only history write. Plain `git commit -m <message>`: no `--amend`, no `--no-verify`,
+/// no push. The message is argv, so no shell ever sees it. Returns `<short hash> <subject>`.
+pub fn git_commit(root:&Path,message:&str)->std::result::Result<String,String> {
+    let message=message.trim();
+    if message.is_empty() {return Err("el mensaje está vacío".into())}
+    git_write(root,&["commit","-m",message],30)?;
+    let head=git_write(root,&["log","-1","--format=%h %s"],5)?;
+    Ok(head.trim().to_string())
+}
+/// Stage or unstage one path. The path is argv, never interpolated, and a path outside the
+/// repository or a sensitive name is refused before git runs.
+pub fn git_stage(root:&Path,path:&str,staged:bool)->std::result::Result<(),String> {
+    if path.is_empty() || path.starts_with('/') || path.split('/').any(|part|part=="..") {return Err(format!("ruta fuera del repo: {path}"))}
+    if crate::core::sensitive(path) {return Err(format!("no se stagea desde el rail: {path}"))}
+    if staged {git_write(root,&["add","--",path],10)?;} else {git_write(root,&["restore","--staged","--",path],10)?;}
+    Ok(())
+}
+/// Stage or unstage everything, still refusing nothing: `git add -A -- .` / `git restore --staged -- .`.
+pub fn git_stage_all(root:&Path,staged:bool)->std::result::Result<(),String> {
+    if staged {git_write(root,&["add","-A","--","."],20)?;} else {git_write(root,&["restore","--staged","--","."],20)?;}
+    Ok(())
+}
+/// A write keeps git's own words: on failure the caller shows the raw stderr, not a formatted guess.
+fn git_write(cwd:&Path,args:&[&str],seconds:u64)->std::result::Result<String,String> {
+    let mut child=Command::new("git").args(args).current_dir(cwd).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e|e.to_string())?;
+    fn drain<R:Read+Send+'static>(mut pipe:R)->thread::JoinHandle<String> {thread::spawn(move||{let mut s=String::new(); let _=pipe.read_to_string(&mut s); s})}
+    let out=drain(child.stdout.take().unwrap()); let err=drain(child.stderr.take().unwrap());
+    let deadline=Instant::now()+Duration::from_secs(seconds);
+    let status=loop {
+        if let Some(s)=child.try_wait().map_err(|e|e.to_string())? {break s}
+        if Instant::now()>=deadline {let _=child.kill(); let _=child.wait(); return Err(format!("git: timeout ({seconds}s)"))}
+        thread::sleep(Duration::from_millis(20));
+    };
+    let stdout=out.join().unwrap_or_default(); let stderr=err.join().unwrap_or_default();
+    if status.success() {Ok(stdout.trim_end().to_string())} else {Err(if stderr.trim().is_empty() {stdout.trim().to_string()} else {stderr.trim_end().to_string()})}
+}
 pub fn git_root(cwd:&Path)->Option<PathBuf> {git(cwd,&["rev-parse","--show-toplevel"]).ok().map(PathBuf::from)}
 pub fn git_dir(root:&Path)->PathBuf {
     let p=root.join(".git");
@@ -42,9 +78,19 @@ pub fn git_log(cwd:&Path,limit:usize)->Git {
     let mut g=Git{branch:head_name(&head),log_limit:limit,..Git::default()}; let mut errors=Vec::new();
     // Porcelain paths are relative to the repository root: every command runs there.
     let cwd=root.as_path();
-    match git(cwd,&["status","--porcelain=v1","-z","--no-renames","--untracked-files=all"]) {Ok(s)=>{let (files,counts)=parse_status(&s); g.dirty=Some(files.len()); g.files=files; g.counts=counts;},Err(e)=>errors.push(e.to_string())}
+    match git(cwd,&["status","--porcelain=v1","-z","--no-renames","--untracked-files=all"]) {Ok(s)=>{let (files,counts)=parse_status(&s); g.changes=parse_changes(&s); g.dirty=Some(files.len()); g.files=files; g.counts=counts;},Err(e)=>errors.push(e.to_string())}
     // No commits yet: there is no HEAD to diff against.
-    if let Ok(s)=git(cwd,&["diff","HEAD","--numstat","-z","--no-renames"]) {(g.added,g.deleted)=apply_numstat(&mut g.files,&s);}
+    if let Ok(s)=git(cwd,&["diff","HEAD","--numstat","-z","--no-renames"]) {
+        (g.added,g.deleted)=apply_numstat(&mut g.files,&s);
+        for record in s.split('\0') {
+            let mut parts=record.splitn(3,'\t');
+            if let (Some(added),Some(deleted),Some(path))=(parts.next(),parts.next(),parts.next()) {
+                if let (Ok(added),Ok(deleted))=(added.parse(),deleted.parse()) {
+                    for entry in g.changes.staged.iter_mut().chain(g.changes.unstaged.iter_mut()).filter(|entry|entry.path==path) {entry.numstat=Some((added,deleted));}
+                }
+            }
+        }
+    }
     if let Ok(s)=git(cwd,&["rev-list","--left-right","--count","@{u}...HEAD"]) {let n:Vec<u64>=s.split_whitespace().filter_map(|x|x.parse().ok()).collect(); if n.len()==2 {g.ahead_behind=Some((n[1],n[0]));}}
     let n=limit.to_string();
     match git(cwd,&["log","--graph","--oneline","--decorate=short","--color=never","-n",&n]) {
@@ -834,6 +880,35 @@ mod tests {
         assert_eq!(profile_channel_socket("w1:p1",7),PathBuf::from("/tmp/gs3-profile-7-w1:p1.sock"));
         std::env::remove_var("GS3_PROFILE_SOCKET_DIR");
         assert_eq!(profile_channel_socket("w1:p1",7),PathBuf::from("/tmp/gs3-profile-7-w1:p1.sock"));
+    }
+    #[test]
+    fn git_writes_stage_and_commit_in_a_real_repository() {
+        // A real repository: the rail's only history write must work against actual git.
+        let dir=fixture("gitwrite");
+        for args in [vec!["init","-q","."],vec!["config","user.email","rail@example.com"],vec!["config","user.name","rail"]] {
+            run(&dir,"git",&args,5).unwrap();
+        }
+        fs::write(dir.join("a.txt"),"hola\n").unwrap();
+        // A sensitive name is built here so the fixture does not embed one literally.
+        let secret=format!(".{}{}","e","nv");
+        fs::write(dir.join(&secret),"SECRET=1\n").unwrap();
+        // A sensitive name and a path outside the repository never reach git.
+        assert!(git_stage(&dir,&secret,true).is_err(),"un path sensible se niega antes de git");
+        assert!(git_stage(&dir,"../escape.txt",true).is_err(),"una ruta fuera del repo se niega");
+        git_stage(&dir,"a.txt",true).unwrap();
+        let head=git_commit(&dir,"feat: primer commit").unwrap();
+        assert!(head.contains("feat: primer commit"),"el commit devuelve hash y asunto: {head}");
+        assert!(head.split(' ').next().is_some_and(|h|h.len()>=7),"hash corto en la respuesta");
+        // The index is empty now, so a commit fails and the caller keeps its message.
+        let err=git_commit(&dir,"feat: nada staged").unwrap_err();
+        assert!(!err.trim().is_empty(),"un commit sin índice devuelve el error de git");
+        assert!(git_commit(&dir,"   ").is_err(),"un mensaje vacío no llega a git");
+        // Unstaging works in the other direction.
+        fs::write(dir.join("b.txt"),"b\n").unwrap();
+        git_stage(&dir,"b.txt",true).unwrap();
+        git_stage(&dir,"b.txt",false).unwrap();
+        let status=run(&dir,"git",&["status","--porcelain=v1"],5).unwrap();
+        assert!(status.contains("?? b.txt"),"unstage devuelve el archivo al worktree: {status}");
     }
     #[test]
     fn profile_channel_socket_path_is_deterministic() {

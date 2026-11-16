@@ -51,16 +51,23 @@ S8. Directivas permanentes de la repo: no tocar `sensitive()`, el gate de TREE n
 
 | # | Spec | Ruta | Commit |
 |---|------|------|--------|
-| T1 | S1 | `core.rs`/`sources.rs`: modelo `Changes` con secciones y conteos desde `porcelain=v1 -z` | |
-| T2 | S2 | `sources.rs`: acciones de stage/unstage como argv, worker con ventana compartida | |
-| T3 | S1, S2, S3, S4, S5 | `ui.rs`/`main.rs`: card, clics, editor de mensaje, ejecución del commit y refresco | |
-| T4 | S7 | `--help`, `docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md` | |
+| T1 | S1 | `core.rs`/`sources.rs`: modelo `Changes` con secciones y conteos desde `porcelain=v1 -z` | (worker) |
+| T2 | S2 | `sources.rs`: acciones de stage/unstage como argv, worker con ventana compartida | (worker + parent) |
+| T3 | S1, S2, S3, S4, S5 | `ui.rs`/`main.rs`: card, clics, editor de mensaje, ejecución del commit y refresco | (worker + parent) |
+| T4 | S7 | `--help`, `docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md` | (parent) |
 | T5 | S6 | verificación: `cargo test`, repo real en fixture, build + instalación | |
 
 Riesgo: **ítem 1** (efecto irreversible: un commit del rail escribe historia del repositorio y
 deshacerlo requiere `reset`/`amend`) y **ítem 3** (contrato del rail: pasa de sólo lectura a
 mutar el repo). Mitigación: alcance acotado a `add`/`commit`, argv sin shell, sin `--no-verify`,
 sin `amend`, sin push, confirmación explícita por clic y ventana de 1 s.
+
+L3 (decisión de política de fallo, consultada al parent):
+
+Un hook de git puede cambiar el índice y fallar igual; restaurar el índice desde el rail pisaría
+cambios concurrentes. Decisión: el rail **no hace ningún cambio de índice propio** después de un
+commit fallido, no rechaza hooks (eso exigiría `--no-verify`, prohibido) y conserva el mensaje; la
+card relee el estado real y lo muestra tal como quedó.
 
 ## Log
 
