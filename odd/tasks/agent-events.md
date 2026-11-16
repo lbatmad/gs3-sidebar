@@ -60,6 +60,21 @@ L3 (hallazgo al verificar, fuera de alcance de esta feature):
   rama: prueba el sondeo de versiones del stack, que no toca este feature. Queda anotado como
   follow-up; la verificación de F5 se apoya en la suite serial más las corridas paralelas verdes.
 
+L4 (entrega sin recibo, decisión del humano):
+
+- El review nativo de esta rama recorrió lentes (6 findings: R1-0001/R1-0002, R3-0001..R3-0004),
+  refuter (las tres CRITICAL corroboradas) y las correcciones quedaron en `8aa105f`. El `recover`
+  autorizado hacia la lineage sucesora `review-30f0772bc12cd64c` se registró como borde válido
+  (`inspect-authority`: 1 edge, 0 inválidos, 0 diagnósticos), pero el proveedor rechaza su propio
+  handle: `review lens-context` responde `rctx2_binding_unusable` con el handle recién emitido por
+  `review status`, con `--cwd .` y con el path absoluto.
+- Con ese defecto nativo no hay resultados de reviewer, ni validación, ni recibo, y el contrato
+  prohíbe reconstruir bindings del proveedor. Decisión del humano: **apagar el switch para este
+  clone** (`gentle-ai review mode disable --scope=clone`) y entregar con política ordinaria del
+  repo. Esta rama se mergea y pushea **sin recibo RDD**, con este párrafo como constancia.
+- Lo verificado antes de entregar: `cargo test` 204 passed (serial), harness node 18 passed,
+  build + instalación del binario.
+
 ## Log
 
 L1 (pedido original, textual):
