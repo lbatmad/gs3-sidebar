@@ -281,7 +281,10 @@ pub struct Roster { pub model:String, pub thinking:String, pub agents:Vec<Agent>
     pub total:usize, pub done:usize, pub failed:usize, pub active:usize, pub running:Vec<Running>,
     /// How long a finished task took on average, and over how many tasks that was measured.
     pub avg:String, pub measured:usize,
-    pub profile_source:String, pub configured_host:Option<Agent>, pub profiles:Vec<Profile>, pub pinned:Option<String> }
+    pub profile_source:String, pub configured_host:Option<Agent>, pub profiles:Vec<Profile>, pub pinned:Option<String>,
+    /// Pin layers that name a profile the store no longer has: `(capa, nombre)`. They never mask
+    /// the winning layer; they are reported so an orphan pin stops being invisible.
+    pub pin_stale:Vec<(String,String)> }
 /// One subagent: model/thinking from its frontmatter (`model`, `effort`/`thinking`), else its latest task, else the host.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Agent { pub name:String, pub model:String, pub thinking:String }
@@ -345,12 +348,18 @@ pub struct Profile { pub name:String, pub roles:usize, pub host:String, pub acti
 /// committed repo declaration). A layer that is invalid, or whose name is absent from the store,
 /// never masks the other (`evaluateProfilePin`).
 pub fn resolve_profile_pin(git_dir:&Path,worktree:&Path,store:Option<&Value>)->Option<String> {
-    let known=|name:&str|store.is_some_and(|s|s["profiles"][name].is_object());
-    for path in [git_dir.join("gentle-ai/profile-pin.json"),worktree.join(".pi/gentle-ai/profile.json")] {
+    resolve_profile_pin_health(git_dir,worktree,store).0
+}
+/// Resolve both layers and retain stale names when a store was available.
+pub fn resolve_profile_pin_health(git_dir:&Path,worktree:&Path,store:Option<&Value>)->(Option<String>,Vec<(String,String)>) {
+    let mut winner=None; let mut stale=Vec::new();
+    for (layer,path) in [("clon",git_dir.join("gentle-ai/profile-pin.json")),("repo",worktree.join(".pi/gentle-ai/profile.json"))] {
         let Some(name)=profile_pin_file(&path) else {continue};
-        if known(&name) {return Some(name)}
+        if store.is_some_and(|s|s["profiles"][&name].is_object()) {
+            if winner.is_none() {winner=Some(name)}
+        } else if store.is_some() {stale.push((layer.into(),name));}
     }
-    None
+    (winner,stale)
 }
 /// Read one pin layer: the package's own shape only, never through a symlink.
 pub fn profile_pin_file(path:&Path)->Option<String> {
@@ -826,6 +835,28 @@ refs/heads/gone\tgone\torigin/gone\t[gone]\t2 weeks ago\n";
         let p=profiles(Some(&v));
         assert_eq!(p.iter().map(|p|(p.name.as_str(),p.active)).collect::<Vec<_>>(),[("a b",true),("esc  [31m",false),("x y",false)],"un nombre es sólo para mostrar: se aplana, no se confía en él");
         assert!(p.iter().all(|p|!p.name.chars().any(char::is_control)),"ninguna fila puede romperse con un control");
+    }
+    #[test]
+    fn profile_pin_reports_both_stale_layers_without_masking_winner() {
+        use serde_json::json;
+        let dir=std::env::temp_dir().join(format!("gs3-health-pins-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let git=dir.join("git"); let work=dir.join("work");
+        std::fs::create_dir_all(git.join("gentle-ai")).unwrap();
+        std::fs::create_dir_all(work.join(".pi/gentle-ai")).unwrap();
+        let write=|path:&std::path::Path,name:&str| std::fs::write(path,json!({"kind":"gentle-pi.agent_model_profile_pin","version":1,"profile":name}).to_string()).unwrap();
+        let clone=git.join("gentle-ai/profile-pin.json"); let repo=work.join(".pi/gentle-ai/profile.json");
+        let store=json!({"profiles":{"known":{}}});
+        write(&clone,"ghost"); write(&repo,"known");
+        let (winner,stale)=resolve_profile_pin_health(&git,&work,Some(&store));
+        assert_eq!(winner.as_deref(),Some("known")); assert_eq!(stale,vec![("clon".to_string(),"ghost".to_string())]);
+        write(&clone,"known"); write(&repo,"missing");
+        let (winner,stale)=resolve_profile_pin_health(&git,&work,Some(&store));
+        assert_eq!(winner.as_deref(),Some("known")); assert_eq!(stale,vec![("repo".to_string(),"missing".to_string())]);
+        write(&clone,"ghost");
+        let (winner,stale)=resolve_profile_pin_health(&git,&work,Some(&store));
+        assert_eq!(winner,None); assert_eq!(stale,vec![("clon".to_string(),"ghost".to_string()),("repo".to_string(),"missing".to_string())]);
+        assert!(resolve_profile_pin_health(&git,&work,None).1.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn profile_pins_resolve_layers_precedence_and_staleness() {

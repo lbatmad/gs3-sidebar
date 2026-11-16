@@ -493,7 +493,7 @@ pub fn frame(s: &State, width: u16, height: u16) -> Frame {
     match ui.tab {
         Tab::Main => { voice_row(&mut body, s.voice, cw, ui.config.plain_controls); body.push(ui, status_card(s, cw)); body.push(ui, context_card(s, cw)); body.push(ui, todos_card(s, cw)); }
         Tab::Git => { body.push(ui, git_card(s, cw)); if let Some(c) = commit_card(s, cw) { body.push(ui, c); } body.push(ui, changes_card(s, cw)); body.push(ui, worktree_card(s, cw)); body.push(ui, pr_card(s, cw)); }
-        Tab::Prof => { if let Some(c) = profile_store_card(s, cw) { body.push(ui, c); } body.push(ui, profiles_card(s, cw)); }
+        Tab::Prof => { if let Some(c) = health_card(s, cw) { body.push(ui, c); } if let Some(c) = profile_store_card(s, cw) { body.push(ui, c); } body.push(ui, profiles_card(s, cw)); }
         Tab::Mem => { for c in [engram_card(s, cw), handoff_card(s, cw), stack_card(s, cw), tools_card(s, cw), mcp_card(s, cw)] { body.push(ui, c); } }
         Tab::Tree => body.push(ui, tree_card(s, cw)),
         Tab::Media => { body.push(ui, spotify_card(s, cw, show_cover)); if let Some(c) = tracks_card(s, cw, ui.track_scroll) { body.push(ui, c); } body.push(ui, youtube_card(s, cw)); if let Some(c) = videos_card(s, cw) { body.push(ui, c); } }
@@ -1187,6 +1187,57 @@ fn tree_card(s: &State, w: usize) -> Card {
 /// The `/gentle:profiles` store card: one row per profile, the active one marked. It only appears
 /// when there is a real choice (more than one profile), and a click only leaves the name selected
 /// for the human — the HUD never writes the store nor applies the profile.
+/// `⌁ Salud del ruteo`: what is broken in the configured routing, never what it should be. Every
+/// warning names the exit and nothing here executes an action; a clean routing gets one row.
+fn health_card(s: &State, w: usize) -> Option<Card> {
+    use Tone::*;
+    let r = s.roster.as_ref()?;
+    let known = |name: &str| r.profiles.iter().any(|p| p.name == name);
+    // Each issue is a compact row plus an optional exit row: at 36 columns the whole sentence
+    // does not fit beside its remedy, and a truncated warning is not a warning.
+    let mut issues: Vec<(Vec<Seg>, Vec<Seg>, Option<String>)> = Vec::new();
+    // A pin layer that names a profile the store no longer has: invisible until now.
+    for (layer, name) in &r.pin_stale {
+        issues.push((
+            vec![seg("▣ ", Cyan), seg(format!("pin {layer}: {name}"), Text)],
+            vec![seg("no está en el store", Coral)],
+            Some(format!("publish {name}")),
+        ));
+    }
+    // A session binding whose profile left the store renders an empty map otherwise.
+    if let Some(Some(profile)) = s.profile_channel.as_ref() {
+        let name = text_of(session_profile(profile), "name");
+        if !name.is_empty() && !known(&name) {
+            issues.push((
+                vec![seg("◉ ", Gold), seg(format!("sesión: {name}"), Text)],
+                vec![seg("no está en el store", Coral)],
+                Some("elegí otro perfil en esta sesión".into()),
+            ));
+        }
+    }
+    // A configured role with no usable model is reported, never guessed from a sibling.
+    let missing: Vec<&str> = r.agents.iter().filter(|a| a.model.is_empty()).map(|a| a.name.as_str()).collect();
+    for name in &missing {
+        issues.push((
+            // `rol <nombre>` keeps this row from reading like the roster row of the same role.
+            vec![seg("• ", Salmon), seg(format!("rol {name}"), Salmon)],
+            vec![seg("sin modelo", Coral)],
+            // The literal command is the footer row's; this cell only names the exit.
+            Some("abrir perfiles".into()),
+        ));
+    }
+    let title = if issues.is_empty() { mark("Salud del ruteo", Mint) } else { [mark("Salud del ruteo", Gold), vec![seg(format!(" · {} aviso{}", issues.len(), if issues.len() == 1 {""} else {"s"}), Coral)]].concat() };
+    let mut c = Card::new("prof-health", title, w);
+    if issues.is_empty() {
+        c.row(vec![seg("✔ ruteo consistente", Mint)], vec![seg("sin problemas", Dim)]);
+        return Some(c);
+    }
+    for (left, right, hint) in issues {
+        c.row(left, right);
+        if let Some(hint) = hint { c.row(vec![seg(format!("  ▸ {hint}"), Dim)], vec![]); }
+    }
+    Some(c)
+}
 fn profile_store_card(s: &State, w: usize) -> Option<Card> {
     use Tone::*;
     let r = s.roster.as_ref()?;
@@ -1304,6 +1355,8 @@ fn profiles_card(s: &State, w: usize) -> Card {
     for a in &r.agents {
         c.row(vec![], vec![]);
         let (bt, nt) = agent_tones(&a.name);
+        // A role with no usable model says so: the rail never fills it with a guess.
+        if a.model.is_empty() { c.row(vec![seg("• ", bt), seg(a.name.clone(), nt)], vec![seg("sin modelo", Coral)]); continue }
         model_rows(&mut c, vec![seg("• ", bt), seg(a.name.clone(), nt)], &a.model, &a.thinking);
     }
     }
@@ -2749,6 +2802,35 @@ mod tests {
         }
     }
     #[test]
+    fn health_card_reports_stale_layers_roles_and_session() {
+        // Nothing wrong: one row, no invented warnings. The sample carries a role with no model,
+        // so the healthy case gives that role a model first.
+        let mut s = roster_sample();
+        if let Some(r) = s.roster.as_mut() { for a in r.agents.iter_mut() { if a.model.is_empty() { a.model="z/model".into(); } } }
+        let healthy = on(&s, Tab::Prof, 60).join("\n");
+        assert!(healthy.contains("✔ ruteo consistente"), "sin problemas lo dice en una fila: {healthy}");
+        assert!(!healthy.contains("aviso"), "no se inventan avisos");
+        // A pin layer pointing at a profile the store lost, and the role with no model back.
+        if let Some(r) = s.roster.as_mut() {
+            for a in r.agents.iter_mut() { if a.name == "review-risk" { a.model.clear(); } }
+            r.profiles = profiles(Some(&serde_json::json!({"kind":"gentle-pi.agent_model_profiles","version":1,
+                "profiles":{"uno":{"orchestrator":{"model":"a/host"}},"dos":{"worker":{"model":"b/m2"}}}})));
+            r.pinned = Some("uno".into());
+            r.pin_stale = vec![("clon".into(),"fantasma".into())];
+        }
+        let l = on(&s, Tab::Prof, 60);
+        assert!(l.iter().any(|x| x.contains("Salud del ruteo") && x.contains("2 avisos")), "el título cuenta los avisos: {l:#?}");
+        assert!(l.iter().any(|x| x.contains("pin clon: fantasma") && x.contains("no está en el store")), "el pin huérfano se nombra");
+        assert!(l.iter().any(|x| x.contains("publish fantasma")), "y su salida");
+        assert!(l.iter().any(|x| x.contains("rol review-risk") && x.contains("sin modelo")), "el rol sin modelo se cuenta");
+        // A session profile that left the store would otherwise render an empty map as healthy.
+        s.profile_channel = Some(Some(serde_json::json!({"name":"borrado","models":{}})));
+        let l = on(&s, Tab::Prof, 60);
+        assert!(l.iter().any(|x| x.contains("sesión: borrado") && x.contains("no está en el store")), "{l:#?}");
+        // Narrow widths keep every row inside the rail.
+        for w in [36u16, 42, 60] { for row in on(&s, Tab::Prof, w) { assert!(row.width() <= usize::from(w), "{w} {row:?}"); } }
+    }
+    #[test]
     fn profile_store_card_lists_profiles_and_picks_without_writing() {
         let mut s = roster_sample();
         let mut r = s.roster.take().unwrap();
@@ -2838,7 +2920,7 @@ mod tests {
         let host = find(&l, "🎯 host / orquestador"); assert!(host.contains("gpt-6.1-sol (medium)") && !host.contains("cpamc/"), "{host}");
         assert!(find(&l, "• gentle-ai-explore").ends_with("gpt-6.1-sol (medium) ║"));
         assert!(find(&l, "• jd-judge-a").contains("claude-opus (high)"), "-high suffix dropped like shortModelName");
-        assert!(find(&l, "• review-risk").contains("— "), "missing model shows a dash");
+        assert!(find(&l, "• review-risk").contains("sin modelo"), "un rol sin modelo lo dice, no inventa una asignación");
         let counters = find(&l, "📋 Tareas");
         assert!(counters.contains("5 ✓ · 1 en curso"), "{counters}");
         assert!(l.iter().any(|x| x.contains("▶ gentle-ai-worker · build") && x.contains("· 3m")), "la fila de la tarea viva dice hace cuánto corre");

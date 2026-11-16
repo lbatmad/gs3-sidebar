@@ -40,14 +40,23 @@ S8. Directivas permanentes: no tocar `sensitive()`, el gate de TREE ni el render
 
 | # | Spec | Ruta | Commit |
 |---|------|------|--------|
-| T1 | S1 | `core.rs`: el resolutor de pins devuelve también la capa stale (nombre + capa) | |
-| T2 | S2, S3 | `core.rs`/`ui.rs`: detección de perfil de sesión stale y de rol sin modelo | |
-| T3 | S4, S5 | `ui.rs`: card de salud con conteo, avisos y salida nombrada | |
-| T4 | S7 | `--help`, `docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md` | |
+| T1 | S1 | `core.rs`: el resolutor de pins devuelve también la capa stale (nombre + capa) | (worker) |
+| T2 | S2, S3 | `core.rs`/`ui.rs`: detección de perfil de sesión stale y de rol sin modelo | (parent) |
+| T3 | S4, S5 | `ui.rs`: card de salud con conteo, avisos y salida nombrada | (parent) |
+| T4 | S7 | `--help`, `docs/tabs.md`, `gs3/hud/README.md`, `CHANGELOG.md` | (parent) |
 | T5 | S6 | verificación: `cargo test`, `--once` con datos reales, build + instalación | |
 
 Riesgo: ninguno de los seis ítems. Todo es lectura: la card informa y nombra la salida, no escribe
 store, pins ni routing, y no ejecuta acciones.
+
+L3 (decisiones de dibujo, resueltas al implementar):
+
+- La card se dibuja siempre que haya roster (así el humano ve `✔ ruteo consistente` cuando está
+  sano) y no se dibuja sin datos: una card vacía es ruido, una card con ✔ es información.
+- Avisos y salida van en **dos renglones** (el aviso arriba, `▸ salida` abajo): a 36 columnas la
+  frase completa no entra al lado de su remedio, y un aviso truncado no es un aviso.
+- Los roles sin modelo se nombran `rol <nombre>` en la card de salud para no confundirse con la
+  fila del mismo rol en el roster.
 
 ## Log
 

@@ -479,14 +479,17 @@ pub fn roster_of(session:&Path,cwd:&Path)->Option<Roster> {
     let tasks:Vec<Value>=session_id(session).map(|sid|session_tasks(parsed,&sid)).unwrap_or_default();
     let (models,source)=profile_models(profile_models_path(&dir));
     let store=profiles_store(profiles_store_path(&dir));
-    let pinned=git_root(cwd).and_then(|root|{
-        let dir=git_dir(&root);
-        let common=fs::read_to_string(dir.join("commondir")).ok().map(|s|dir.join(s.trim()));
-        resolve_profile_pin(&common.unwrap_or(dir),&root,store.as_ref())
-    });
+    let (pinned,pin_stale)=match git_root(cwd) {
+        Some(root)=>{
+            let dir=git_dir(&root);
+            let common=fs::read_to_string(dir.join("commondir")).ok().map(|s|dir.join(s.trim()));
+            crate::core::resolve_profile_pin_health(&common.unwrap_or(dir),&root,store.as_ref())
+        }
+        None=>(None,Vec::new()),
+    };
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_millis() as u64).unwrap_or(0);
     let mut r=configured_roster(roster(&settings,&agents,&tasks,now),models.as_ref(),source);
-    r.profiles=profiles(store.as_ref()); r.pinned=pinned;
+    r.profiles=profiles(store.as_ref()); r.pinned=pinned; r.pin_stale=pin_stale;
     Some(r)
 }
 /// The session id inside a session log's name: the `<uuid>` tail after the last `_`. The same
