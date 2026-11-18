@@ -9,7 +9,15 @@ cat > "$mock/herdr" <<HDR
 case "\$1 \$2" in
   "pane split") printf '{"result":{"pane":{"pane_id":"hud"}}}\n' ;;
   "pane run") printf '%s\n' "\$*" >> "$mock/panerun" ;;
-  "pane list") printf '{"result":{"panes":[{"pane_id":"main"},{"pane_id":"stale"},{"pane_id":"multi"},{"pane_id":"argvrail"},{"pane_id":"decoy"},{"pane_id":"echoes"},{"pane_id":"lookalike"},{"pane_id":"argvnosh"},{"pane_id":"other"}]}}\n' ;;
+  "pane list")
+    # Phase-aware: the re-created rail pane late appears only once the sidecar was started,
+    # which is after the startup cleanup ran. A static mock would let startup cleanup satisfy
+    # every assertion and leave the exit path untested.
+    if [ -f "$mock/panerun" ]; then
+      printf '{"result":{"panes":[{"pane_id":"main"},{"pane_id":"stale"},{"pane_id":"multi"},{"pane_id":"argvrail"},{"pane_id":"decoy"},{"pane_id":"echoes"},{"pane_id":"lookalike"},{"pane_id":"argvnosh"},{"pane_id":"late"},{"pane_id":"other"}]}}\n'
+    else
+      printf '{"result":{"panes":[{"pane_id":"main"},{"pane_id":"stale"},{"pane_id":"multi"},{"pane_id":"argvrail"},{"pane_id":"decoy"},{"pane_id":"echoes"},{"pane_id":"lookalike"},{"pane_id":"argvnosh"},{"pane_id":"other"}]}}\n'
+    fi ;;
   "pane process-info")
     case "\$*" in
       *"--pane stale"*) printf '{"result":{"process_info":{"foreground_processes":[{"cmdline":"/x/bin/gs3-hud --pane main --cwd /x"}]}}}\n' ;;
@@ -22,6 +30,8 @@ case "\$1 \$2" in
       *"--pane lookalike"*) printf '{"result":{"process_info":{"foreground_processes":[{"cmdline":"/bin/not-gs3-hud --pane main"}]}}}\n' ;;
       # herdr reported an argv without argv0; the command line still proves the rail.
       *"--pane argvnosh"*) printf '{"result":{"process_info":{"foreground_processes":[{"argv":["--pane","main"],"cmdline":"/x/bin/gs3-hud --pane main --cwd /x"}]}}}\n' ;;
+      # The rail that appears only after startup cleanup: a rail re-created mid-session.
+      *"--pane late"*) printf '{"result":{"process_info":{"foreground_processes":[{"cmdline":"/x/bin/gs3-hud --pane main --cwd /x"}]}}}\n' ;;
       *) printf '{"result":{"process_info":{"foreground_processes":[{"cmdline":"/x/bin/pi --resume"}]}}}\n' ;;
     esac ;;
   "pane close") printf '%s\n' "\$*" >> "$mock/paneclose" ;;
@@ -64,7 +74,7 @@ printf 'macOS defaults to Gentle Shell; Linux and explicit overrides remain supp
 # A: the rail is a pane, and a rail re-created outside this run (a manual restart, a second gs3)
 # must not survive the cleanup: closing only the pane id captured at startup is how /quit leaves
 # a panel hooked to the side, where no shell reads `q` any more.
-rm -f "$mock/paneclose"
+rm -f "$mock/paneclose" "$mock/panerun"
 env -u GS3_SHELL HERDR_ENV=1 HERDR_PANE_ID=main GS3_HUD=/usr/bin/true PATH="$mock:/usr/bin:/bin" \
   /bin/bash "$repo/gs3/bin/gs3" >/dev/null
 closed="$(cat "$mock/paneclose" 2>/dev/null || true)"
@@ -76,4 +86,12 @@ case "$closed" in *"pane close multi"*) ;; *) printf 'a rail behind another fore
 case "$closed" in *"pane close argvrail"*) ;; *) printf 'a rail found only in argv survived: %s\n' "$closed" >&2; exit 1 ;; esac
 case "$closed" in *"pane close argvnosh"*) ;; *) printf 'a rail whose argv lacked argv0 survived: %s\n' "$closed" >&2; exit 1 ;; esac
 case "$closed" in *"pane close other"*|*"pane close decoy"*|*"pane close echoes"*|*"pane close lookalike"*) printf 'closed a pane that is not a rail: %s\n' "$closed" >&2; exit 1 ;; esac
+# Phase proof: `late` did not exist for the startup scan (the mock only lists it from the second
+# `pane list` on), so finding it at all proves the exit-time discovery; and it must be closed
+# after the sidecar pane, never before it.
+late_line="$(grep -n 'pane close late' "$mock/paneclose" 2>/dev/null | head -1 | cut -d: -f1 || true)"
+hud_line="$(grep -n 'pane close hud' "$mock/paneclose" 2>/dev/null | head -1 | cut -d: -f1 || true)"
+[ -n "$late_line" ] || { printf 'a rail re-created mid-session survived the exit cleanup: %s\n' "$closed" >&2; exit 1; }
+[ "$late_line" -gt "${hud_line:-0}" ] || { printf 'the exit scan ran before the exit: %s\n' "$closed" >&2; exit 1; }
+[ "$(grep -c 'pane close stale' "$mock/paneclose" 2>/dev/null || true)" -ge 1 ] || { printf 'startup cleanup did not close its rail: %s\n' "$closed" >&2; exit 1; }
 printf 'every rail bound to the pane is closed on exit, and nothing else\n'
