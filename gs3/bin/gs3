@@ -61,14 +61,27 @@ quote_args() { local out="" a; for a in "$@"; do out+=" $(printf '%q' "$a")"; do
 
 # Every rail pane bound to this pane. The pane id captured at startup goes stale the moment the
 # rail is re-created (a manual restart, a second gs3), and closing only that id is exactly how
-# `/quit` leaves a panel hooked to the side: no shell there reads `q` any more.
+# `/quit` leaves a panel hooked to the side: no shell there reads `q` any more. A pane counts as
+# a rail only when one of its foreground processes really is a gs3-hud started for THIS pane:
+# argv is compared argument by argument when herdr reports it, and a padded command line
+# otherwise, so a shell, another agent or a grep that merely mentions the strings is left alone.
 rail_panes() {
-  local me="$1" pane cmd
+  local me="$1" pane found
   "$HERDR" pane list 2>/dev/null | jq -r '.result.panes[].pane_id' 2>/dev/null | while read -r pane; do
     [ -n "$pane" ] || continue
     [ "$pane" = "$me" ] && continue
-    cmd="$("$HERDR" pane process-info --pane "$pane" 2>/dev/null | jq -r '.result.process_info.foreground_processes[].cmdline // empty' 2>/dev/null | head -1)"
-    case " $cmd " in *gs3-hud*"--pane $me "*) printf '%s\n' "$pane" ;; esac
+    found="$("$HERDR" pane process-info --pane "$pane" 2>/dev/null | jq -r --arg me "$me" '
+      [ .result.process_info.foreground_processes[]?
+        | . as $p
+        | if ($p.argv | type) == "array" and ($p.argv | length) > 1
+          then (($p.argv[0] | tostring | test("(^|/)gs3-hud$"))
+                and ([ range(0; ($p.argv | length) - 1)
+                      | select($p.argv[.] == "--pane" and $p.argv[. + 1] == $me) ] | length) > 0)
+          else ((" " + ($p.cmdline // "") + " ")
+                | contains("gs3-hud") and contains("--pane " + $me + " "))
+          end
+      ] | any' 2>/dev/null)"
+    [ "$found" = true ] && printf '%s\n' "$pane"
   done
 }
 
