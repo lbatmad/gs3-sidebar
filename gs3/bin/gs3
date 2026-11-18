@@ -59,6 +59,31 @@ find_hud() {
 
 quote_args() { local out="" a; for a in "$@"; do out+=" $(printf '%q' "$a")"; done; printf '%s' "$out"; }
 
+# Every rail pane bound to this pane. The pane id captured at startup goes stale the moment the
+# rail is re-created (a manual restart, a second gs3), and closing only that id is exactly how
+# `/quit` leaves a panel hooked to the side: no shell there reads `q` any more.
+rail_panes() {
+  local me="$1" pane cmd
+  "$HERDR" pane list 2>/dev/null | jq -r '.result.panes[].pane_id' 2>/dev/null | while read -r pane; do
+    [ -n "$pane" ] || continue
+    [ "$pane" = "$me" ] && continue
+    cmd="$("$HERDR" pane process-info --pane "$pane" 2>/dev/null | jq -r '.result.process_info.foreground_processes[].cmdline // empty' 2>/dev/null | head -1)"
+    case " $cmd " in *gs3-hud*"--pane $me "*) printf '%s\n' "$pane" ;; esac
+  done
+}
+
+close_rails() {
+  local pane
+  for pane in $(rail_panes "$1"); do "$HERDR" pane close "$pane" >/dev/null 2>&1; done
+  return 0
+}
+
+# Runs for every exit path, including Ctrl-C and a terminal hangup.
+close_sidecar() {
+  [ -n "${HUD_PANE:-}" ] && "$HERDR" pane close "$HUD_PANE" >/dev/null 2>&1
+  close_rails "${HERDR_PANE_ID:-}"
+}
+
 # Routing homes the sidecar reads for PROF: only the explicit absolute ones.
 routing_env() {
   local out="" name value
@@ -81,7 +106,9 @@ inside_herdr() {
   socket="${HERDR_SOCKET_PATH:-$HOME/.config/herdr/herdr.sock}"
   case "$socket" in /*) ;; *) die "HERDR_SOCKET_PATH must be an absolute path" ;; esac
   HUD_PANE=""   # global: the EXIT trap runs after this function returns
+  trap close_sidecar EXIT
   if hud="$(find_hud)"; then
+    close_rails "$me"   # a rail left behind by an earlier run would stack a second panel
     HUD_PANE="$("$HERDR" pane split "$me" --direction right --ratio "$RATIO" \
       --cwd "$PWD" --no-focus | jq -r '.result.pane.pane_id // empty')"
     if [ -n "$HUD_PANE" ]; then
@@ -92,7 +119,6 @@ inside_herdr() {
         "${routing}GS3_SHELL=$(printf '%q' "$SHELL_CMD") GS3_HERDR=$(printf '%q' "$HERDR") exec $(printf '%q' "$hud") --pane $(printf '%q' "$me") --cwd $(printf '%q' "$PWD")$cfg" >/dev/null \
         || printf 'gs3: could not start sidecar in %s\n' "$HUD_PANE" >&2
       # Close the sidecar whenever gs2 ends (normal exit, Ctrl-C, terminal hangup).
-      trap '"$HERDR" pane close "$HUD_PANE" >/dev/null 2>&1' EXIT
       trap 'exit 130' INT
       trap 'exit 143' TERM HUP
     else

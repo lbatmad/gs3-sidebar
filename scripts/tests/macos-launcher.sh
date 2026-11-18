@@ -9,6 +9,13 @@ cat > "$mock/herdr" <<HDR
 case "\$1 \$2" in
   "pane split") printf '{"result":{"pane":{"pane_id":"hud"}}}\n' ;;
   "pane run") printf '%s\n' "\$*" >> "$mock/panerun" ;;
+  "pane list") printf '{"result":{"panes":[{"pane_id":"main"},{"pane_id":"stale"},{"pane_id":"other"}]}}\n' ;;
+  "pane process-info")
+    case "\$*" in
+      *"--pane stale"*) printf '{"result":{"process_info":{"foreground_processes":[{"cmdline":"/x/bin/gs3-hud --pane main --cwd /x"}]}}}\n' ;;
+      *) printf '{"result":{"process_info":{"foreground_processes":[{"cmdline":"/x/bin/pi --resume"}]}}}\n' ;;
+    esac ;;
+  "pane close") printf '%s\n' "\$*" >> "$mock/paneclose" ;;
   *) exit 0 ;;
 esac
 HDR
@@ -45,3 +52,14 @@ env -u GS3_SHELL -u GENTLE_PI_CONFIG_HOME -u GENTLE_SHELL_CONFIG_HOME -u GENTLE_
   HERDR_ENV=1 HERDR_PANE_ID=main GS3_HUD=/usr/bin/true PATH="$mock:/usr/bin:/bin" /bin/bash "$repo/gs3/bin/gs3" >/dev/null
 case "$(pane_run)" in *GENTLE_PI_CONFIG_HOME*|*GENTLE_SHELL_CONFIG_HOME*|*GENTLE_PI_AGENT_HOME*|*PI_CODING_AGENT_DIR*) printf 'sidecar invented a routing home\n' >&2; exit 1 ;; esac
 printf 'macOS defaults to Gentle Shell; Linux and explicit overrides remain supported; routing homes forwarded to the sidecar\n'
+# A: the rail is a pane, and a rail re-created outside this run (a manual restart, a second gs3)
+# must not survive the cleanup: closing only the pane id captured at startup is how /quit leaves
+# a panel hooked to the side, where no shell reads `q` any more.
+rm -f "$mock/paneclose"
+env -u GS3_SHELL HERDR_ENV=1 HERDR_PANE_ID=main GS3_HUD=/usr/bin/true PATH="$mock:/usr/bin:/bin" \
+  /bin/bash "$repo/gs3/bin/gs3" >/dev/null
+closed="$(cat "$mock/paneclose" 2>/dev/null || true)"
+case "$closed" in *"pane close hud"*) ;; *) printf 'own rail survived the cleanup: %s\n' "$closed" >&2; exit 1 ;; esac
+case "$closed" in *"pane close stale"*) ;; *) printf 're-created rail survived the cleanup: %s\n' "$closed" >&2; exit 1 ;; esac
+case "$closed" in *"pane close other"*) printf 'closed a pane that is not a rail: %s\n' "$closed" >&2; exit 1 ;; esac
+printf 'every rail bound to the pane is closed on exit, and nothing else\n'
