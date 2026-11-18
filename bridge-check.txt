@@ -1,2 +1,0 @@
-Prueba del puente git/gh desde el agente con HOME aislado.
-Fecha: 2026-11-18
