@@ -77,8 +77,12 @@ rail_panes() {
           then (($p.argv[0] | tostring | test("(^|/)gs3-hud$"))
                 and ([ range(0; ($p.argv | length) - 1)
                       | select($p.argv[.] == "--pane" and $p.argv[. + 1] == $me) ] | length) > 0)
-          else ((" " + ($p.cmdline // "") + " ")
-                | contains("gs3-hud") and contains("--pane " + $me + " "))
+          else ((" " + ($p.cmdline // "") + " ") as $c
+                | ($c | index("gs3-hud")) as $hud
+                | ($c | index("--pane " + $me + " ")) as $flag
+                # Printed order matters: a command that only mentions the strings in another
+                # order is not a rail for this pane.
+                | ($hud != null and $flag != null and $hud < $flag))
           end
       ] | any' 2>/dev/null)"
     [ "$found" = true ] && printf '%s\n' "$pane"

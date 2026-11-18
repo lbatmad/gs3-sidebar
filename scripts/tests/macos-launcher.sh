@@ -9,12 +9,14 @@ cat > "$mock/herdr" <<HDR
 case "\$1 \$2" in
   "pane split") printf '{"result":{"pane":{"pane_id":"hud"}}}\n' ;;
   "pane run") printf '%s\n' "\$*" >> "$mock/panerun" ;;
-  "pane list") printf '{"result":{"panes":[{"pane_id":"main"},{"pane_id":"stale"},{"pane_id":"multi"},{"pane_id":"argvrail"},{"pane_id":"other"}]}}\n' ;;
+  "pane list") printf '{"result":{"panes":[{"pane_id":"main"},{"pane_id":"stale"},{"pane_id":"multi"},{"pane_id":"argvrail"},{"pane_id":"decoy"},{"pane_id":"other"}]}}\n' ;;
   "pane process-info")
     case "\$*" in
       *"--pane stale"*) printf '{"result":{"process_info":{"foreground_processes":[{"cmdline":"/x/bin/gs3-hud --pane main --cwd /x"}]}}}\n' ;;
       *"--pane multi"*) printf '{"result":{"process_info":{"foreground_processes":[{"cmdline":"/bin/zsh"},{"cmdline":"/x/bin/gs3-hud --pane main --cwd /x"}]}}}\n' ;;
       *"--pane argvrail"*) printf '{"result":{"process_info":{"foreground_processes":[{"argv":["/x/bin/gs3-hud","--pane","main","--cwd","/x"]}]}}}\n' ;;
+      # Both strings, wrong order: a command that merely mentions them is not a rail.
+      *"--pane decoy"*) printf '{"result":{"process_info":{"foreground_processes":[{"cmdline":"/bin/echo --pane main gs3-hud"}]}}}\n' ;;
       *) printf '{"result":{"process_info":{"foreground_processes":[{"cmdline":"/x/bin/pi --resume"}]}}}\n' ;;
     esac ;;
   "pane close") printf '%s\n' "\$*" >> "$mock/paneclose" ;;
@@ -67,5 +69,5 @@ case "$closed" in *"pane close stale"*) ;; *) printf 're-created rail survived t
 # command line: both are still rails bound to this pane.
 case "$closed" in *"pane close multi"*) ;; *) printf 'a rail behind another foreground process survived: %s\n' "$closed" >&2; exit 1 ;; esac
 case "$closed" in *"pane close argvrail"*) ;; *) printf 'a rail found only in argv survived: %s\n' "$closed" >&2; exit 1 ;; esac
-case "$closed" in *"pane close other"*) printf 'closed a pane that is not a rail: %s\n' "$closed" >&2; exit 1 ;; esac
+case "$closed" in *"pane close other"*|*"pane close decoy"*) printf 'closed a pane that is not a rail: %s\n' "$closed" >&2; exit 1 ;; esac
 printf 'every rail bound to the pane is closed on exit, and nothing else\n'
