@@ -3,10 +3,27 @@ use super::{clean_version, run, Tool};
 use serde_json::Value;
 use std::{fs, path::{Path, PathBuf}};
 
-struct Installation { prefix: PathBuf, agent: PathBuf }
+struct Installation { agent: PathBuf, modules: PathBuf }
 
 fn json(path: &Path) -> Option<Value> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+/// Where the active packages live. A migrated installation keeps them in a pnpm workspace the
+/// supervisor points at with `current -> versions/<shell>-<pi>`; the npm-style
+/// `prefix/lib/node_modules` tree survives the migration as frozen residue, so it must never
+/// answer first. The pointer is followed only when it stays inside this installation and holds a
+/// real gentle-pi manifest; anything else falls back to the prefix tree.
+fn bundle_modules(root: &Path) -> Option<PathBuf> {
+    let inside = root.canonicalize().ok()?;
+    ["home/.gentle-shell/current", ".gentle-shell/current"].iter().find_map(|relative| {
+        let current = root.join(relative).canonicalize().ok()?;
+        // A pointer must describe this installation, not redirect probes to another one.
+        if !current.starts_with(&inside) { return None; }
+        let modules = current.join("node_modules");
+        package_version(&modules.join("gentle-pi"), "gentle-pi")?;
+        Some(modules)
+    })
 }
 
 fn installation(root: &Path, session_agent: Option<&Path>) -> Option<Installation> {
@@ -20,7 +37,8 @@ fn installation(root: &Path, session_agent: Option<&Path>) -> Option<Installatio
     if let Some(expected) = session_agent {
         if agent.canonicalize().ok()? != expected.canonicalize().ok()? { return None; }
     }
-    Some(Installation { prefix, agent })
+    let modules = bundle_modules(root).unwrap_or_else(|| prefix.join("lib/node_modules"));
+    Some(Installation { agent, modules })
 }
 
 fn executable(name: &Path) -> Option<PathBuf> {
@@ -52,7 +70,7 @@ fn probe(cwd: &Path, file: &Path, args: &[&str]) -> Option<String> {
 // Resolve only identities we can prove from the personal package declarations.
 // Unsupported or conflicting Gentle Pi declarations fail closed.
 fn active_package(install: &Installation) -> Option<PathBuf> {
-    let legacy = install.prefix.join("lib/node_modules/gentle-pi");
+    let legacy = install.modules.join("gentle-pi");
     let settings = install.agent.join("settings.json");
     let value = match fs::read(&settings) {
         Ok(bytes) => serde_json::from_slice::<Value>(&bytes).ok()?,
@@ -117,7 +135,7 @@ fn selected(cwd: &Path, session: Option<&Path>, shell: Option<&Path>, herdr: Opt
         shell.as_deref().and_then(|p| p.parent()?.parent()).and_then(|root| installation(root, None))
     };
     let (pi, shell_version, ai, engram) = if let Some(install) = install {
-        let modules = install.prefix.join("lib/node_modules");
+        let modules = &install.modules;
         let package = active_package(&install);
         (package_version(&modules.join("@earendil-works/pi-coding-agent"), "@earendil-works/pi-coding-agent"),
          package.as_deref().and_then(|p| package_version(p, "gentle-pi")), package.as_deref().and_then(|p| gentle_ai(cwd, p)),
@@ -174,12 +192,49 @@ mod tests {
         command(&root.join("bin/herdr"), "herdr 0.9.3");
         Fixture(root)
     }
+    // A migrated installation keeps its runtime in a pnpm workspace the supervisor points at.
+    fn bundle(root: &Path, dir: &str, shell: &str, pi: &str, pin: &str) {
+        let modules = root.join("home/.gentle-shell/versions").join(dir).join("node_modules");
+        write(&modules.join("gentle-pi/package.json"), &serde_json::json!({"name":"gentle-pi","version":shell}).to_string());
+        write(&modules.join("gentle-pi/scripts/gentle-ai-installer.mjs"), &format!("export const INSTALLER_VERSION = \"{pin}\";\n"));
+        command(&modules.join("gentle-pi").join(".gentle-ai").join(format!("v{pin}")).join("gentle-ai"), &format!("gentle-ai {pin}"));
+        write(&modules.join("@earendil-works/pi-coding-agent/package.json"), &serde_json::json!({"name":"@earendil-works/pi-coding-agent","version":pi}).to_string());
+    }
+    fn pointer(root: &Path, target: &Path) {
+        let current = root.join("home/.gentle-shell/current");
+        fs::create_dir_all(current.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(target, &current).unwrap();
+    }
     fn versions(tools: &[Tool]) -> Vec<Option<&str>> { tools.iter().map(|t| t.version.as_deref()).collect() }
     #[test]
     fn selected_installation_reports_all_six_actual_versions() {
         let f = fixture();
         let tools = selected(&f.0, None, Some(&f.0.join("bin/gentle-shell")), Some(&f.0.join("bin/herdr")));
         assert_eq!(versions(&tools), vec![Some("1.5.0"), Some(env!("CARGO_PKG_VERSION")), Some("4.5.1"), Some("4.3.1"), Some("3.5.2"), Some("0.9.3")]);
+    }
+    #[test]
+    fn bundle_pointer_reports_the_active_runtime_not_the_frozen_prefix() {
+        let f = fixture();
+        bundle(&f.0, "4.8.0-1.5.2", "4.8.0", "1.5.2", "4.5.0");
+        pointer(&f.0, Path::new("versions/4.8.0-1.5.2"));
+        let tools = selected(&f.0, None, Some(&f.0.join("bin/gentle-shell")), None);
+        assert_eq!(versions(&tools), vec![Some("1.5.2"), Some(env!("CARGO_PKG_VERSION")), Some("4.8.0"), Some("4.5.0"), Some("3.5.2"), None]);
+    }
+    #[test]
+    fn bundle_pointer_outside_the_installation_keeps_the_prefix_tree() {
+        let f = fixture(); let other = fixture();
+        bundle(&other.0, "9.9.9", "9.9.9", "9.9.9", "9.9.9");
+        pointer(&f.0, &other.0.join("home/.gentle-shell/versions/9.9.9"));
+        let tools = selected(&f.0, None, Some(&f.0.join("bin/gentle-shell")), None);
+        assert_eq!(versions(&tools), vec![Some("1.5.0"), Some(env!("CARGO_PKG_VERSION")), Some("4.5.1"), Some("4.3.1"), Some("3.5.2"), None]);
+    }
+    #[test]
+    fn bundle_pointer_without_a_gentle_pi_manifest_keeps_the_prefix_tree() {
+        let f = fixture();
+        fs::create_dir_all(f.0.join("home/.gentle-shell/versions/empty")).unwrap();
+        pointer(&f.0, Path::new("versions/empty"));
+        let tools = selected(&f.0, None, Some(&f.0.join("bin/gentle-shell")), None);
+        assert_eq!(versions(&tools), vec![Some("1.5.0"), Some(env!("CARGO_PKG_VERSION")), Some("4.5.1"), Some("4.3.1"), Some("3.5.2"), None]);
     }
     #[test]
     fn session_installation_wins_and_refresh_rereads_versions() {

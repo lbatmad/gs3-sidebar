@@ -101,7 +101,12 @@ The context limit comes from `<agent dir>/cpamc-models-cache.json` (what Pi regi
 at runtime), then `models-store.json`. Token counts are abbreviated like the reference (`33.7k`, `179k`, `1.0M`).
 
 Stack reads Pi and Gentle Shell versions from the selected installation's package
-manifests, not from a supervisor's forwarded `--version` output. A verified, exactly
+manifests, not from a supervisor's forwarded `--version` output. After the bundle
+migration the active packages live in the supervisor's pnpm workspace
+(`<installation>/home/.gentle-shell/current -> versions/<shell>-<pi>`), so that pointer
+is followed first; a target that leaves the installation or holds no real `gentle-pi`
+manifest is refused, and the npm-style `prefix/lib/node_modules` tree the migration
+left behind answers only when no such pointer exists. A verified, exactly
 versioned managed `npm:gentle-pi` package takes precedence over a disabled legacy
 package; conflicting or unsupported identities remain unverified. Gentle AI is
 checked against the package's pinned private binary; Engram uses the session's
