@@ -71,19 +71,22 @@ rail_panes() {
     [ -n "$pane" ] || continue
     [ "$pane" = "$me" ] && continue
     found="$("$HERDR" pane process-info --pane "$pane" 2>/dev/null | jq -r --arg me "$me" '
+      # A rail is proven by either form, never by a word that merely contains the strings:
+      # argv must start with the gs3-hud executable and carry `--pane <id>` as two arguments;
+      # a command line must start with that same executable and carry the same two words.
+      def is_rail_argv($a):
+        ($a | length) > 1
+        and ($a[0] | tostring | test("(^|/)gs3-hud$"))
+        and ([ range(0; ($a | length) - 1) | select($a[.] == "--pane" and $a[. + 1] == $me) ] | length) > 0;
+      def is_rail_cmd($c):
+        ($c | split(" ") | map(select(length > 0))) as $w
+        | ($w | length) > 2
+          and ($w[0] | test("(^|/)gs3-hud$"))
+          and ([ range(0; ($w | length) - 1) | select($w[.] == "--pane" and $w[. + 1] == $me) ] | length) > 0;
       [ .result.process_info.foreground_processes[]?
         | . as $p
-        | if ($p.argv | type) == "array" and ($p.argv | length) > 1
-          then (($p.argv[0] | tostring | test("(^|/)gs3-hud$"))
-                and ([ range(0; ($p.argv | length) - 1)
-                      | select($p.argv[.] == "--pane" and $p.argv[. + 1] == $me) ] | length) > 0)
-          else ((" " + ($p.cmdline // "") + " ") as $c
-                | ($c | index("gs3-hud")) as $hud
-                | ($c | index("--pane " + $me + " ")) as $flag
-                # Printed order matters: a command that only mentions the strings in another
-                # order is not a rail for this pane.
-                | ($hud != null and $flag != null and $hud < $flag))
-          end
+        | (is_rail_argv($p.argv | if type == "array" then . else [] end))
+          or (is_rail_cmd($p.cmdline // ""))
       ] | any' 2>/dev/null)"
     [ "$found" = true ] && printf '%s\n' "$pane"
   done
